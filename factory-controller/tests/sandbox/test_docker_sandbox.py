@@ -15,12 +15,14 @@ behind (build spec §1 rule 8).
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import uuid
 
 import pytest
 
+from factory.policy.action_classes import classify
 from factory.sandbox.docker import DockerSandbox
 
 
@@ -172,3 +174,112 @@ def test_destroy_removes_the_workdir(repo_mirror, sandbox_image):
     assert os.path.isdir(handle.workdir)
     sandbox.destroy(handle)
     assert not os.path.exists(handle.workdir)
+
+
+def test_uid_and_gid_are_constructor_arguments(repo_mirror, sandbox_image):
+    sandbox = DockerSandbox(image=sandbox_image, repos_root=repo_mirror["repos_root"],
+                             sandbox_root=repo_mirror["sandbox_root"], uid=1001, gid=1001)
+    handle = sandbox.create(repo_mirror["repo"], repo_mirror["base_commit"])
+    try:
+        result = sandbox.exec(handle, ["sh", "-c", "id -u; id -g"])
+        assert result.stdout.split() == ["1001", "1001"]
+    finally:
+        sandbox.destroy(handle)
+
+
+def test_resource_limits_are_accepted_and_have_defaults(repo_mirror, sandbox_image):
+    """pids_limit/memory/cpus are constructor args with sane defaults, and docker accepts them."""
+    default_sandbox = DockerSandbox(image=sandbox_image, repos_root=repo_mirror["repos_root"],
+                                     sandbox_root=repo_mirror["sandbox_root"])
+    handle = default_sandbox.create(repo_mirror["repo"], repo_mirror["base_commit"])
+    try:
+        result = default_sandbox.exec(handle, ["echo", "ok"])
+        assert result.exit_code == 0
+    finally:
+        default_sandbox.destroy(handle)
+
+    tuned_sandbox = DockerSandbox(image=sandbox_image, repos_root=repo_mirror["repos_root"],
+                                   sandbox_root=repo_mirror["sandbox_root"],
+                                   pids_limit=32, memory="128m", cpus="0.5")
+    handle2 = tuned_sandbox.create(repo_mirror["repo"], repo_mirror["base_commit"])
+    try:
+        result2 = tuned_sandbox.exec(handle2, ["echo", "ok"])
+        assert result2.exit_code == 0
+    finally:
+        tuned_sandbox.destroy(handle2)
+
+
+def test_exec_timeout_force_removes_the_leaked_container(repo_mirror, sandbox_image):
+    """`docker run`'s client-side timeout doesn't stop the container the daemon keeps
+    running; DockerSandbox must force-remove it itself (code review Q-H3)."""
+    sandbox = DockerSandbox(image=sandbox_image, repos_root=repo_mirror["repos_root"],
+                             sandbox_root=repo_mirror["sandbox_root"])
+    handle = sandbox.create(repo_mirror["repo"], repo_mirror["base_commit"])
+    try:
+        result = sandbox.exec(handle, ["sleep", "30"], timeout_s=2)
+        assert result.exit_code == 124
+
+        listing = subprocess.run(
+            ["docker", "ps", "-a", "--filter", f"name=factory-sbx-{handle.sandbox_id[:16]}",
+             "--format", "{{.Names}}"],
+            capture_output=True, text=True, check=True,
+        )
+        assert listing.stdout.strip() == ""
+    finally:
+        sandbox.destroy(handle)
+
+
+def test_capture_diff_ignores_a_hostile_git_config_planted_in_the_workdir(repo_mirror, sandbox_image):
+    """Same property as LocalSandbox (shared CheckoutSandbox/gitutils): a `.git/config`
+    or hooks an agent writes into the workdir have zero effect on the host git
+    invocation capture_diff runs (red team R-A1)."""
+    sandbox = DockerSandbox(image=sandbox_image, repos_root=repo_mirror["repos_root"],
+                             sandbox_root=repo_mirror["sandbox_root"])
+    handle = sandbox.create(repo_mirror["repo"], repo_mirror["base_commit"])
+    try:
+        hostile_git_dir = os.path.join(handle.workdir, ".git")
+        os.makedirs(hostile_git_dir)
+        hooks_dir = os.path.join(handle.workdir, "evil-hooks")
+        os.makedirs(hooks_dir)
+        pager_marker = os.path.join(handle.workdir, "PAGER_RAN")
+        hook_marker = os.path.join(handle.workdir, "HOOK_RAN")
+        with open(os.path.join(hostile_git_dir, "config"), "w") as f:
+            f.write(f"[core]\n\thooksPath = {hooks_dir}\n\tpager = touch {pager_marker}; cat\n")
+        hook_path = os.path.join(hooks_dir, "post-index-change")
+        with open(hook_path, "w") as f:
+            f.write(f"#!/bin/sh\ntouch {hook_marker}\n")
+        os.chmod(hook_path, 0o755)
+
+        with open(os.path.join(handle.workdir, "src", "app.py"), "a") as f:
+            f.write("# a change\n")
+
+        diff = sandbox.capture_diff(handle)
+
+        assert not os.path.exists(pager_marker)
+        assert not os.path.exists(hook_marker)
+        assert "src/app.py" in set(diff.paths)
+    finally:
+        sandbox.destroy(handle)
+
+
+def test_capture_diff_reports_the_exact_unquoted_path_for_forbidden_globs(repo_mirror, sandbox_image, policy):
+    """A non-ASCII, space-containing path under a forbidden glob must classify as AC8
+    (red team R-A2): git's default quoting would otherwise hide it from a naive match."""
+    sandbox = DockerSandbox(image=sandbox_image, repos_root=repo_mirror["repos_root"],
+                             sandbox_root=repo_mirror["sandbox_root"])
+    handle = sandbox.create(repo_mirror["repo"], repo_mirror["base_commit"])
+    try:
+        workflows_dir = os.path.join(handle.workdir, ".github", "workflows")
+        os.makedirs(workflows_dir, exist_ok=True)
+        tricky_name = "évil build.yml"
+        with open(os.path.join(workflows_dir, tricky_name), "w") as f:
+            f.write("name: evil\n")
+
+        diff = sandbox.capture_diff(handle)
+
+        expected_path = f".github/workflows/{tricky_name}"
+        assert expected_path in diff.paths
+        classification = classify(diff.changes, policy.floor)
+        assert classification.action_class == "AC8"
+    finally:
+        sandbox.destroy(handle)

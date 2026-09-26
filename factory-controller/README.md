@@ -29,8 +29,10 @@ src/factory/
 │                              observation windows (B7)
 ├── cli.py                    the `factory` command (B7)
 └── demo/                     scripted end-to-end scenarios on fakes (B7)
-deploy/                       docker-compose.yml, controller.Dockerfile, .env.example (B7),
-                               plus B3's litellm/, egress-proxy/, sandbox/ configs
+deploy/                       docker-compose.yml (+ the docker-socket opt-in override),
+                               controller.Dockerfile, entrypoint.sh, postgres-init/,
+                               .env.example (B7), plus B3's litellm/, egress-proxy/,
+                               sandbox/ configs
 tests/
 ├── <module>/                 unit tests per module
 ├── walkthroughs/             the 13 Phase-1 acceptance scenarios (§19.3) on the bare
@@ -154,10 +156,17 @@ them as pytest tests.
 | `prod_regression_rollback` | a production regression kills the flag, rolls back, escalates to HX |
 | `stale_approval_rejected` | the mission's state moves after H1 is requested -> consume rejects it |
 | `replay_after_rollback` | replaying an already-consumed H2 approval is rejected |
+| `human_push_recorded` | a human pushing to a mission's `factory/*` branch is recorded and becomes an editor |
 
 `tests/pipeline/test_orchestrator_auto_merge.py` additionally exercises the
 webhook-driven `auto` HM path directly (at `experimental` risk, since none of
-the required scenarios reach it at `standard`).
+the required scenarios reach it at `standard`), and
+`tests/pipeline/test_red_team_2.py` exercises the fixes from a second
+integration-layer red-team pass (discovery budget keys, out-of-scope/symlink
+diff rejection, GitHub check-name completeness, HM's binding to the exact
+pushed/reviewed sha, `decide()` only enqueueing, and a repaired revision after
+a post-merge revert being genuinely rebuilt/re-deployed rather than replaying
+a stale receipt) directly.
 
 ## CLI
 
@@ -177,7 +186,15 @@ factory demo [--scenario NAME|all] [--serve]
 
 ```bash
 cp factory-controller/deploy/.env.example factory-controller/deploy/.env
-# fill in .env, then from the repo root:
+# fill in .env (FACTORY_* Settings values only -- see below for secrets), then
+# create the secret files docker-compose.yml references:
+mkdir -p factory-controller/deploy/secrets
+echo "<a strong random password>"       > factory-controller/deploy/secrets/postgres_password.txt
+echo "<a different strong password>"    > factory-controller/deploy/secrets/litellm_password.txt
+echo "<your Anthropic API key>"         > factory-controller/deploy/secrets/anthropic_api_key.txt
+cp /path/to/push-app.pem  factory-controller/deploy/secrets/push-app.pem
+cp /path/to/merge-app.pem factory-controller/deploy/secrets/merge-app.pem
+# from the repo root:
 docker compose -f factory-controller/deploy/docker-compose.yml --env-file factory-controller/deploy/.env up
 ```
 
@@ -190,13 +207,36 @@ docker compose -f factory-controller/deploy/docker-compose.yml --env-file factor
 configs read-only, separate from the controller image, so a kit or product
 change never needs a rebuild.
 
-`wiring.py` is the only place that assembles concrete adapters. A few
-production adapters need configuration `Settings` doesn't carry yet (see
-"Requests to orchestrator" below); those are wired to a small `_NotConfigured`
-stand-in that raises only when actually called, so `factory serve`/`factory
-worker` still start and work for everything that *is* configured — a
-holdout run or deploy that hits it simply fails closed, exactly like a real
-failure would.
+**Secrets never live in `.env`.** The Postgres and LiteLLM database passwords,
+the Anthropic API key, and the two GitHub App private keys are Compose
+`secrets:` — plain files under `deploy/secrets/` (gitignore this directory in
+your own deployment fork; nothing under it should ever be committed) that
+Compose mounts read-only into exactly the containers that need them.
+`deploy/entrypoint.sh` builds `FACTORY_DATABASE_URL` from the mounted
+Postgres-password file at container startup; `litellm`'s command does the same
+for its own Anthropic key and (separate, red-team-hardened) database
+credential. None of this shows up in `docker inspect`/`compose config`'s
+plain-text environment listing the way a `${VAR}`-interpolated secret would.
+LiteLLM's own `FACTORY_LLM_GATEWAY_MASTER_KEY` has no such file-based path yet
+(it isn't a file-backed `Settings` field) — keep it out of version control the
+same way as everything else in your real `.env`.
+
+**Running sandboxed tasks needs `DockerSandbox` to launch containers**, which
+this compose file does *not* wire up by default (see its own "Running
+sandboxed tasks" comment): the recommended production path is a separate,
+rootless Docker-in-Docker (or gVisor/Sysbox) daemon reached over TCP+TLS,
+never a mounted socket. For a quick/local production trial only, `docker
+compose -f docker-compose.yml -f docker-compose.docker-socket.yml up` opts
+into mounting the host's real Docker socket — holding that socket is
+equivalent to root on the host, so only do this on a host you're prepared to
+treat as fully accessible to whatever `controller`/`worker` run.
+
+`wiring.py` is the only place that assembles concrete adapters. `DeployTarget`
+fails FAST at startup if any of its 5 hook commands is missing, and
+`HoldoutRunner` does the same for any product whose `verification.required`
+names `holdout_blackbox` with no `FACTORY_HOLDOUT_TOKEN` configured — a
+mis-configured release or holdout path is a deploy-time bug you want to catch
+at startup, not the first time a mission reaches it.
 
 ## v1 scope notes (deliberate, not oversights)
 
@@ -216,73 +256,84 @@ failure would.
   deadline per side state ("escalate to the backup approver, then fire the
   event"); the worker notifies the backup and fires the timeout event at that
   same deadline rather than inventing a second, unspecified interval.
-- **The webhook queue is process-local.** `Factory.enqueue_webhook`/
-  `drain_webhooks` decouple the HTTP handler (fast: verify + parse + enqueue)
-  from the worker loop (which does the actual agent/GitHub/deploy work), but
-  the queue itself isn't persisted — a crash between "enqueued" and "drained"
-  loses that one webhook delivery (GitHub's own retry may or may not resend
-  it). Every side effect that follows (push, merge, deploy) is still
-  write-ahead-intent protected and single-use-approval protected regardless.
-- **Intent reconciliation is a visibility pass, not a generic replayer.**
-  `worker._reconcile_intents` logs anything still pending rather than
-  guessing a per-operation-kind retry. The side effects that most need
-  exactly-once semantics don't depend on it: HM/H2 merges and deploys are
-  independently protected by the approval's single-use consume and, for
-  deploys, the target's own fencing-token check.
-- **Mission-scoped scratch state (the gateway key, the architect's task
-  plan, per-task diffs, the sha awaiting an auto-merge/post-merge check) is
-  cached in the `Factory` instance**, with the fields that matter for restart
-  recovery also durably recorded as `_cache.*` events (ignored by
-  `telemetry.metrics`, which only reads its documented kinds). A cleaner home
-  would be a small structured field on `MissionRecord`/`TaskRecord`, but
-  those are shared, orchestrator-only files this build didn't touch.
+- **The webhook queue and the approval-decision queue are both process-local.**
+  `Factory.enqueue_webhook`/`drain_webhooks` decouple the HTTP handler (fast:
+  verify + parse + enqueue) from the worker loop, which does the actual
+  agent/GitHub/deploy work via `dispatch_webhooks`. `decide()` follows the
+  exact same pattern: it only records the decision (`ApprovalStore.decide`,
+  fast and local) and enqueues the request id; `process_approvals` (also
+  worker-driven) does the atomic consume and the follow-up action, so a human
+  clicking "approve" in the inbox never blocks on an agent run or a GitHub
+  call either. Neither queue is persisted — a crash between "enqueued" and
+  "drained" loses that one delivery (GitHub's own webhook retry may or may not
+  resend it; a lost decision just means the approver's click didn't take and
+  they see the packet still open). Every actual side effect downstream (push,
+  merge, deploy) is still write-ahead-intent protected and, for gated ones,
+  single-use-approval protected regardless.
+- **Operation ids are keyed by revision, not just by mission**, e.g.
+  `push:{mission}:{content_hash}`, `merge:{mission}:{pushed_sha}`,
+  `build:{mission}:{merge_sha}`, `deploy_prod:{mission}:{artifact}`: a repaired
+  revision after a revert/repair cycle gets its OWN operation id, so
+  `execute_once` builds/pushes/merges/deploys the new content instead of
+  replaying a receipt from a previous revision. Real probes are used where the
+  port makes one possible (e.g. a deploy retry that hits the target's own
+  fencing-token rejection is treated as "already applied", not a failure);
+  where the port has no way to positively confirm an effect already happened
+  (there is no "is this PR already merged with this head" read, for instance),
+  the probe is `lambda: None` and a retry is idempotent enough on the fake/real
+  adapters in use not to double-apply.
+- **A follow-up action that fails after its approval is consumed lands the
+  mission in AWAITING_HX**, not stuck: `_on_quorum` wraps the post-consume
+  action and, on any unexpected exception, escalates with the failure as the
+  HX packet's reason. A stale PR head at merge time is handled more
+  specifically — it's refused, logged as a `human_intervention` event, and the
+  mission goes back to ACTIVE with a repair task, since that specifically
+  means new work landed and needs re-integrating, not a human exception.
+- **Mission-scoped scratch state (the discovery and mission gateway keys, the
+  architect's task plan, per-task diffs, the pushed/merge sha, the PR number,
+  the requester login) is cached in the `Factory` instance**, with every field
+  that matters for restart recovery or a security rule (no-self-approval
+  needs the requester to survive a restart) also durably recorded as
+  `_cache.*` store events (ignored by `telemetry.metrics`, which only reads
+  its documented kinds). A cleaner home would be a small structured field on
+  `MissionRecord`/`TaskRecord`, but those are shared, orchestrator-only files
+  this build didn't touch.
+- **`SandboxPort.exec` has no stdin.** Applying a task's diff during
+  integration therefore still has to write the patch somewhere inside the
+  sandbox workdir (an agent-writable directory) rather than truly outside it;
+  it goes into a dedicated `.factory-controller-tmp/` directory that's always
+  scrubbed before the next `capture_diff` (`_scrub_controller_artifacts`), so
+  the patch itself can never appear as a change in a pushed diff, but a stdin
+  parameter on `SandboxPort.exec` would let this avoid the workdir entirely.
 
 ## Requests to orchestrator
 
-Precise, worked-around-where-possible gaps found while integrating Wave 1:
+The first integration pass's gaps (`FakeGitHub` head-seeding, the missing
+`RepoMirror` port, `Settings` fields for the holdout runner/deploy
+commands/Slack ids, and the webhook parser's default-branch-only push
+handling) were all resolved by B2's and this build's gap wave: `wiring.py`
+now builds a real `GitMirror`/`FakeMirror`, `CommandDeployTarget`/
+`WorkflowHoldoutRunner` from real `Settings` fields (failing fast at startup
+when required config is missing), `_build_roster` reads `factory.yaml`
+`slack_ids`, and `on_push_to_branch` handles `webhooks.PushToBranch` for a
+human pushing to a `factory/*` mission branch. What's left:
 
-1. **`FakeGitHub` has no way to seed a branch's real head commit.**
-   `head_commit` fabricates an opaque sha the first time it's asked about a
-   branch, unrelated to any real git repository, but `SandboxPort.create`
-   needs an actual checkoutable commit. `add_issue`/`set_checks`/`add_review`
-   exist for exactly this kind of test seeding; a `set_head(repo, branch,
-   sha)` helper would too. Worked around in `demo/harness.py` by writing
-   `FakeGitHub._branches` directly (commented, with this note).
-2. **No `RepoMirror` port/adapter.** `SandboxPort.create`/`DockerSandbox`
-   assume `repos_root/<repo>` is already a git mirror ("the github module
-   clones it into repos_root", per `DockerSandbox`'s own docstring), but
-   nothing in `github/` actually maintains one — `RestGitHub.push_diff` only
-   ever clones into a throwaway directory it deletes afterward. B7
-   deliberately does not add host-side git cloning to fill this gap (it would
-   mean the orchestrator holding GitHub credentials, which §13.1 reserves for
-   the push/merge bots specifically); `pipeline.orchestrator._ensure_mirror`
-   fails closed with a clear message instead. Production needs a mirror
-   provisioning step (cron job, init container, or a new port) before a
-   product can be sandboxed.
-3. **`Settings` has no holdout-runner credentials.** `WorkflowHoldoutRunner`
-   needs its own read-only GitHub identity plus a workflow file name, scoped
-   to one repo; a multi-product deployment needs one per product. Add
-   `FACTORY_HOLDOUT_TOKEN` / `FACTORY_HOLDOUT_WORKFLOW_FILE` (and a
-   per-product override) to `config.py`.
-4. **`Settings.deploy_command` is one string; `CommandDeployTarget` needs
-   five** (`build`/`deploy`/`health`/`rollback`/`url`). Replace it with
-   `FACTORY_DEPLOY_{BUILD,DEPLOY,HEALTH,ROLLBACK,URL}_COMMAND`.
-5. **`factory.yaml` has no owners-to-Slack-id mapping.** `ApproverContact`
-   requires `slack_user_id` for `chat.postMessage` DMs, but the schema only
-   has `owners: {role: "@login"}`. Until it grows something like
-   `owners_slack: {po: "U0123..."}`, `wiring._build_roster` always returns an
-   empty roster (no DMs; the channel-wide FYI still works if a webhook URL is set).
-6. **`webhooks.parse_event` only turns a `push` into `PushToDefault` for the
-   repo's actual default branch.** Final draft §7 step 13's human-intervention
-   signal is specifically "a push to `factory/*` by a non-bot user" — a push
-   to a mission branch, not `main` — which the current parser silently
-   ignores (`logger.debug("ignoring push to %s...")`). `on_push_to_default`
-   therefore only detects a human pushing straight to `main`. Recognizing
-   pushes to non-default branches (at least ones matching `factory/*`) would
-   close this.
-7. **`DockerSandbox` needs the host Docker socket to run per-task
-   containers**, which `deploy/docker-compose.yml` mounts into `controller`/
-   `worker` — the standard, but blunt, way to run containers from a
-   container. A locked-down Docker-in-Docker or a dedicated sandbox executor
-   (gVisor/Firecracker) would be a meaningfully smaller blast radius for a
-   compromised controller process.
+1. **`SandboxPort.exec` has no stdin.** See "v1 scope notes" above --
+   `_scrub_controller_artifacts` covers the same safety property a different
+   way, but a stdin parameter would let integration hand the sandbox its patch
+   without writing anything into the agent-writable workdir at all.
+2. **`FACTORY_LLM_GATEWAY_MASTER_KEY` has no secret-file convention.** Every
+   other credential this build wires up (the Postgres/LiteLLM DB passwords,
+   the Anthropic API key, the two GitHub App private keys) is a Compose
+   `secrets:` file; this one is still a plain environment variable because
+   `Settings.llm_gateway_master_key` has no `_path`/`_file` sibling field to
+   point at a mounted secret the way `push_app_private_key_path` does.
+3. **`DockerSandbox` needs to launch a container per task**, which holding the
+   host's Docker socket (the standard way to run containers from a container)
+   grants effectively host-root access to do. `docker-compose.yml` does NOT
+   wire this up by default; `docker-compose.docker-socket.yml` is an explicit,
+   loudly-commented opt-in override for it. The better production answer --
+   a separate, rootless Docker-in-Docker (or gVisor/Sysbox) daemon reached over
+   TCP+TLS, never a mounted socket -- is documented in both files but not
+   built here, since it needs infrastructure (a second host/node, or a
+   sandboxing service) outside a docker-compose file's reach.

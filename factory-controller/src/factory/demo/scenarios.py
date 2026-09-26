@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 
-from ..controller.approvals import AlreadyConsumed, StaleApproval
+from ..controller.approvals import AlreadyConsumed
 from ..runtime.fake import scripted
 from . import fixtures
 from .harness import DemoContext, new_context
@@ -342,18 +342,20 @@ def stale_approval_rejected() -> bool:
                                  labels=("factory:feature",))
         mission = ctx.start(item)
         assert mission.state == "AWAITING_H1"
+        request = ctx.open_request(mission.mission_id, "H1")
         # Something else advances the mission's state_version between the H1 request
         # being created and the approver's decision -- e.g. an unrelated CAS update.
         current = ctx.mission(mission.mission_id)
         ctx.factory.store.update_mission(mission.mission_id, expected_version=current.state_version,
                                          editors=("@someone-else",))
-        try:
-            ctx.decide(mission.mission_id, "H1", "approve")
-            raised = False
-        except StaleApproval:
-            raised = True
+        # `decide()` only enqueues; `process_approvals()` (the worker's job) does the
+        # actual consume and swallows a StaleApproval as an unmet-quorum-style no-op
+        # (build spec §3 B7 "decide" red-team fix) -- so the observable effect is what
+        # this asserts, not a raised exception.
+        ctx.decide(mission.mission_id, "H1", "approve")
         ctx.print_timeline(mission.mission_id, title="stale_approval_rejected")
-        assert raised, "expected StaleApproval when consuming against a moved state_version"
+        refreshed = ctx.factory.store.approvals.get(request.request_id)
+        assert refreshed.status == "open", f"a rejected consume must not mark the approval consumed, got {refreshed.status}"
         assert ctx.mission(mission.mission_id).state == "AWAITING_H1", "a rejected consume must not advance the mission"
         return True
     finally:
@@ -391,6 +393,43 @@ def replay_after_rollback() -> bool:
         ctx.cleanup()
 
 
+# ── 12: human_push_recorded ───────────────────────────────────────────────────────
+def human_push_recorded() -> bool:
+    """A human pushes directly to a mission's `factory/*` branch (final draft §7 step
+    13's human-intervention signal, `github.webhooks.PushToBranch`). Recorded as a
+    `human_intervention` event, and the pusher becomes a mission editor so the
+    no-self-approval rule would exclude them from approving this mission's HM."""
+    ctx = new_context()
+    try:
+        runtime = ctx.adapters["runtime"]
+        runtime.set_script("intake", _intake("feature", "AC4"))
+        runtime.set_script("architect", _architect(tasks=[task("T-1", "Add a greet() helper with a test.")]))
+        runtime.set_script("implementer", _implementer({"app/greet.py": fixtures.GREET_APP,
+                                                        "tests/test_greet.py": fixtures.GREET_TEST_PASS}))
+        runtime.set_script("reviewer", _reviewer("pass"))
+
+        item = ctx.add_work_item(title="Add a greeting helper (a human will push to its branch)",
+                                 body="Please add a greeting helper.", labels=("factory:feature",))
+        mission = ctx.start(item)
+        ctx.decide(mission.mission_id, "H1", "approve")
+        ctx.factory.run_ready_tasks(mission.mission_id)
+        mission = ctx.mission(mission.mission_id)
+        assert mission.state == "AWAITING_HM", mission.state
+        assert mission.branch, "expected a pushed mission branch"
+
+        from ..github.webhooks import PushToBranch
+        ctx.factory.on_push_to_branch(PushToBranch(repo=ctx.repo, branch=mission.branch, sha="deadbeefcafe1234",
+                                                    pusher="@random-human", pusher_is_bot=False))
+        ctx.print_timeline(mission.mission_id, title="human_push_recorded")
+        events = [e["kind"] for e in ctx.events(mission.mission_id)]
+        assert "human_intervention" in events, "expected a human_intervention event"
+        mission = ctx.mission(mission.mission_id)
+        assert "@random-human" in mission.editors, "the human pusher must be recorded as an editor"
+        return True
+    finally:
+        ctx.cleanup()
+
+
 SCENARIOS = {
     "happy_path": happy_path,
     "patch_standing": patch_standing,
@@ -403,6 +442,7 @@ SCENARIOS = {
     "prod_regression_rollback": prod_regression_rollback,
     "stale_approval_rejected": stale_approval_rejected,
     "replay_after_rollback": replay_after_rollback,
+    "human_push_recorded": human_push_recorded,
 }
 
 __all__ = ["SCENARIOS", *SCENARIOS.keys()]

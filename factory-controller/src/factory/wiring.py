@@ -6,14 +6,17 @@ adapter, so `factory demo` and the test suite never touch the network, real
 GitHub, the Anthropic API or Slack. `production` mode wires the real adapters
 from `Settings`.
 
-A few production adapters need configuration `Settings` doesn't carry yet
-(see the module docstring in `factory-controller/README.md#requests-to-orchestrator`
-for the exact fields). Rather than fail hard at startup -- which would make
-`factory serve`/`factory worker` unusable even for the parts that *are*
-configured -- those adapters are wired to `_NotConfigured`, which raises only
-when actually called. The pipeline treats that failure the same way it treats
-any other adapter exception: fail closed (a failed holdout run or deploy never
-counts as a pass).
+Production `DeployTarget` fails FAST at startup if any of its 5 hook commands
+is missing (a mis-configured release path is a deploy-time bug you want to
+catch before the first mission ever reaches H2, not the first time it does).
+`HoldoutRunner` does the same only when some product's `verification.required`
+actually names `holdout_blackbox` -- a product cell that doesn't require it
+can still run without a holdout token configured, and gets `_NotConfigured`
+(raises only if something calls it anyway), same as before. See
+`factory-controller/README.md#requests-to-orchestrator` for what's still
+outstanding (a `RepoMirror` production identity is the push bot's, reused
+read-only; per-product holdout repos are supported, a single product is the
+common case).
 """
 from __future__ import annotations
 
@@ -25,9 +28,10 @@ from pathlib import Path
 from .budget.fake import FakeBudgetGateway
 from .clock import SystemClock
 from .config import Settings
-from .github.app_auth import AppCredentials
-from .github.client import RestGitHub
+from .github.app_auth import AppCredentials, InstallationTokenProvider
+from .github.client import RestGitHub, default_remote_url
 from .github.fake import FakeGitHub
+from .github.mirror import FakeMirror, GitMirror, mirror_path
 from .inbox.fake import RecordingNotifier
 from .inbox.signing import TokenSigner
 from .inbox.slack import ApproverContact, SlackNotifier
@@ -45,6 +49,19 @@ from .store.postgres import PostgresStateStore, apply_migrations
 from .verification.holdout import FakeHoldoutRunner, WorkflowHoldoutRunner
 
 logger = logging.getLogger(__name__)
+
+
+def _local_mirror(settings: Settings, products: ProductRegistry) -> FakeMirror:
+    """`FakeMirror`, pre-registered for every product's repo at the same path
+    convention `SandboxPort.create` clones from (`mirror_path`). The demo
+    harness creates each repo's checkout directly there, so `sync` never
+    actually needs to fetch anything.
+    """
+    mirror = FakeMirror()
+    for product in products.all():
+        if product.repo:
+            mirror.register(product.repo, mirror_path(settings.repos_root, product.repo))
+    return mirror
 
 
 class _NotConfigured:
@@ -68,20 +85,17 @@ def build_policy_and_products(settings: Settings) -> tuple[Policy, ProductRegist
 
 
 def _build_roster(products: ProductRegistry) -> list[ApproverContact]:
-    """One `ApproverContact` per owner with a known Slack id.
+    """One `ApproverContact` per owner with a `factory.yaml` `slack_ids` entry.
 
-    `ApproverContact.slack_user_id` is required (`chat.postMessage` DMs need it),
-    but `factory.yaml` has no owners-to-Slack-id mapping in the schema yet -- see
-    README "Requests to orchestrator": add e.g. `owners_slack: {po: "U0123..."}`.
-    Until then no owner has a known id, so the roster is empty: `SlackNotifier`
-    still posts the channel-wide FYI (no token, no DM) when a webhook is set.
+    An owner with no `slack_ids` mapping gets no DM (only the channel-wide FYI,
+    if a webhook is configured) -- `factory.yaml` is the source of truth for
+    who's reachable on Slack, not a guess.
     """
     fields = {f.name for f in dataclasses.fields(ApproverContact)}
     seen: dict[str, ApproverContact] = {}
     for product in products.all():
-        slack_ids = getattr(product, "owner_slack_ids", {})
         for login, roles in product.owner_roles.items():
-            slack_user_id = slack_ids.get(login)
+            slack_user_id = product.slack_ids.get(login)
             if login in seen or not slack_user_id:
                 continue
             kwargs = {"approver": login, "roles": roles, "slack_user_id": slack_user_id}
@@ -91,7 +105,7 @@ def _build_roster(products: ProductRegistry) -> list[ApproverContact]:
     return list(seen.values())
 
 
-def _local_adapters(settings: Settings, policy: Policy) -> dict:
+def _local_adapters(settings: Settings, policy: Policy, products: ProductRegistry) -> dict:
     return {
         "github": FakeGitHub(floor=policy.floor),
         "runtime": FakeRuntime(),
@@ -101,6 +115,7 @@ def _local_adapters(settings: Settings, policy: Policy) -> dict:
         "holdout": FakeHoldoutRunner(result=(1, 1)),
         "deploy": FakeDeployTarget(),
         "flags": FakeFlagProvider(),
+        "mirror": _local_mirror(settings, products),
     }
 
 
@@ -113,9 +128,20 @@ def _production_github(settings: Settings, policy: Policy) -> RestGitHub:
                       api_url=settings.github_api_url, repos_root=settings.repos_root)
 
 
+def _production_mirror(settings: Settings) -> GitMirror:
+    # The mirror only ever reads (clones/fetches), never pushes (§13.1 #5), so the
+    # push bot's identity -- already read-scoped for issues/PRs -- is reused here
+    # rather than minting a third GitHub App identity for it.
+    push_creds = AppCredentials(app_id=settings.push_app_id, private_key_path=settings.push_app_private_key_path,
+                                installation_id=settings.push_app_installation_id, api_url=settings.github_api_url)
+    token_provider = InstallationTokenProvider(push_creds)
+    return GitMirror(repos_root=settings.repos_root, token_provider=token_provider,
+                     remote_url_builder=default_remote_url)
+
+
 def _production_notifier(settings: Settings, products: ProductRegistry, clock):
-    if not settings.slack_bot_token or not settings.inbox_signing_key:
-        logger.warning("no slack_bot_token/inbox_signing_key configured; falling back to a logging notifier")
+    if not settings.slack_bot_token:
+        logger.warning("FACTORY_SLACK_BOT_TOKEN is unset; falling back to a logging notifier")
         return RecordingNotifier()
     signer = TokenSigner(settings.inbox_signing_key)
     roster = _build_roster(products)
@@ -123,24 +149,53 @@ def _production_notifier(settings: Settings, products: ProductRegistry, clock):
                          webhook_url=settings.slack_webhook_url)
 
 
-def _production_holdout(settings: Settings, products: ProductRegistry):
-    # WorkflowHoldoutRunner needs its OWN read-only GitHub identity (final draft §11,
-    # §13.2) and a single holdout repo/workflow file. `Settings` has neither a holdout
-    # token nor a workflow file name yet, and a runner is scoped to one repo, so a
-    # multi-product deployment would need one per product. See README "Requests to
-    # orchestrator": add FACTORY_HOLDOUT_TOKEN / FACTORY_HOLDOUT_WORKFLOW_FILE (and,
-    # for >1 product, a per-product override) to `Settings`.
-    return _NotConfigured("HoldoutRunner", "Settings has no holdout runner token/workflow file yet")
+class _MultiProductHoldoutRunner:
+    """Dispatches to one `WorkflowHoldoutRunner` per product's `holdout_repo`
+    (a runner is scoped to a single repo; a product cell may have its own).
+    """
+
+    def __init__(self, *, token: str, workflow: str, api_url: str, products: ProductRegistry):
+        self._runners: dict[str, WorkflowHoldoutRunner] = {}
+        for product in products.all():
+            if product.holdout_repo:
+                self._runners[product.name] = WorkflowHoldoutRunner(
+                    api_url=api_url, repo=product.holdout_repo, workflow_file=workflow, token=token)
+
+    def run(self, product: str, *, staging_url: str, artifact: str):
+        runner = self._runners.get(product)
+        if runner is None:
+            raise RuntimeError(f"HoldoutRunner: product {product!r} has no holdout_repo configured")
+        return runner.run(product, staging_url=staging_url, artifact=artifact)
 
 
-def _production_deploy(settings: Settings):
-    # CommandDeployTarget needs 5 named commands (build/deploy/health/rollback/url);
-    # `Settings.deploy_command` is a single string. See README "Requests to
-    # orchestrator": replace it with FACTORY_DEPLOY_{BUILD,DEPLOY,HEALTH,ROLLBACK,URL}_COMMAND.
-    if not settings.deploy_command:
-        return _NotConfigured("DeployTarget", "Settings.deploy_command is unset")
-    return _NotConfigured("DeployTarget", "Settings.deploy_command is a single string; "
-                                          "CommandDeployTarget needs 5 named commands")
+def _products_requiring_holdouts(products: ProductRegistry) -> list[str]:
+    return [p.name for p in products.all() if "holdout_blackbox" in p.verification_required]
+
+
+def _production_holdout(settings: Settings, products: ProductRegistry) -> _MultiProductHoldoutRunner | _NotConfigured:
+    needing = _products_requiring_holdouts(products)
+    if needing and not settings.holdout_token:
+        raise RuntimeError(
+            f"product(s) {needing} require the 'holdout_blackbox' check but "
+            f"FACTORY_HOLDOUT_TOKEN is unset -- the holdout runner needs its own "
+            f"read-only identity (final draft §13.1 #4) before it can run")
+    if not settings.holdout_token:
+        return _NotConfigured("HoldoutRunner", "FACTORY_HOLDOUT_TOKEN is unset")
+    return _MultiProductHoldoutRunner(token=settings.holdout_token, workflow=settings.holdout_workflow,
+                                      api_url=settings.github_api_url, products=products)
+
+
+_DEPLOY_HOOKS = {"build": "deploy_build_cmd", "deploy": "deploy_cmd", "health": "deploy_health_cmd",
+                 "rollback": "deploy_rollback_cmd", "url": "deploy_url_cmd"}
+
+
+def _production_deploy(settings: Settings) -> CommandDeployTarget:
+    missing = [f"FACTORY_{field.upper()}" for field in _DEPLOY_HOOKS.values() if not getattr(settings, field)]
+    if missing:
+        raise RuntimeError(f"production DeployTarget needs all 5 deploy hooks; missing: {', '.join(missing)}")
+    commands = {name: getattr(settings, field) for name, field in _DEPLOY_HOOKS.items()}
+    return CommandDeployTarget(commands=commands, fencing_state_path=os.path.join(settings.deploy_state_dir,
+                                                                                  "fencing.json"))
 
 
 def _production_flags(settings: Settings) -> FileFlagProvider:
@@ -167,7 +222,7 @@ def build_adapters(settings: Settings, policy: Policy, products: ProductRegistry
     """Build every adapter `Factory` needs, keyed by its constructor argument name."""
     clock = clock or SystemClock()
     if settings.mode == "local":
-        adapters = _local_adapters(settings, policy)
+        adapters = _local_adapters(settings, policy, products)
     else:
         adapters = {
             "github": _production_github(settings, policy),
@@ -180,6 +235,7 @@ def build_adapters(settings: Settings, policy: Policy, products: ProductRegistry
             "holdout": _production_holdout(settings, products),
             "deploy": _production_deploy(settings),
             "flags": _production_flags(settings),
+            "mirror": _production_mirror(settings),
         }
     adapters["store"] = _open_store(settings, clock)
     return adapters
@@ -205,7 +261,7 @@ def build_factory(settings: Settings, *, clock=None, adapters: dict | None = Non
         budget=built["budget"], notifier=built["notifier"], holdout=built["holdout"], deploy=built["deploy"],
         flags=built["flags"], products=products, policy=policy, clock=clock or SystemClock(),
         kit_dir=settings.kit_path, inbox_base_url=settings.inbox_base_url, evidence_dir=settings.evidence_dir,
-        repos_root=settings.repos_root, gateway_url=settings.llm_gateway_url,
+        repos_root=settings.repos_root, mirror=built["mirror"], gateway_url=settings.llm_gateway_url,
     )
 
 

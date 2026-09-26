@@ -27,16 +27,18 @@ repeated (final draft §10, walkthrough 7).
   - A production regression always escalates to HX (no automated diagnosis/
     fix path exists before the Phase-4 ops agent), matching final draft §7's
     "with no automated fix path -> AWAITING_HX".
-  - `repos_root/<repo>` git mirrors are assumed to already exist (the demo
-    creates them directly; production provisioning is a deployment concern
-    outside a `GitHubPort` call -- see "Requests to orchestrator" in the
-    final report). B7 never clones over the network itself.
+  - Every `SandboxPort.create` is preceded by `RepoMirror.sync(repo)`
+    (`_ensure_mirror`), which fails closed on a sync error. In `local` mode
+    the demo's `FakeMirror`/harness path is a no-op over a repo it already
+    created directly; in production `GitMirror` fetches into `repos_root`.
 """
 from __future__ import annotations
 
+import html
 import logging
 import os
 import shlex
+import shutil
 import threading
 import uuid
 from dataclasses import replace
@@ -46,8 +48,8 @@ from pathlib import Path
 from .. import globs
 from ..agent_output import AgentOutputError, parse_agent_output
 from ..controller import mission_fsm
-from ..controller.approval_budget import can_admit
-from ..controller.approvals import ApprovalError, ApprovalRequest, IneligibleApprover
+from ..controller.approval_budget import MINUTES_PER_UNIT, can_admit
+from ..controller.approvals import ApprovalError, ApprovalRequest, IneligibleApprover, StaleApproval
 from ..controller.coverage import CoverageResult, check_diff, check_request
 from ..controller.gate_resolver import GateDecision, hx_requirement, release_requirement, resolve
 from ..controller.intents import execute_once
@@ -56,7 +58,8 @@ from ..models import (CheckResult, Diff, EvidenceBundle, MissionRecord, RuntimeR
 from ..policy import Policy, Requirement
 from ..policy.action_classes import Classification, FileChange, classify
 from ..ports import (AgentRuntime, BudgetGateway, Clock, ConcurrentUpdate, DeployTarget, FlagProvider,
-                     GitHubPort, HoldoutRunner, Notifier, NotFound, SandboxPort, StateStore)
+                     GitHubPort, HoldoutRunner, Notifier, NotFound, RepoMirror, SandboxPort, StateStore)
+from ..github.client import MergeConflict
 from ..release.revert import auto_revert
 from ..telemetry import metrics as telemetry
 from ..verification.checks import evaluate as evaluate_checks
@@ -78,6 +81,13 @@ REVIEW_MAX_TURNS = 20
 DISCOVERY_BUDGET_USD = 3.0
 PROD_ENVIRONMENT = "production"
 STAGING_ENVIRONMENT = "staging"
+# Controller scratch files (e.g. the patch applied during integration) live under this
+# directory inside the sandbox workdir -- `SandboxPort.exec` has no stdin, so this is
+# the best available way to hand the sandbox content without writing loose files an
+# agent could collide with. It is always scrubbed before `capture_diff` (red-team #2
+# item 5): nothing the controller writes here may ever appear in a captured diff.
+CONTROLLER_TMP_DIRNAME = ".factory-controller-tmp"
+PR_SUMMARY_MAX_CHARS = 2000
 
 
 class MissionNotFound(NotFound):
@@ -88,10 +98,6 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
 
 
-def _repo_mirror_missing(repos_root: str, repo: str) -> bool:
-    return not os.path.isdir(os.path.join(repos_root, repo.replace("/", "__")))
-
-
 class Factory:
     """Orchestrates one product cell's missions from intake to delivery."""
 
@@ -99,7 +105,7 @@ class Factory:
                 sandbox: SandboxPort, budget: BudgetGateway, notifier: Notifier,
                 holdout: HoldoutRunner, deploy: DeployTarget, flags: FlagProvider,
                 products: ProductRegistry, policy: Policy, clock: Clock, kit_dir: str | Path,
-                inbox_base_url: str, evidence_dir: str, repos_root: str,
+                inbox_base_url: str, evidence_dir: str, repos_root: str, mirror: RepoMirror,
                 gateway_url: str | None = None, max_parallel_tasks: int = MAX_PARALLEL_TASKS_DEFAULT):
         self._store = store
         self._github = github
@@ -117,6 +123,7 @@ class Factory:
         self._inbox_base_url = inbox_base_url.rstrip("/")
         self._evidence_dir = evidence_dir
         self._repos_root = repos_root
+        self._mirror = mirror
         self._gateway_url = gateway_url
         self._max_parallel_tasks = max_parallel_tasks
 
@@ -135,6 +142,12 @@ class Factory:
         # process-local -- an accepted v1 limitation, see README "v1 scope notes".
         self._webhook_lock = threading.Lock()
         self._webhook_queue: list[tuple[str, object]] = []
+
+        # Same pattern for approval decisions: `decide()` records the decision and
+        # enqueues fast; `process_approvals` (worker-driven) does the consume and
+        # the actual follow-up action, which may run an agent or call GitHub/deploy.
+        self._approval_lock = threading.Lock()
+        self._approval_queue: list[tuple[str, str]] = []
 
     # ── public accessors for the worker loop (`worker.py`) and the inbox/app ───
     @property
@@ -184,6 +197,29 @@ class Factory:
         self._gateway_keys[mission.mission_id] = key
         return key
 
+    def _discovery_key(self, mission: MissionRecord) -> str:
+        """A small per-mission budget key for intake/architect (the discovery
+        allowance, final draft §6.1): a real `AgentRuntime` needs SOME gateway
+        key to run at all (it never sees a raw provider key, §13.1 #7), and
+        discovery happens before the mission has its real admission budget.
+        Revoked once discovery is no longer needed (`_revoke_discovery_key`).
+        """
+        cached = self._recall(mission.mission_id, "discovery_key")
+        if cached:
+            return cached["key"]
+        key = self._budget.create_key(f"{mission.mission_id}-discovery", DISCOVERY_BUDGET_USD)
+        self._remember(mission.mission_id, "discovery_key", {"key": key})
+        return key
+
+    def _revoke_discovery_key(self, mission_id: str) -> None:
+        cached = self._recall(mission_id, "discovery_key")
+        if not cached:
+            return
+        try:
+            self._budget.revoke(cached["key"])
+        except Exception:  # noqa: BLE001 -- best-effort cleanup, never blocks the caller
+            logger.warning("%s: could not revoke the discovery budget key", mission_id, exc_info=True)
+
     def _event(self, mission_id: str, kind: str, payload: dict) -> None:
         self._store.append_event(mission_id, kind, payload)
 
@@ -224,14 +260,43 @@ class Factory:
         return result
 
     def _ensure_mirror(self, repo: str) -> None:
-        if _repo_mirror_missing(self._repos_root, repo):
-            raise RuntimeError(
-                f"no local git mirror for {repo!r} under {self._repos_root!r}; a repo mirror must be "
-                f"provisioned before the factory can sandbox it (see README 'Production setup')")
+        """Sync `repo`'s local mirror before every `SandboxPort.create` (`RepoMirror.sync`,
+        final draft §12.2 M8). Fails closed: a sync error must stop the caller, never
+        fall back to a possibly-stale or missing mirror."""
+        try:
+            self._mirror.sync(repo)
+        except Exception as exc:  # noqa: BLE001 -- fail closed
+            raise RuntimeError(f"could not sync the git mirror for {repo!r}: {exc}") from exc
 
     def _issue_ref(self, work_item_id: str) -> tuple:
         repo, _, number = work_item_id.rpartition("#")
         return repo, int(number)
+
+    def _scrub_controller_artifacts(self, workdir: str) -> None:
+        """Remove the controller's own scratch directory before capturing a diff."""
+        shutil.rmtree(os.path.join(workdir, CONTROLLER_TMP_DIRNAME), ignore_errors=True)
+
+    def _capture_diff_clean(self, handle) -> Diff:
+        """`SandboxPort.capture_diff`, after scrubbing controller-written scratch
+        content (red-team #2 item 4/5): what gets pushed is only what an agent
+        actually changed, never a check-run artifact or an integration patch file.
+        """
+        self._scrub_controller_artifacts(handle.workdir)
+        return self._sandbox.capture_diff(handle)
+
+    def _reject_out_of_scope_changes(self, diff: Diff, *, owned_paths, workdir: str) -> tuple:
+        """Every changed path must be inside `owned_paths`, and none may be a symlink
+        (red-team #2 item 4). Returns a tuple of human-readable problem strings,
+        empty if the diff is clean."""
+        problems = []
+        out_of_scope = [c.path for c in diff.changes if not globs.match_any(c.path, owned_paths)]
+        if out_of_scope:
+            problems.append(f"changed paths outside owned_paths {list(owned_paths)}: {out_of_scope}")
+        symlinks = [c.path for c in diff.changes
+                   if os.path.islink(os.path.join(workdir, c.path))]
+        if symlinks:
+            problems.append(f"symlinks are not allowed: {symlinks}")
+        return tuple(problems)
 
     # ── 1-2: intake + discovery (final draft §7 steps 1-2) ─────────────────────
     def start_mission(self, work_item: WorkItem) -> MissionRecord:
@@ -249,6 +314,10 @@ class Factory:
             policy_version=product.policy_version, base_commit=self._github.head_commit(work_item.repo),
             created_at=self._clock.now(), updated_at=self._clock.now())
         mission = self._store.create_mission(mission)
+        # Durable, not just process-local: the regulated-profile "requester can't
+        # approve their own request" rule (final draft §6.3) must still hold after a
+        # restart (red-team #2 item 9), so this can't live only in `self._work_items`.
+        self._remember(mission.mission_id, "requester", {"login": work_item.author or "factory-bot"})
 
         suggested_class, lane, summary, risk_notes = self._run_intake(mission, product, work_item)
         mandate = product.mandate_for(labels=work_item.labels)
@@ -282,7 +351,7 @@ class Factory:
                               forbidden_globs=self._policy.floor.forbidden_paths + product.forbidden_paths,
                               protected_globs=self._policy.floor.protected_paths + product.protected_paths)
             result = self._run_agent(role="intake", product=product, workdir=handle.workdir, prompt=prompt,
-                                     gateway_key=None, budget_usd=DISCOVERY_BUDGET_USD,
+                                     gateway_key=self._discovery_key(mission), budget_usd=DISCOVERY_BUDGET_USD,
                                      max_turns=DISCOVERY_MAX_TURNS, mission_id=mission.mission_id,
                                      on_tool_approval=guard)
             output = parse_agent_output("intake", result.output_text, kit_dir=self._kit_dir)
@@ -314,7 +383,7 @@ class Factory:
                               forbidden_globs=self._policy.floor.forbidden_paths + product.forbidden_paths,
                               protected_globs=self._policy.floor.protected_paths + product.protected_paths)
             result = self._run_agent(role="architect", product=product, workdir=handle.workdir, prompt=prompt,
-                                     gateway_key=None, budget_usd=DISCOVERY_BUDGET_USD,
+                                     gateway_key=self._discovery_key(mission), budget_usd=DISCOVERY_BUDGET_USD,
                                      max_turns=DISCOVERY_MAX_TURNS, mission_id=mission.mission_id,
                                      on_tool_approval=guard)
             output = parse_agent_output("architect", result.output_text, kit_dir=self._kit_dir)
@@ -372,24 +441,55 @@ class Factory:
         self._notifier.decision_requested(packet, inbox_url=inbox_url)
 
     def _requester(self, mission: MissionRecord) -> str:
+        cached = self._recall(mission.mission_id, "requester")
+        if cached:
+            return cached["login"]
         item = self._work_items.get(mission.work_item_id)
         return (item.author if item and item.author else "factory-bot")
 
     def decide(self, request_id: str, approver: str, roles, decision: str, content_hash: str) -> ApprovalRequest:
-        """The single entry point the inbox and GitHub review webhooks call (build spec §3 step 3)."""
+        """The single entry point the inbox and GitHub review webhooks call (build spec §3 step 3).
+
+        This only records the decision (`ApprovalStore.decide`, a fast, local
+        state update) and enqueues the request for the worker to finish
+        processing (`process_approvals`) -- it never itself consumes the
+        approval or runs the follow-up action (admission, merge, deploy,
+        re-discovery), all of which can call an agent or a remote service.
+        Recording the decision synchronously (rather than that too) is what
+        makes a second concurrent `decide()` see a consistent quorum count.
+        """
         request = self._store.approvals.decide(request_id, approver=approver, roles=roles, decision=decision,
                                                content_hash=content_hash, now=self._clock.now())
         for mission_id in request.mission_ids:
             self._event(mission_id, telemetry.APPROVAL_DECIDED,
                        {"request_id": request_id, "decision": decision, "approver": approver})
-
-        if decision == "revise":
-            self._on_revise(request)
-        elif decision == "cancel":
-            self._on_cancel(request)
-        elif decision == "approve" and request.quorum_met():
-            self._on_quorum(request)
+        with self._approval_lock:
+            self._approval_queue.append((request_id, decision))
         return request
+
+    def process_approvals(self) -> None:
+        """Finish processing every queued decision: revise/cancel bookkeeping (which
+        may re-run discovery) or, on quorum, consume-and-act. Called by the worker
+        loop, never inline from `decide()` (build spec §3 B7 "decide" red-team fix).
+        """
+        with self._approval_lock:
+            queued, self._approval_queue = self._approval_queue, []
+        for request_id, decision in queued:
+            try:
+                request = self._store.approvals.get(request_id)
+            except (KeyError, NotFound):
+                continue
+            try:
+                if decision == "revise":
+                    self._on_revise(request)
+                elif decision == "cancel":
+                    self._on_cancel(request)
+                elif decision == "approve" and request.status == "open" and request.quorum_met():
+                    self._on_quorum(request)
+            except ApprovalError as exc:
+                logger.info("processing %s (%s) did not apply: %s", request_id, decision, exc)
+            except Exception:  # noqa: BLE001 -- one bad request must not wedge the worker loop
+                logger.exception("processing approval %s (%s) failed", request_id, decision)
 
     def _mission(self, mission_id: str) -> MissionRecord:
         return self._store.get_mission(mission_id)
@@ -417,6 +517,7 @@ class Factory:
             mission = self._mission(mission_id)
             if request.gate == "H1":
                 self._transition(mission, "decline")
+                self._revoke_discovery_key(mission_id)
             elif request.gate == "HX":
                 self._transition(mission, "declined")
             else:
@@ -424,18 +525,36 @@ class Factory:
 
     def _on_quorum(self, request: ApprovalRequest) -> None:
         mission = self._mission(request.mission_ids[0])
+        # Consume right before the side effect (final draft §10): this is the atomic
+        # CAS + fencing-token step. If it raises, the approval was never spent --
+        # nothing to recover, the caller (process_approvals) just logs it.
         fencing_token = self._store.approvals.consume(
             request.request_id, executor="factory-controller", now=self._clock.now(),
             state_version=mission.state_version, content_hash=request.content_hash,
             policy_version=mission.policy_version)
-        if request.gate == "H1":
-            self._on_h1_approved(mission)
-        elif request.gate == "HM":
-            self._on_hm_approved(mission, fencing_token)
-        elif request.gate == "H2":
-            self._on_h2_approved(mission, fencing_token)
-        elif request.gate == "HX":
-            self._on_hx_approved(mission)
+        # From here the approval IS spent. If the follow-up action itself fails
+        # (an agent run, a GitHub/deploy call), the mission must not be left stuck
+        # in its AWAITING_* state with no way forward -- land it in AWAITING_HX
+        # instead, with the failure reason as evidence for a human to resolve.
+        try:
+            if request.gate == "H1":
+                self._on_h1_approved(mission)
+            elif request.gate == "HM":
+                self._on_hm_approved(mission, fencing_token)
+            elif request.gate == "H2":
+                self._on_h2_approved(mission, fencing_token)
+            elif request.gate == "HX":
+                self._on_hx_approved(mission)
+        except Exception as exc:  # noqa: BLE001 -- fail to a defined, recoverable state
+            logger.exception("%s: %s approved but the follow-up action failed; escalating to HX",
+                            mission.mission_id, request.gate)
+            fresh = self._mission(mission.mission_id)
+            if fresh.state not in mission_fsm.NO_WORKER:
+                try:
+                    self._boundary(fresh, reason=f"{request.gate} approved but the action failed: {exc}")
+                except Exception:  # noqa: BLE001 -- last resort: at least don't crash the worker loop
+                    logger.exception("%s: escalating to HX after a failed %s also failed",
+                                    mission.mission_id, request.gate)
 
     # ── 4: admission (final draft §7 step "Admission") ──────────────────────────
     def _on_h1_approved(self, mission: MissionRecord) -> None:
@@ -472,14 +591,33 @@ class Factory:
         jsonschema.validate(instance=contract, schema=self._task_contract_schema())
         return contract
 
+    def _committed_minutes(self, product: Product, *, excluding: str) -> float:
+        """Approval-reviewer minutes committed by every non-terminal mission for
+        `product`, for `approval_budget.can_admit` (final draft §6.5's WIP limit)."""
+        total = 0.0
+        for m in self._store.list_missions(product=product.name):
+            if m.mission_id != excluding and m.state not in mission_fsm.TERMINAL:
+                total += MINUTES_PER_UNIT.get(m.lane, 0.0)
+        return total
+
+    def release_admitted_missions(self) -> None:
+        """Fire `capacity_ok` for any ADMITTED mission once approval capacity frees
+        up. Called by the worker loop; a mission the budget was full for simply
+        stays in ADMITTED (the queue) until this releases it."""
+        for mission in self._store.list_missions(state="ADMITTED"):
+            product = self._product(mission)
+            committed = self._committed_minutes(product, excluding=mission.mission_id)
+            if can_admit(mission.lane, committed_minutes=committed,
+                        reviewer_hours_per_week=product.budgets["reviewer_hours_per_week"]):
+                self._transition(mission, "capacity_ok")
+
     def _admit(self, mission: MissionRecord, product: Product, *, tasks: list) -> None:
         lane = mission.lane
-        if not can_admit(lane, committed_minutes=0.0, reviewer_hours_per_week=product.budgets["reviewer_hours_per_week"]):
-            logger.warning("%s: approval budget exhausted this week; admitting anyway (v1 has no queue)", mission.mission_id)
         budget_usd = product.budgets[f"{lane}_mission_usd"]
         key = self._budget.create_key(mission.mission_id, budget_usd)
         self._gateway_keys[mission.mission_id] = key
         self._remember(mission.mission_id, "gateway_key", {"key": key})
+        self._revoke_discovery_key(mission.mission_id)
 
         for i, raw in enumerate(tasks, start=1):
             raw = {**raw, "task_id": raw.get("task_id", f"T-{i}")}
@@ -565,10 +703,27 @@ class Factory:
                     self._fail_task(mission, task, reason="task budget exhausted")
                     return
 
-                diff = self._sandbox.capture_diff(handle)
+                diff = self._capture_diff_clean(handle)
                 if not diff.changes:
                     self._fail_task(mission, task, reason="implementer produced no changes")
                     return
+
+                scope_problems = self._reject_out_of_scope_changes(
+                    diff, owned_paths=contract.get("owned_paths", ()), workdir=handle.workdir)
+                if scope_problems:
+                    logger.warning("%s/%s: scope violation: %s", mission.mission_id, task.task_id,
+                                  "; ".join(scope_problems))
+                    attempt += 1
+                    if attempt > max_repairs:
+                        self._fail_task(mission, task, reason="; ".join(scope_problems))
+                        return
+                    self._store.update_task(task.task_id, state="REPAIRING", repair_attempts_used=attempt)
+                    prompt = (f"Your last change violated scope: {'; '.join(scope_problems)}. Fix this: stay "
+                             f"strictly inside owned_paths {list(contract.get('owned_paths', ()))} and never "
+                             f"write a symlink.")
+                    self._store.update_task(task.task_id, state="RUNNING")
+                    continue
+
                 self._task_diffs[task.task_id] = diff
                 classification = classify(diff.changes, self._policy.floor,
                                           product_protected=product.protected_paths,
@@ -650,8 +805,22 @@ class Factory:
                                recovery_plan="See alternatives.", cost_usd=mission.spent_usd)
 
     def _on_hx_approved(self, mission: MissionRecord) -> None:
-        mission = self._transition(mission, "approved",
-                                   budget_usd=mission.budget_usd * 1.5 if mission.budget_usd else mission.budget_usd)
+        new_budget = mission.budget_usd * 1.5 if mission.budget_usd else mission.budget_usd
+        mission = self._transition(mission, "approved", budget_usd=new_budget)
+        has_key = mission.mission_id in self._gateway_keys or self._recall(mission.mission_id, "gateway_key")
+        if new_budget and has_key:
+            # The extension is meaningless if the LLM gateway still enforces the OLD
+            # cap: revoke the old key and mint a new one for the raised budget
+            # (red-team #2 item 9), so every subsequent agent run in this mission
+            # actually gets to spend the extra 50%.
+            old_key = self._gateway_keys.get(mission.mission_id) or self._recall(mission.mission_id, "gateway_key")["key"]
+            try:
+                self._budget.revoke(old_key)
+            except Exception:  # noqa: BLE001 -- best-effort; a failed revoke must not block the new key
+                logger.warning("%s: could not revoke the old gateway key", mission.mission_id, exc_info=True)
+            new_key = self._budget.create_key(mission.mission_id, new_budget)
+            self._gateway_keys[mission.mission_id] = new_key
+            self._remember(mission.mission_id, "gateway_key", {"key": new_key})
         for task in self._store.list_tasks(mission.mission_id):
             if task.state == "FAILED":
                 self._store.update_task(task.task_id, state="READY", repair_attempts_used=0)
@@ -685,16 +854,28 @@ class Factory:
                     self._store.update_task(task.task_id, state="READY")
                     self._transition(mission, "conflict")
                     return
-                patch_path = os.path.join(handle.workdir, ".factory-integrate.patch")
-                with open(patch_path, "w") as f:
-                    f.write(diff.patch)
-                # No `--index`/`--cached`: the checkout's `.git` lives outside `handle.workdir`
-                # (build spec/red-team hardening, `sandbox/base.py`), so this applies straight to
-                # the working-tree files as a plain patch tool -- no repository needed here.
-                # `capture_diff` (via the real git dir) picks the result up correctly afterwards.
-                result = self._sandbox.exec(handle, ["git", "apply", "--whitespace=nowarn",
-                                                     ".factory-integrate.patch"], network=False)
-                os.remove(patch_path)
+                # The patch lives under a dedicated, always-scrubbed scratch directory
+                # (`CONTROLLER_TMP_DIRNAME`), never loose in the workdir root -- see
+                # `_scrub_controller_artifacts`/`_capture_diff_clean` (red-team #2 item 5).
+                # `SandboxPort.exec` has no stdin, so this is the best available way to
+                # hand the sandbox this content without it looking like an agent's own
+                # file (see README "Requests to orchestrator": exec() could take stdin).
+                tmp_dir = os.path.join(handle.workdir, CONTROLLER_TMP_DIRNAME)
+                os.makedirs(tmp_dir, exist_ok=True)
+                patch_rel = f"{CONTROLLER_TMP_DIRNAME}/integrate.patch"
+                patch_path = os.path.join(handle.workdir, patch_rel)
+                try:
+                    with open(patch_path, "w") as f:
+                        f.write(diff.patch)
+                    # No `--index`/`--cached`: the checkout's `.git` lives outside
+                    # `handle.workdir` (sandbox/base.py hardening), so this applies
+                    # straight to the working-tree files as a plain patch tool -- no
+                    # repository needed here. `capture_diff` (the real git dir) picks
+                    # the result up correctly afterwards.
+                    result = self._sandbox.exec(handle, ["git", "apply", "--whitespace=nowarn", patch_rel],
+                                                network=False)
+                finally:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
                 if result.exit_code != 0:
                     logger.warning("%s: integration conflict applying %s: %s", mission.mission_id,
                                   task.task_id, result.stderr)
@@ -702,12 +883,19 @@ class Factory:
                     self._transition(mission, "conflict")
                     return
 
-            combined = self._sandbox.capture_diff(handle)
+            combined = self._capture_diff_clean(handle)
+            scope_problems = self._reject_out_of_scope_changes(
+                combined, owned_paths=self._combined_owned_paths(tasks), workdir=handle.workdir)
             classification = classify(combined.changes, self._policy.floor,
                                       product_protected=product.protected_paths,
                                       product_forbidden=product.forbidden_paths)
             if classification.blocked:
                 self._boundary(mission, reason=f"combined diff is AC8: {'; '.join(classification.reasons)}")
+                return
+            if scope_problems:
+                logger.warning("%s: combined diff scope violation: %s", mission.mission_id,
+                              "; ".join(scope_problems))
+                self._boundary(mission, reason="; ".join(scope_problems))
                 return
 
             check_names = [n for n in product.verification_required if n in product.checks]
@@ -756,30 +944,54 @@ class Factory:
 
         def push():
             return self._github.push_diff(mission.repo, branch=branch, diff=combined,
-                                          message=f"{mission.mission_id}: {classification.reasons[-1] if classification.reasons else 'automated change'}")
+                                          message=f"{mission.mission_id}: {classification.reasons[-1] if classification.reasons else 'automated change'}",
+                                          product_forbidden=product.forbidden_paths,
+                                          product_protected=product.protected_paths)
 
-        # v1 has no reliable probe for "was this diff already pushed" (branch heads
-        # aren't content-addressed by the port). Duplicate pushes are harmless here:
-        # a retry re-applies the same patch to the same branch name. See README
-        # "v1 scope notes" on intent reconciliation.
-        sha = execute_once(self._store.intents, f"push:{mission.mission_id}", action=push, probe=lambda: None)
+        def probe_push():
+            # If a previous attempt already recorded a pushed sha for THIS EXACT
+            # combined diff, reuse it instead of pushing (content-addressed) rather
+            # than the branch head, since a `factory/<mission>` branch can be
+            # legitimately re-pushed by a later revision (red-team #2 item 1).
+            cached = self._recall(mission.mission_id, "pushed_sha")
+            return cached["sha"] if cached and cached.get("content_hash") == combined.content_hash else None
+
+        push_op = f"push:{mission.mission_id}:{combined.content_hash}"
+        sha = execute_once(self._store.intents, push_op, action=push, probe=probe_push)
+        self._remember(mission.mission_id, "pushed_sha", {"sha": sha, "content_hash": combined.content_hash})
         self._event(mission.mission_id, telemetry.REVISION_PUSHED, {"sha": sha})
 
         body = self._pr_body(mission, evidence, gate)
-        pr_number = execute_once(self._store.intents, f"open_pr:{mission.mission_id}",
+
+        def probe_open_pr():
+            cached = self._recall(mission.mission_id, "pr_number")
+            return cached["number"] if cached else None
+
+        pr_op = f"open_pr:{mission.mission_id}:{branch}"
+        pr_number = execute_once(self._store.intents, pr_op,
                                  action=lambda: self._github.open_pr(mission.repo, head=branch, base="main",
                                                                      title=f"[factory] {mission.mission_id}", body=body),
-                                 probe=lambda: None)
+                                 probe=probe_open_pr)
+        self._remember(mission.mission_id, "pr_number", {"number": pr_number})
         mission = self._store.update_mission(mission.mission_id, expected_version=mission.state_version,
                                              branch=branch, pr_number=pr_number)
         self._resolve_hm(mission, product, gate, sha, evidence)
 
+    def _combined_owned_paths(self, tasks: list) -> tuple:
+        paths = {p for t in tasks for p in t.contract.get("owned_paths", ())}
+        return tuple(paths) or ("**",)
+
     def _pr_body(self, mission: MissionRecord, evidence: EvidenceBundle, gate: GateDecision) -> str:
+        """A controller-generated PR body (final draft §7). The architect's summary is
+        the only agent-authored free text in it, and it is HTML-escaped, fenced and
+        length-capped (red-team #2 item 9) -- it is never rendered as anything but a
+        quoted block, exactly like the inbox packet treats every untrusted string."""
         checks_table = "\n".join(f"| {name} | {r.conclusion} |" for name, r in evidence.checks.items())
         summary = self._architect_plans.get(mission.mission_id, {}).get("summary", "")
+        summary = html.escape(summary)[:PR_SUMMARY_MAX_CHARS]
         return (f"Mission `{mission.mission_id}` (action class {evidence.action_class}, "
                f"rule `{evidence.rule_fired}`)\n\n"
-               f"> {summary}\n\n"
+               f"> Summary (agent-authored, quoted verbatim):\n> ```text\n> {summary}\n> ```\n\n"
                f"| check | conclusion |\n|---|---|\n{checks_table}\n\n"
                f"Content hash: `{evidence.content_hash}`")
 
@@ -801,27 +1013,61 @@ class Factory:
                                summary=f"PR #{mission.pr_number} on {mission.repo}", content_hash=mission.content_hash,
                                raw_diff="", evidence=evidence, cost_usd=mission.spent_usd)
 
+    def _required_github_check_names(self, product: Product) -> list:
+        """The check NAMES GitHub's own CI reports for this product (its sandboxed
+        `checks`, e.g. lint/unit) -- `review_agent`/`holdout_blackbox` are evaluated
+        by the controller itself and never appear as GitHub check runs."""
+        return list(product.checks.keys())
+
+    def _github_checks_green(self, mission: MissionRecord, product: Product, sha: str) -> bool:
+        """Every required check NAME must be present AND `success` on `sha` -- not
+        just "every check GitHub happened to report is green" (red-team #2 item 6:
+        a required check GitHub hasn't run yet must not be silently treated as
+        passing)."""
+        results = {c.name: c for c in self._github.check_runs(mission.repo, sha)}
+        verdict = evaluate_checks(self._required_github_check_names(product), results)
+        if not verdict.ok:
+            logger.info("%s: checks on %s not all green (missing=%s failing=%s)",
+                       mission.mission_id, sha, verdict.missing, verdict.failing)
+        return verdict.ok
+
     def _maybe_auto_merge(self, mission: MissionRecord, product: Product, sha: str) -> None:
         pending = self._recall(mission.mission_id, "pending_auto_merge")
         if not pending or pending.get("sha") != sha or mission.state != "INTEGRATING":
             return
-        required_checks = self._github.check_runs(mission.repo, sha)
-        ok = bool(required_checks) and all(c.conclusion == "success" for c in required_checks)
-        if not ok:
-            logger.info("%s: CI on %s not all green yet (or none reported); waiting", mission.mission_id, sha)
-            return
-        self._do_merge(mission, product, sha)
+        if self._github_checks_green(mission, product, sha):
+            self._do_merge(mission, product, sha)
 
     def _on_hm_approved(self, mission: MissionRecord, fencing_token: int) -> None:
         product = self._product(mission)
-        head_sha = self._github.pr_head_sha(mission.repo, mission.pr_number)
-        self._do_merge(mission, product, head_sha)
+        # Merge against the sha that was actually reviewed (`on_pull_request_review`
+        # already required this for a GitHub-review approval), not a freshly re-fetched
+        # PR head that may have moved since (red-team #2 item 2).
+        pushed = self._recall(mission.mission_id, "pushed_sha")
+        expected_sha = pushed["sha"] if pushed else self._github.pr_head_sha(mission.repo, mission.pr_number)
+        self._do_merge(mission, product, expected_sha)
 
-    def _do_merge(self, mission: MissionRecord, product: Product, head_sha: str) -> None:
+    def _do_merge(self, mission: MissionRecord, product: Product, expected_head_sha: str) -> None:
+        op_id = f"merge:{mission.mission_id}:{expected_head_sha}"
+
         def merge():
-            return self._github.merge_pr(mission.repo, mission.pr_number, expected_head_sha=head_sha)
+            return self._github.merge_pr(mission.repo, mission.pr_number, expected_head_sha=expected_head_sha)
 
-        merge_sha = execute_once(self._store.intents, f"merge:{mission.mission_id}", action=merge, probe=lambda: None)
+        try:
+            merge_sha = execute_once(self._store.intents, op_id, action=merge, probe=lambda: None)
+        except MergeConflict as exc:
+            # The PR's live head no longer matches what was reviewed/approved -- refuse
+            # the merge (red-team #2 item 2). This can only mean someone pushed to the
+            # branch after review; record it and send the mission back for a fresh
+            # integration pass rather than merging something nobody actually approved.
+            logger.warning("%s: merge refused, PR head moved: %s", mission.mission_id, exc)
+            self._event(mission.mission_id, telemetry.HUMAN_INTERVENTION,
+                       {"action": "pr_head_changed_before_merge", "actor": "unknown"})
+            event = "conflict" if mission.state == "INTEGRATING" else "changes_requested"
+            mission = self._transition(mission, event)
+            self._create_repair_task(mission, product,
+                                     reason=f"PR head changed before merge (expected {expected_head_sha})")
+            return
         flag = f"mission-{mission.mission_id}"
         self._flags.create(flag)
         mission = self._transition(mission, "approved" if mission.state == "AWAITING_HM" else "hm_auto",
@@ -830,12 +1076,13 @@ class Factory:
 
     # ── 8: post-merge (final draft §7 "Post-merge checks on main") ─────────────
     def _check_post_merge(self, mission: MissionRecord, product: Product, merge_sha: str) -> None:
-        results = self._github.check_runs(mission.repo, merge_sha)
-        ok = bool(results) and all(c.conclusion == "success" for c in results)
-        if not ok:
+        if not self._github_checks_green(mission, product, merge_sha):
             self._event(mission.mission_id, telemetry.REVERTED, {"environment": PROD_ENVIRONMENT, "sha": merge_sha})
             mission = self._transition(mission, "post_merge_failure")
-            revert_sha = auto_revert(self._github, mission.repo, merge_sha)
+            revert_op = f"revert:{mission.mission_id}:{merge_sha}"
+            revert_sha = execute_once(self._store.intents, revert_op,
+                                      action=lambda: auto_revert(self._github, mission.repo, merge_sha),
+                                      probe=lambda: None)
             self._event(mission.mission_id, telemetry.RECOVERED, {"environment": PROD_ENVIRONMENT})
             mission = self._transition(mission, "repair")
             self._create_repair_task(mission, product, reason=f"post-merge checks failed on {merge_sha}, "
@@ -861,11 +1108,15 @@ class Factory:
 
     # ── 9: release candidate (final draft §7 "Build once, deploy staging...") ──
     def _build_release_candidate(self, mission: MissionRecord, product: Product, merge_sha: str) -> None:
-        artifact = execute_once(self._store.intents, f"build:{mission.mission_id}",
+        # Keyed by merge_sha, not just mission.mission_id: a repaired revision after a
+        # revert/repair cycle must build and deploy the NEW content, not replay the
+        # receipt from a previous revision's build (red-team #2 item 1).
+        build_op = f"build:{mission.mission_id}:{merge_sha}"
+        artifact = execute_once(self._store.intents, build_op,
                                 action=lambda: self._deploy.build(mission.repo, merge_sha), probe=lambda: None)
         mission = self._store.update_mission(mission.mission_id, expected_version=mission.state_version,
                                              artifact=artifact)
-        staging_op = f"deploy_staging:{mission.mission_id}"
+        staging_op = f"deploy_staging:{mission.mission_id}:{artifact}"
         receipt = execute_once(self._store.intents, staging_op,
                                action=lambda: self._deploy.deploy(artifact, environment=STAGING_ENVIRONMENT,
                                                                  operation_id=staging_op, fencing_token=1),
@@ -922,12 +1173,23 @@ class Factory:
         if mission.state == "AWAITING_H2":
             mission = self._transition(mission, "approval_consumed")
         # else: already DEPLOYING, having just come from RELEASE_READY via "h2_standing".
-        op_id = f"deploy_prod:{mission.mission_id}"
+        # Keyed by artifact (red-team #2 item 1): a later release of the SAME mission
+        # (after a repair) deploys a NEW artifact and must not replay an old receipt.
+        op_id = f"deploy_prod:{mission.mission_id}:{mission.artifact}"
+
+        def deploy():
+            return self._deploy.deploy(mission.artifact, environment=PROD_ENVIRONMENT,
+                                       operation_id=op_id, fencing_token=fencing_token)
+
         try:
-            receipt = execute_once(self._store.intents, op_id,
-                                   action=lambda: self._deploy.deploy(mission.artifact, environment=PROD_ENVIRONMENT,
-                                                                     operation_id=op_id, fencing_token=fencing_token),
-                                   probe=lambda: None)
+            receipt = execute_once(self._store.intents, op_id, action=deploy, probe=lambda: None)
+        except StaleApproval:
+            # The target's own fencing check rejected a retry using an already-used
+            # token: that specifically means the deploy (or a newer one) already
+            # happened, so this is a crash-recovery retry finding its own prior
+            # success, not a failure (red-team #2 item 1).
+            logger.info("%s: deploy_prod retry hit the fencing check; treating as already applied",
+                       mission.mission_id)
         except Exception as exc:  # noqa: BLE001
             self._event(mission.mission_id, telemetry.DEPLOY_FAILED,
                        {"environment": PROD_ENVIRONMENT, "artifact": mission.artifact, "reason": str(exc)})
@@ -948,7 +1210,11 @@ class Factory:
                    {"environment": PROD_ENVIRONMENT, "artifact": mission.artifact, "reason": "regression detected"})
         mission = self._transition(mission, "regression")
         self._flags.kill(mission.flag)
-        self._deploy.rollback(PROD_ENVIRONMENT, to_artifact=None, operation_id=f"rollback:{mission.mission_id}")
+        rollback_op = f"rollback:{mission.mission_id}:{mission.artifact}"
+        execute_once(self._store.intents, rollback_op,
+                    action=lambda: self._deploy.rollback(PROD_ENVIRONMENT, to_artifact=None,
+                                                         operation_id=rollback_op),
+                    probe=lambda: None)
         invalidated = self._store.approvals.invalidate_for_artifact(mission.artifact, "post-deploy rollback")
         logger.info("%s: rollback invalidated approvals %s", mission.mission_id, invalidated)
         # v1 has no automated diagnosis/fix path (final draft §7): always escalate.
@@ -980,6 +1246,8 @@ class Factory:
                     self.on_check_suite_completed(event)
                 elif kind == "push_to_default":
                     self.on_push_to_default(event)
+                elif kind == "push_to_branch":
+                    self.on_push_to_branch(event)
                 else:
                     logger.debug("ignoring queued webhook kind %r", kind)
             except Exception:  # noqa: BLE001 -- one bad event must not wedge the worker loop
@@ -1008,7 +1276,19 @@ class Factory:
                 break
         if mission is None:
             return
+        # Bind the review to the exact commit that was pushed and evaluated -- a
+        # review submitted on any other sha (e.g. a new commit landed after the
+        # reviewer opened the diff) must never count (red-team #2 item 2).
+        pushed = self._recall(mission.mission_id, "pushed_sha")
+        if not pushed or event.commit_id != pushed["sha"]:
+            logger.info("%s: PR review on %s ignored (pushed sha is %s)", mission.mission_id, event.commit_id,
+                       pushed and pushed.get("sha"))
+            return
         product = self._product(mission)
+        if event.reviewer not in product.approvers_for("HM"):
+            logger.info("%s: PR review from %s ignored (not a listed HM approver)",
+                       mission.mission_id, event.reviewer)
+            return
         for req in self._store.approvals.list_open(mission.mission_id):
             if req.gate == "HM":
                 roles = product.roles_for(event.reviewer) or ()
@@ -1016,6 +1296,12 @@ class Factory:
                     self.decide(req.request_id, event.reviewer, roles, "approve", req.content_hash)
                 except ApprovalError as exc:
                     logger.info("%s: PR review from %s did not apply: %s", mission.mission_id, event.reviewer, exc)
+                    continue
+                # `on_pull_request_review` only ever runs off the webhook queue (the
+                # worker's `dispatch_webhooks`), never inline in a request handler, so
+                # it's safe to finish the job here rather than wait for the worker's
+                # next tick to call `process_approvals` (build spec §3 B7 "decide").
+                self.process_approvals()
 
     def on_check_suite_completed(self, event) -> None:
         for mission in self._store.list_missions():
@@ -1035,6 +1321,21 @@ class Factory:
                 if mission.repo == event.repo:
                     self._event(mission.mission_id, telemetry.HUMAN_INTERVENTION,
                                {"action": "push_to_default", "actor": event.pusher})
+
+    def on_push_to_branch(self, event) -> None:
+        """A human pushing directly to a `factory/*` mission branch (final draft §7
+        step 13's human-intervention signal). Recorded as a `human_intervention`
+        event, and the pusher is added as a mission editor so they can't later
+        approve their own change's HM (`ApprovalStore`'s no-self-approval rule)."""
+        if event.pusher_is_bot or not event.pusher:
+            return
+        for mission in self._store.list_missions():
+            if mission.repo == event.repo and mission.branch == event.branch:
+                self._event(mission.mission_id, telemetry.HUMAN_INTERVENTION,
+                           {"action": "push_to_mission_branch", "actor": event.pusher, "sha": event.sha})
+                if event.pusher not in mission.editors:
+                    self._store.update_mission(mission.mission_id, expected_version=mission.state_version,
+                                               editors=(*mission.editors, event.pusher))
 
 
 __all__ = ["Factory", "MissionNotFound"]

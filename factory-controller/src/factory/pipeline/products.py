@@ -93,6 +93,7 @@ class Product:
     models: dict
     owners: dict
     owner_roles: dict          # login -> tuple[role, ...]
+    slack_ids: dict            # @login -> Slack user id (factory.yaml `slack_ids`; may be empty)
     approvers: dict            # gate -> list[str] | "codeowners"
     lanes: tuple
     protected_paths: tuple
@@ -189,6 +190,7 @@ class ProductRegistry:
             models=dict(doc["models"]),
             owners=dict(doc["owners"]),
             owner_roles=_owner_roles(doc["owners"]),
+            slack_ids=dict(doc.get("slack_ids", {})),
             approvers=dict(doc["approvers"]),
             lanes=tuple(doc["lanes"]),
             protected_paths=protected,

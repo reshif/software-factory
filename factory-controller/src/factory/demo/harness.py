@@ -110,10 +110,14 @@ class DemoContext:
         return matches[-1]
 
     def decide(self, mission_id: str, gate: str, decision: str, *, approver: str | None = None) -> None:
+        """Record a decision and immediately process it (`Factory.decide` only
+        enqueues; a running factory has a `Worker` calling `process_approvals`
+        on every tick -- the demo simulates that happening right away)."""
         req = self.open_request(mission_id, gate)
         approver = approver or self.product.approvers_for(gate)[0]
         roles = self.product.roles_for(approver)
         self.factory.decide(req.request_id, approver, roles, decision, req.content_hash)
+        self.factory.process_approvals()
 
     def pending_auto_merge_sha(self, mission_id: str) -> str:
         cached = self.factory.recall(mission_id, "pending_auto_merge")
@@ -165,14 +169,10 @@ def new_context(*, holdout_result: tuple = (2, 2), clock=None, risk_profile: str
     clock = clock or FakeClock()
     factory, adapters, policy, products = build_factory_and_adapters(settings, clock=clock)
     adapters["holdout"].result = holdout_result
-    # `FakeGitHub.head_commit` fabricates an opaque sha the first time it's asked
-    # about a branch it hasn't seen -- it has no public way to seed one that
-    # actually exists in a real git mirror (unlike `add_issue`/`set_checks`/
-    # `add_review`, there's no `set_head` helper). Sandboxes need a real,
-    # checkoutable commit, so the demo seeds it directly here. See "Requests to
-    # orchestrator" in the final report: FakeGitHub could use a `set_head(repo,
-    # branch, sha)` helper for this.
-    adapters["github"]._branches[(REPO, "main")] = base_commit  # noqa: SLF001
+    # Sandboxes need a real, checkoutable commit as `main`'s head, matching the
+    # git mirror this harness just created -- `FakeGitHub.head_commit` would
+    # otherwise fabricate an unrelated opaque sha the first time it's asked.
+    adapters["github"].set_head(REPO, "main", base_commit)
     product = products.get(PRODUCT_NAME)
     return DemoContext(tmp=tmp, settings=settings, clock=clock, factory=factory, adapters=adapters,
                        policy=policy, products=products, product=product, repo=REPO, base_commit=base_commit)

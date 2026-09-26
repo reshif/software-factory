@@ -1,0 +1,31 @@
+# Example product profile: pilot product, standard risk. Spec: final draft §12.1
+schema_version: 1
+product: pilot-api
+risk_profile: standard
+autonomy_level: L3
+kit: { version: "factory-kit@0.1.0", policy_version: "p-2026.10.1" }
+runtime: claude
+models:
+  triage: claude-haiku-4-5-20251001
+  build: claude-sonnet-5
+  planning: claude-opus-5-5
+owners: { factory: "@owner", product: "@po", tech_lead: "@tl", security: "@sec", backup: "@backup" }
+approvers: { h1: ["@po", "@tl"], hm: codeowners, h2: ["@tl"], hx: ["@po", "@tl", "@sec"] }
+lanes: [patch, feature]
+protected_paths: ["src/auth/**", "migrations/**", "tests/**/conftest.py", "tests/fixtures/**"]
+forbidden_paths: [".github/**", "policy/**", "evals/**"]
+budgets:
+  patch_task_usd: 2
+  feature_task_usd: 12
+  patch_mission_usd: 10
+  feature_mission_usd: 120
+  monthly_usd: 1500
+  reviewer_hours_per_week: 10
+repair_attempts: { patch: 2, feature: 3 }
+infra_retries: 3
+verification:
+  required: [lint, types, secret_scan, dep_audit, unit, review_agent, holdout_blackbox]
+  mutation: "off"
+holdout_repo: "org/pilot-api-holdouts"
+observation_window: 24h
+standing_mandates: [SM-pilot-patch]

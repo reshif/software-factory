@@ -1,0 +1,17 @@
+# Example mission mandate (approved at H1). Spec: final draft §6.1
+schema_version: 1
+mandate_id: MIS-0042
+kind: mission
+product: pilot-api
+outcome: "Protect the billing API from abuse without harming normal customers"
+spec: { ref: "specs/billing/rate-limit.md", revision: "v3" }
+scope: { repos: ["pilot-api"], paths: ["src/billing/**", "tests/billing/**"] }
+budget: { usd: 120, max_parallel_workers: 2 }
+merge_policy: per_gate_table
+release_policy: per_gate_table
+recovery: { plan: "runbooks/billing-rate-limit.md", data_impact: none }
+kit_version: "factory-kit@0.1.0"
+policy_version: "p-2026.10.1"
+expires: "2026-10-31"
+approved_by: ["@po", "@tl"]
+content_hash: "sha256:1111111111111111111111111111111111111111111111111111111111111111"

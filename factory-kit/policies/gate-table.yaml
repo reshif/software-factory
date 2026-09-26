@@ -1,0 +1,70 @@
+# Gate table: the single source of approval requirements.
+# Spec: docs/software-factory-final-draft.md §6.2
+#
+# Requirement values (strictest → loosest):
+#   blocked      forbidden, never allowed
+#   hx           needs an HX exception approval
+#   "<n>+sec"    n approvals, one of which must hold the security role
+#   "<n>"        n approvals from the gate's role list
+#   standing     covered by a standing mandate (H1 only)
+#   auto         no human approval
+#
+# Precedence (strictest applicable rule wins):
+#   1. forbidden paths / AC8          -> blocked
+#   2. authority change / AC7         -> hx
+#   3. protected paths                -> combined with the AC6 row
+#   4. base table (this file)         -> autonomy level L3
+#   5. autonomy relaxations           -> autonomy-levels.yaml (named cells only)
+#   6. product overrides              -> factory.yaml `gates`, may only tighten
+
+schema_version: 1
+policy_version: p-2026.10.1
+
+action_classes:
+  AC1: Docs, lint/format, test additions
+  AC2: Dependency patch/minor (signed, no license change)
+  AC3: Small fix, <=150 lines, no protected paths
+  AC4: Feature behind a default-off flag
+  AC5: Additive schema migration
+  AC6: Protected paths (auth, crypto, payments, migrations, existing tests/fixtures/conftest)
+  AC7: Authority change (budget, scope, access, credentials, infra apply, major/new deps, destructive data)
+  AC8: Forbidden (CI workflows, policies, evals, holdouts, prod secrets/data, disabling checks)
+
+# base[class][gate][risk_profile]
+base:
+  AC1:
+    h1: { experimental: standing, standard: standing, regulated: standing }
+    hm: { experimental: auto,     standard: "1",      regulated: "1" }
+    h2: { experimental: "1",      standard: "1",      regulated: "2" }
+  AC2:
+    h1: { experimental: standing, standard: standing, regulated: standing }
+    hm: { experimental: auto,     standard: "1",      regulated: "1" }
+    h2: { experimental: "1",      standard: "1",      regulated: "2" }
+  AC3:
+    h1: { experimental: standing, standard: standing, regulated: standing }
+    hm: { experimental: auto,     standard: "1",      regulated: "1" }
+    h2: { experimental: "1",      standard: "1",      regulated: "2" }
+  AC4:
+    h1: { experimental: "1",      standard: "1",      regulated: "2+sec" }
+    hm: { experimental: "1",      standard: "1",      regulated: "2" }
+    h2: { experimental: "1",      standard: "1",      regulated: "2" }
+  AC5:
+    h1: { experimental: "1",      standard: "1",      regulated: "2+sec" }
+    hm: { experimental: "1",      standard: "1",      regulated: "2" }
+    h2: { experimental: "1",      standard: "1",      regulated: "2" }
+  AC6:
+    h1: { experimental: "1+sec",  standard: "1+sec",  regulated: "2+sec" }
+    hm: { experimental: "1+sec",  standard: "1+sec",  regulated: "2+sec" }
+    h2: { experimental: "1",      standard: "1",      regulated: "2" }
+  AC7:
+    h1: { experimental: hx,       standard: hx,       regulated: hx }
+    hm: { experimental: hx,       standard: hx,       regulated: hx }
+    h2: { experimental: hx,       standard: hx,       regulated: hx }
+  AC8:
+    h1: { experimental: blocked,  standard: blocked,  regulated: blocked }
+    hm: { experimental: blocked,  standard: blocked,  regulated: blocked }
+    h2: { experimental: blocked,  standard: blocked,  regulated: blocked }
+
+# HX quorum by profile. Destructive data and credentials always need 2.
+hx_quorum: { experimental: "1", standard: "1", regulated: "2" }
+hx_always_two: [destructive_data, credentials]

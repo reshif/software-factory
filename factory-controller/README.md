@@ -171,32 +171,126 @@ a stale receipt) directly.
 ## CLI
 
 ```text
-factory serve                 run the FastAPI app
-factory worker                run the background worker loop
+factory serve                  run the FastAPI app (uvicorn with access_log=False --
+                                inbox links carry a signed token in the query string)
+factory worker                 run the background worker loop
 factory migrate                apply Postgres migrations (no-op in local/in-memory mode)
 factory validate-kit           validate the factory-kit policies
 factory products validate      validate every <product>/factory.yaml + mandates
 factory classify --git BASE..HEAD [--repo PATH]
 factory gates --class AC4 --profile standard [--level L3] [--protected]
 factory inbox-link --request REQ --approver @x --roles tech_lead
+factory kill-switch            emergency stop: every non-terminal mission -> HELD
+factory resume --mission ID    resume one HELD mission
+factory unblock --mission ID   clear one BLOCKED mission
+factory github setup --repo OWNER/NAME [--dry-run]
+                                apply (or print) the recommended branch-protection
+                                ruleset for one product repo
 factory demo [--scenario NAME|all] [--serve]
 ```
+
+Without a Slack bot token configured (`FACTORY_SLACK_BOT_TOKEN`), the
+controller falls back to a logging notifier — nothing DMs approvers a link.
+In that mode (and for a one-off, e.g. handing someone a link outside their
+normal Slack cadence), mint a signed, request-bound link yourself with
+`factory inbox-link --request REQ --approver @approver --roles tech_lead` and
+send it to them directly.
 
 ## Production mode
 
 ```bash
 cp factory-controller/deploy/.env.example factory-controller/deploy/.env
 # fill in .env (FACTORY_* Settings values only -- see below for secrets), then
-# create the secret files docker-compose.yml references:
+# create the SIX secret files docker-compose.yml references:
 mkdir -p factory-controller/deploy/secrets
 echo "<a strong random password>"       > factory-controller/deploy/secrets/postgres_password.txt
 echo "<a different strong password>"    > factory-controller/deploy/secrets/litellm_password.txt
 echo "<your Anthropic API key>"         > factory-controller/deploy/secrets/anthropic_api_key.txt
 cp /path/to/push-app.pem  factory-controller/deploy/secrets/push-app.pem
 cp /path/to/merge-app.pem factory-controller/deploy/secrets/merge-app.pem
+python -c "import secrets; print(secrets.token_urlsafe(32))" \
+                                        > factory-controller/deploy/secrets/llm_gateway_master_key.txt
 # from the repo root:
 docker compose -f factory-controller/deploy/docker-compose.yml --env-file factory-controller/deploy/.env up
 ```
+
+All six secrets, in one place:
+
+| # | File | What it is |
+|---|---|---|
+| 1 | `secrets/postgres_password.txt` | the `factory` Postgres role's password |
+| 2 | `secrets/litellm_password.txt` | the separate `litellm` Postgres role's password (its own database, never the controller's tables) |
+| 3 | `secrets/anthropic_api_key.txt` | the real Anthropic API key, held only by the LiteLLM gateway |
+| 4 | `secrets/push-app.pem` | the push-bot GitHub App's private key |
+| 5 | `secrets/merge-app.pem` | the merge-bot GitHub App's private key (a SEPARATE App from the push bot, final draft §11) |
+| 6 | `secrets/llm_gateway_master_key.txt` | LiteLLM's admin `master_key`, shared by `litellm` (as `LITELLM_MASTER_KEY`) and the controller/worker (as `FACTORY_LLM_GATEWAY_MASTER_KEY`, exported by `entrypoint.sh`) for minting per-mission budget keys |
+
+### The two GitHub Apps
+
+Two separate App identities, each with only what it needs (final draft §11,
+§13.1 #9, §13.2) — **neither one is an admin on the repo**; that's a human,
+using `factory github setup` once to install the branch-protection ruleset:
+
+| App | Permissions | Never |
+|---|---|---|
+| push bot | Contents: Read & write · Pull requests: Read & write · Issues: Read · Checks: Read · Metadata: Read | **Workflows** (can't touch `.github/workflows/**` — that's AC8, refused before it ever reaches GitHub) |
+| merge bot | Contents: Read & write · Pull requests: Read & write · Metadata: Read | Issues, Checks — it only ever calls `PUT /pulls/{n}/merge` |
+
+Subscribe the App(s) to these webhook events (`POST /webhooks/github`,
+verified via `X-Hub-Signature-256`): **Issues**, **Pull request review**,
+**Check suite**, **Push**. Everything else is explicitly ignored by
+`github/webhooks.py`.
+
+### Populating the kit/products/sandbox-image volumes
+
+`docker-compose.yml` mounts `kit-data`/`products-data` read-only into
+`controller`/`worker` at `/var/lib/factory/{kit,products}`
+(`FACTORY_KIT_DIR`/`FACTORY_PRODUCTS_DIR`) — Compose named volumes, not baked
+into the image, so a kit or product-config change never needs a rebuild. Get
+your content into them once (a running container, or any way you like to
+populate a named volume) before `up`, e.g.:
+
+```bash
+docker compose -f factory-controller/deploy/docker-compose.yml run --rm \
+  -v "$(pwd)/factory-kit:/src/kit:ro" -v "$(pwd)/products:/src/products:ro" \
+  --entrypoint sh controller -c "cp -r /src/kit/. /var/lib/factory/kit/ && \
+                                 cp -r /src/products/. /var/lib/factory/products/"
+```
+
+Re-run this (or your own sync) whenever `factory-kit/` or a product's
+`factory.yaml`/`mandates/` changes — the kit gate (final draft §13.3) governs
+what's allowed to change, not this file.
+
+**The sandbox image** (`factory-sandbox:latest`, `FACTORY_SANDBOX_IMAGE`) is
+built separately — `DockerSandbox` shells out to `docker run <image>` at
+runtime, so it's never a compose service:
+
+```bash
+docker build -t factory-sandbox:latest -f factory-controller/deploy/sandbox/Dockerfile factory-controller/deploy/sandbox
+```
+
+### `factory github setup`
+
+Once the two Apps are installed on a product repo, apply the recommended
+branch-protection ruleset (required checks, required CODEOWNERS review, a
+merge restriction to the merge-bot App, and turning off "Allow GitHub Actions
+to create and approve pull requests") with:
+
+```bash
+factory github setup --repo org/backend-service --dry-run   # print the plan first
+factory github setup --repo org/backend-service             # apply it
+```
+
+It reads `FACTORY_MERGE_APP_ID` plus the push bot's App credentials from
+`Settings` (the push bot needs admin on the repo to apply a ruleset) — see
+`src/factory/github/setup.py`.
+
+### Emergency stop and recovery
+
+`factory kill-switch` moves every non-terminal mission to `HELD` immediately
+— no worker acts on a `HELD` mission. `factory resume --mission ID` brings
+one back; `factory unblock --mission ID` clears one stuck `BLOCKED` (both
+target a specific mission, not a fleet-wide switch).
 
 `deploy/docker-compose.yml` runs Postgres, the LLM gateway (B3's
 `deploy/litellm/config.yaml`), the egress allowlist proxy (B3's

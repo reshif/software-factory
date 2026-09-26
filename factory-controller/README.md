@@ -59,9 +59,10 @@ uv run factory --help
 ```
 
 `uv run factory demo --serve` starts the FastAPI app plus a background worker,
-both wired to fakes, seeds one feature mission awaiting H1, and prints a
-signed inbox link for each open approval so you can approve it in a browser
-at `http://127.0.0.1:8080/inbox/...`.
+both wired to fakes, and seeds one feature mission. It prints a signed inbox
+link each time an approval opens (H1, then HM, then H2), simulates green CI and
+fast-forwards the observation window, so you can take the mission all the way
+to DELIVERED in a browser at `http://127.0.0.1:8080/inbox/...`.
 
 ## The mission lifecycle (what `pipeline/orchestrator.py` actually does)
 
@@ -157,6 +158,8 @@ them as pytest tests.
 | `stale_approval_rejected` | the mission's state moves after H1 is requested -> consume rejects it |
 | `replay_after_rollback` | replaying an already-consumed H2 approval is rejected |
 | `human_push_recorded` | a human pushing to a mission's `factory/*` branch is recorded and becomes an editor |
+| `second_release_standing` | two consecutive standing-mandate releases each deploy their own artifact (fresh fencing tokens) |
+| `kill_switch_resume` | kill switch -> HELD, resume -> HX, defer -> BLOCKED, unblock -> HX approve -> work continues |
 
 `tests/pipeline/test_orchestrator_auto_merge.py` additionally exercises the
 webhook-driven `auto` HM path directly (at `experimental` risk, since none of

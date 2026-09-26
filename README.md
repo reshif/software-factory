@@ -6,6 +6,7 @@ Design and implementation of an AI software factory. Autonomous agents do the en
 
 | Path | What it is |
 |---|---|
+| [docs/TESTING-GUIDE.md](docs/TESTING-GUIDE.md) | **Start here to test it**: stage-by-stage guide from unit tests to a real GitHub mission, with a sign-off checklist |
 | [docs/software-factory-final-draft.md](docs/software-factory-final-draft.md) | **The design** (Revision 2): approval model, architecture, security floor, roadmap. Code cites it as `§N`. |
 | [docs/build/phase2-build-spec.md](docs/build/phase2-build-spec.md) | The build spec the modules were implemented against: ownership, per-module requirements, agent output formats |
 | [factory-controller/](factory-controller/README.md) | **The factory itself** (Python): deterministic core, state store (memory/Postgres), GitHub App integration, Claude Agent SDK runtime, Docker sandbox, LiteLLM budgets, approval inbox, verification/release/telemetry, the mission pipeline, service, worker, `factory` CLI, demo, and docker-compose deployment |

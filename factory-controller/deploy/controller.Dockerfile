@@ -5,6 +5,8 @@
 # ClaudeRuntime's environment-scrubbing wrapper (final draft §12.3). It never
 # holds git, deploy or production credentials -- those live only in the
 # GitHub Apps / deploy hooks the controller calls out to, per §13.1 #1/#5/#9.
+FROM node:22-slim AS node
+
 FROM python:3.12-slim AS base
 
 RUN apt-get update \
@@ -13,6 +15,8 @@ RUN apt-get update \
 
 # uv: the project's own package/dependency manager (pyproject.toml, uv.lock).
 COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /uvx /usr/local/bin/
+# Generous download timeout: large wheels on slow links otherwise fail the build.
+ENV UV_HTTP_TIMEOUT=300
 
 # The Claude CLI, for `ClaudeRuntime`'s environment-scrubbing wrapper. Pinned
 # to an exact version so a rebuild can't silently pick up a newer CLI with
@@ -20,12 +24,16 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /uvx /usr/local/bin/
 # bump this deliberately (check `npm view @anthropic-ai/claude-code versions`)
 # and re-test, never let it float. If your environment already has an internal
 # mirror for this, point npm at it via a build arg instead.
+# Node 22+ is required by the CLI (Debian's apt nodejs is 20), so copy the
+# official Node 22 runtime + npm from the node:22-slim stage.
 ARG CLAUDE_CODE_VERSION=2.1.283
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends nodejs npm \
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
-    && rm -rf /var/lib/apt/lists/*
-ENV FACTORY_CLAUDE_CLI_PATH=/usr/bin/claude
+    && claude --version
+ENV FACTORY_CLAUDE_CLI_PATH=/usr/local/bin/claude
 
 RUN useradd --create-home --uid 1000 --shell /bin/bash factory
 WORKDIR /app

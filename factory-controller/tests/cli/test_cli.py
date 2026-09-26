@@ -194,3 +194,18 @@ def test_serve_runs_uvicorn_with_access_log_disabled(monkeypatch):
     cli.main(["serve", "--host", "127.0.0.1", "--port", "9999"])
 
     assert calls == {"host": "127.0.0.1", "port": 9999, "access_log": False}
+
+
+def test_operator_errors_are_one_line_with_exit_2(tmp_path, monkeypatch, capsys):
+    import shutil
+    from factory.cli import main
+    from factory.policy.loader import default_kit_dir
+    shutil.copytree(default_kit_dir() / "templates" / "backend-service", tmp_path / "backend-service")
+    monkeypatch.setenv("FACTORY_PRODUCTS_DIR", str(tmp_path))
+    monkeypatch.delenv("FACTORY_DATABASE_URL", raising=False)
+    assert main(["resume", "--mission", "MIS-missing"]) == 2
+    err = capsys.readouterr().err
+    assert "error: not found: MIS-missing" in err
+    assert "Traceback" not in err
+    monkeypatch.setenv("FACTORY_PRODUCTS_DIR", str(tmp_path / "nope"))
+    assert main(["unblock", "--mission", "MIS-x"]) == 2

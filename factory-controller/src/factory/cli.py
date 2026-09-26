@@ -186,11 +186,18 @@ def cmd_inbox_link(args: argparse.Namespace) -> int:
 
 
 # ── factory kill-switch / resume / unblock ───────────────────────────────────────
+def _warn_if_ephemeral_store() -> None:
+    if not _settings().database_url:
+        print("warning: FACTORY_DATABASE_URL is not set, so this acts on a fresh, empty in-memory "
+              "store; point it at the factory's Postgres to act on real missions", file=sys.stderr)
+
+
 def cmd_kill_switch(args: argparse.Namespace) -> int:
     """Emergency stop: every non-terminal mission moves to HELD (no worker acts on
     a HELD mission until `factory resume` brings it back)."""
     from .wiring import build_factory
 
+    _warn_if_ephemeral_store()
     factory = build_factory(_settings())
     factory.kill_switch()
     print("kill switch engaged: every non-terminal mission moved to HELD")
@@ -202,6 +209,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
     timeout that fired before a human could act)."""
     from .wiring import build_factory
 
+    _warn_if_ephemeral_store()
     factory = build_factory(_settings())
     factory.resume(args.mission)
     print(f"{args.mission}: resumed")
@@ -212,6 +220,7 @@ def cmd_unblock(args: argparse.Namespace) -> int:
     """Clear one BLOCKED mission so the worker picks it back up."""
     from .wiring import build_factory
 
+    _warn_if_ephemeral_store()
     factory = build_factory(_settings())
     factory.unblock(args.mission)
     print(f"{args.mission}: unblocked")
@@ -354,10 +363,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _operator_errors() -> tuple:
+    """Errors caused by configuration or input, reported as one line instead of a traceback."""
+    from .controller.mission_fsm import InvalidTransition
+    from .pipeline.products import ProductConfigError
+    from .policy import PolicyError
+    from .ports import NotFound
+    return (ProductConfigError, PolicyError, NotFound, InvalidTransition, ValueError, FileNotFoundError)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except _operator_errors() as exc:
+        from .ports import NotFound
+        message = f"not found: {exc.args[0]}" if isinstance(exc, NotFound) and exc.args else exc
+        print(f"error: {message}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

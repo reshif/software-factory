@@ -3,7 +3,7 @@ schema_version: 1
 product: pilot-api
 risk_profile: standard
 autonomy_level: L3
-kit: { version: "factory-kit@0.1.0", policy_version: "p-2026.10.1" }
+kit: { version: "factory-kit@0.1.0", policy_version: "p-2026.10.2" }
 runtime: claude
 models:
   triage: claude-haiku-4-5-20251001

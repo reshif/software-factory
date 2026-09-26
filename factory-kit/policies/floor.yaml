@@ -2,7 +2,7 @@
 # Spec: docs/software-factory-final-draft.md §13
 
 schema_version: 1
-policy_version: p-2026.10.1
+policy_version: p-2026.10.2
 
 # Agent diffs touching these are AC8 (rejected before push).
 forbidden_paths:
@@ -41,6 +41,10 @@ weakening_patterns:
   - "describe.skip("
   - "xit("
   - "sys.exit(0)"
+  - "os._exit("
+  - "pytest.exit("
+  - "unittest.skip"
+  - "@skip("
   - "--no-verify"
 
 dependency_files: ["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",

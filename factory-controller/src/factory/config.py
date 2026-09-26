@@ -24,7 +24,8 @@ class Settings:
 
     llm_gateway_url: str | None = None      # LiteLLM proxy base URL
     llm_gateway_master_key: str | None = None
-    slack_webhook_url: str | None = None
+    slack_webhook_url: str | None = None    # channel FYI only: never carries approval links
+    slack_bot_token: str | None = None      # chat.postMessage DMs: each approver gets only their own link
     slack_signing_secret: str | None = None
 
     sandbox_image: str = "factory-sandbox:latest"

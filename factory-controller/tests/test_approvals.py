@@ -113,6 +113,16 @@ def test_defer_does_not_approve(now):
         consume(store, now)
 
 
+def test_list_open_filters_by_status_and_mission(now):
+    store = ApprovalStore()
+    make(store, now, request_id="REQ-1")
+    make(store, now, request_id="REQ-2")
+    store.decide("REQ-2", approver="@tl", roles={"tech_lead"}, decision="cancel", content_hash=HASH, now=now)
+    assert [r.request_id for r in store.list_open()] == ["REQ-1"]
+    assert [r.request_id for r in store.list_open("MIS-1")] == ["REQ-1"]
+    assert store.list_open("MIS-other") == []
+
+
 def test_fenced_target_rejects_stale_token():
     target = FencedTarget()
     target.apply(2, "deploy A")

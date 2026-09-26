@@ -115,6 +115,11 @@ class ApprovalStore:
     def get(self, request_id: str) -> ApprovalRequest:
         return self._requests[request_id]
 
+    def list_open(self, mission_id: str | None = None) -> list[ApprovalRequest]:
+        with self._lock:
+            return [r for r in self._requests.values()
+                    if r.status == "open" and (mission_id is None or mission_id in r.mission_ids)]
+
     def decide(self, request_id: str, *, approver: str, roles, decision: str, content_hash: str,
                now: datetime) -> ApprovalRequest:
         if decision not in ("approve", "revise", "defer", "cancel"):

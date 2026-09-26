@@ -3,10 +3,26 @@ name = "factory-controller"
 version = "0.1.0"
 description = "Deterministic core of the software factory: gate resolution, coverage, approvals, state machine, intents"
 requires-python = ">=3.11"
-dependencies = ["pyyaml>=6"]
+dependencies = [
+    "claude-agent-sdk>=0.2.160",
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "psycopg[binary]>=3.3.6",
+    "pyjwt[crypto]>=2.15.0",
+    "pyyaml>=6",
+    "uvicorn[standard]>=0.54.0",
+]
 
 [dependency-groups]
-dev = ["pytest>=8", "jsonschema>=4.19", "rfc3339-validator>=0.1.4"]
+dev = [
+    "pytest>=8",
+    "jsonschema>=4.19",
+    "rfc3339-validator>=0.1.4",
+    "respx>=0.23.1",
+]
+
+[project.scripts]
+factory = "factory.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -18,3 +34,7 @@ packages = ["src/factory"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "postgres: needs a real Postgres at FACTORY_TEST_DATABASE_URL (skipped otherwise)",
+    "docker: needs a working docker daemon (skipped otherwise)",
+]

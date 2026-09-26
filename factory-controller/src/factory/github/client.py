@@ -9,17 +9,21 @@ does it again after `git apply`, against the *actual* staged paths, because
 the diff a caller hands in can lie (e.g. a non-ASCII path that got C-quoted
 somewhere upstream and no longer matches a forbidden-path glob).
 
-The installation token is only ever held in memory and passed to git through
-`GIT_CONFIG_*` environment variables (never on the command line, where it
-would show up in `/proc/<pid>/cmdline` or `ps`), so it never touches argv,
-the on-disk git config, a saved remote URL, or an error message this module
-raises.
+Every git invocation goes through the shared, hardened `factory.gitcmd.run_git`
+(C3 consolidation) rather than a private runner: it ignores the ambient git
+config, disables hooks/fsmonitor/pager, and enforces `core.quotePath=false`
+so `-z` output is never C-quoted. The installation token is only ever held in
+memory and passed to git through `GIT_CONFIG_*` environment variables (never
+on the command line, where it would show up in `/proc/<pid>/cmdline` or
+`ps`), so it never touches argv, the on-disk git config, a saved remote URL,
+or an error message this module raises. GitHub's git-over-HTTPS wants the
+token as HTTP Basic (`x-access-token:<token>`), not gitcmd's own default
+Bearer scheme, so this module builds that header itself and passes it as
+`gitcmd.run_git`'s `auth_header`.
 """
 import base64
 import logging
-import os
 import shutil
-import subprocess
 import uuid
 from pathlib import Path
 from typing import Callable, Iterable
@@ -27,6 +31,7 @@ from urllib.parse import quote
 
 import httpx
 
+from .. import gitcmd
 from ..models import CheckResult, Diff, WorkItem
 from ..policy import Floor
 from ..policy.action_classes import FileChange, classify
@@ -38,13 +43,6 @@ logger = logging.getLogger(__name__)
 
 GIT_TIMEOUT_S = 300
 PAGE_SIZE = 100
-
-# Config forced on every git subprocess this module runs, regardless of token:
-# no hooks, no fsmonitor, and no global/user gitconfig leaking in from the host.
-_HARDENING_CONFIG = {
-    "core.hooksPath": "/dev/null",
-    "core.fsmonitor": "false",
-}
 
 # GitHub check-run conclusions this module recognizes 1:1. Anything else that is
 # still "completed" (action_required, stale, ...) fails closed as "failure";
@@ -69,50 +67,22 @@ class MergeConflict(RuntimeError):
     """Raised when the PR's actual head sha doesn't match the expected one."""
 
 
-class GitCommandError(RuntimeError):
-    """A local git subprocess failed. The message never contains a token."""
+def basic_auth_header(token: str) -> str:
+    """The `Authorization` header line GitHub's git-over-HTTPS wants for an
+    installation token: HTTP Basic with `x-access-token` as the username."""
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return f"Authorization: Basic {basic}"
 
 
-def _redact(text: str, token: str | None) -> str:
-    if token:
-        text = text.replace(token, "***")
-    return text
-
-
-def _git_env(*, token: str | None, config: dict[str, str] | None) -> dict:
-    """Builds the environment for a git subprocess, config included.
-
-    Config (including the bearer token, base64-encoded into a Basic auth
-    header) travels entirely through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/
-    `GIT_CONFIG_VALUE_n`, never as a `-c key=value` argv element, so nothing
-    secret is ever visible in the process's command line.
-    """
-    settings = dict(_HARDENING_CONFIG)
-    settings.update(config or {})
-    if token:
-        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-        settings["http.extraHeader"] = f"AUTHORIZATION: basic {basic}"
-    env = dict(os.environ)
-    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
-    env["GIT_CONFIG_COUNT"] = str(len(settings))
-    for i, (key, value) in enumerate(settings.items()):
-        env[f"GIT_CONFIG_KEY_{i}"] = key
-        env[f"GIT_CONFIG_VALUE_{i}"] = value
-    return env
-
-
-def _run_git(args: list[str], *, cwd: Path, token: str | None = None,
-             config: dict[str, str] | None = None) -> str:
-    cmd = ["git", *args]
-    env = _git_env(token=token, config=config)
-    try:
-        result = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
-                                timeout=GIT_TIMEOUT_S, env=env, encoding="utf-8")
-    except subprocess.TimeoutExpired:
-        raise GitCommandError(f"git {' '.join(args)} timed out after {GIT_TIMEOUT_S}s") from None
-    if result.returncode != 0:
-        raise GitCommandError(f"git {' '.join(args)} failed: {_redact(result.stderr, token).strip()}")
-    return result.stdout
+def _git(args: list[str], *, cwd: Path | str, token: str | None = None) -> str:
+    """Thin adapter onto `gitcmd.run_git`: the only thing this module adds on
+    top of the shared hardened runner is translating an installation token
+    into the Basic-auth header GitHub's git-over-HTTPS actually wants."""
+    return gitcmd.run_git(
+        [str(a) for a in args], cwd=str(cwd), token=token,
+        auth_header=basic_auth_header(token) if token else None,
+        timeout=GIT_TIMEOUT_S,
+    )
 
 
 def _parse_name_status_z(output: str) -> list[tuple[str, str]]:
@@ -141,12 +111,11 @@ def _real_staged_changes(workdir: Path, base_commit: str) -> list[FileChange]:
     """Re-derives the actually-staged paths from git itself, unquoted (§13.1 #3).
 
     This is the R-A2 backstop: `diff.changes` (built upstream, outside this
-    module) is never trusted on its own for the AC8 decision. `core.quotePath
-    =false` stops git from C-quoting non-ASCII bytes into an escaped string
-    that wouldn't match a forbidden-path glob.
+    module) is never trusted on its own for the AC8 decision. `gitcmd.run_git`
+    always forces `core.quotePath=false`, so this `-z` output is never
+    C-quoted into an escaped string that wouldn't match a forbidden-path glob.
     """
-    output = _run_git(["diff", "--cached", "--name-status", "-z", base_commit],
-                      cwd=workdir, config={"core.quotePath": "false"})
+    output = _git(["diff", "--cached", "--name-status", "-z", base_commit], cwd=workdir)
     return [FileChange(path=path, status=_STATUS_LETTER_MAP.get(status[:1], "modified"))
             for status, path in _parse_name_status_z(output)]
 
@@ -315,14 +284,14 @@ class RestGitHub:
         workdir = self._repos_root / f"push-{uuid.uuid4().hex}"
         workdir.parent.mkdir(parents=True, exist_ok=True)
         try:
-            _run_git(["clone", "--no-tags", "--quiet", remote_url, str(workdir)],
-                      cwd=workdir.parent, token=token)
-            _run_git(["checkout", "--quiet", diff.base_commit], cwd=workdir)
-            _run_git(["checkout", "--quiet", "-B", branch], cwd=workdir)
+            _git(["clone", "--no-tags", "--quiet", remote_url, str(workdir)],
+                cwd=workdir.parent, token=token)
+            _git(["checkout", "--quiet", diff.base_commit], cwd=workdir)
+            _git(["checkout", "--quiet", "-B", branch], cwd=workdir)
             patch_path = workdir / ".factory-push.patch"
             patch_path.write_text(diff.patch)
             try:
-                _run_git(["apply", "--index", patch_path.name], cwd=workdir)
+                _git(["apply", "--index", patch_path.name], cwd=workdir)
             finally:
                 patch_path.unlink(missing_ok=True)
 
@@ -341,11 +310,10 @@ class RestGitHub:
                     f"{'; '.join(backstop.reasons)}"
                 )
 
-            _run_git(["commit", "--quiet", "-m", message], cwd=workdir,
-                      config={"user.name": self._push_author[0], "user.email": self._push_author[1]})
-            sha = _run_git(["rev-parse", "HEAD"], cwd=workdir).strip()
-            _run_git(["push", "--quiet", remote_url, f"HEAD:refs/heads/{branch}"],
-                      cwd=workdir, token=token)
+            _git(["-c", f"user.name={self._push_author[0]}", "-c", f"user.email={self._push_author[1]}",
+                 "commit", "--quiet", "-m", message], cwd=workdir)
+            sha = _git(["rev-parse", "HEAD"], cwd=workdir).strip()
+            _git(["push", "--quiet", remote_url, f"HEAD:refs/heads/{branch}"], cwd=workdir, token=token)
             return sha
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
@@ -359,14 +327,13 @@ class RestGitHub:
         workdir = self._repos_root / f"revert-{uuid.uuid4().hex}"
         workdir.parent.mkdir(parents=True, exist_ok=True)
         try:
-            _run_git(["clone", "--no-tags", "--quiet", remote_url, str(workdir)],
-                      cwd=workdir.parent, token=token)
-            _run_git(["checkout", "--quiet", branch], cwd=workdir)
-            _run_git(["revert", "--no-edit", sha], cwd=workdir,
-                      config={"user.name": self._merge_author[0], "user.email": self._merge_author[1]})
-            revert_sha = _run_git(["rev-parse", "HEAD"], cwd=workdir).strip()
-            _run_git(["push", "--quiet", remote_url, f"HEAD:refs/heads/{branch}"],
-                      cwd=workdir, token=token)
+            _git(["clone", "--no-tags", "--quiet", remote_url, str(workdir)],
+                cwd=workdir.parent, token=token)
+            _git(["checkout", "--quiet", branch], cwd=workdir)
+            _git(["-c", f"user.name={self._merge_author[0]}", "-c", f"user.email={self._merge_author[1]}",
+                 "revert", "--no-edit", sha], cwd=workdir)
+            revert_sha = _git(["rev-parse", "HEAD"], cwd=workdir).strip()
+            _git(["push", "--quiet", remote_url, f"HEAD:refs/heads/{branch}"], cwd=workdir, token=token)
             return revert_sha
         finally:
             shutil.rmtree(workdir, ignore_errors=True)

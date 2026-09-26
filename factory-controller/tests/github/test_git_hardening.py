@@ -1,98 +1,96 @@
-"""S1: the installation token must never appear on a git subprocess's argv.
+"""C3 consolidation: github/client.py hands every git call to `factory.gitcmd.run_git`
+rather than running its own subprocess/hardening/redaction logic.
 
-`/proc/<pid>/cmdline` (and `ps`) are readable by anyone who can see the
-process on a shared box, so a `-c http.extraHeader=...<token>...` argv
-element is a real leak even though it's not written to disk. This tests
-`_run_git`/`_git_env` directly by monkeypatching `subprocess.run` and
-inspecting exactly what it was called with -- no real git process needed.
+Argv-absence, hardening flags (hooks/fsmonitor/pager/quotePath) and token
+redaction are `gitcmd`'s own responsibility and are exercised directly by
+`tests/sandbox/test_gitcmd.py` (B3's suite) -- duplicating those here would
+just test `gitcmd` a second time. What's specific to this module, and what
+these tests cover, is the boundary: `client._git` must translate an
+installation token into the HTTP Basic `x-access-token:<token>` auth header
+GitHub's git-over-HTTPS actually wants (gitcmd's own default is a Bearer
+header, which is right for other callers but wrong for GitHub), and must
+still hand `token` through unchanged so gitcmd keeps redacting it. It also
+covers the two `gitcmd.run_git` additions (`auth_header`) directly, since
+that's the S1/C3 fix this gap wave made and `tests/sandbox/` isn't ours to
+touch.
 """
-from pathlib import Path
+import base64
 
-import pytest
-
+from factory import gitcmd
 from factory.github import client as client_module
 
 TOKEN = "super-secret-installation-token"
 
 
-class _FakeCompletedProcess:
-    def __init__(self, returncode=0, stdout="", stderr=""):
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
+def test_basic_auth_header_helper():
+    header = client_module.basic_auth_header(TOKEN)
+    assert header == f"Authorization: Basic {base64.b64encode(f'x-access-token:{TOKEN}'.encode()).decode()}"
+    decoded = base64.b64decode(header.removeprefix("Authorization: Basic ")).decode()
+    assert decoded == f"x-access-token:{TOKEN}"
 
 
-def test_token_absent_from_argv_present_only_via_env(monkeypatch, tmp_path):
+def test_git_wrapper_sends_basic_auth_header_and_keeps_token_for_redaction(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run_git(args, cwd=None, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return ""
+
+    monkeypatch.setattr(client_module.gitcmd, "run_git", fake_run_git)
+
+    client_module._git(["status"], cwd=tmp_path, token=TOKEN)
+
+    assert TOKEN not in " ".join(str(a) for a in captured["args"])
+    assert captured["kwargs"]["token"] == TOKEN  # kept only so gitcmd keeps redacting it
+    assert captured["kwargs"]["auth_header"] == client_module.basic_auth_header(TOKEN)
+
+
+def test_git_wrapper_sends_no_auth_header_without_a_token(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run_git(args, cwd=None, **kwargs):
+        captured["kwargs"] = kwargs
+        return ""
+
+    monkeypatch.setattr(client_module.gitcmd, "run_git", fake_run_git)
+
+    client_module._git(["status"], cwd=tmp_path)
+
+    assert captured["kwargs"]["token"] is None
+    assert captured["kwargs"]["auth_header"] is None
+
+
+def test_gitcmd_auth_header_overrides_default_bearer(monkeypatch, tmp_path):
+    import subprocess
+
     captured = {}
 
     def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["env"] = kwargs.get("env")
-        return _FakeCompletedProcess()
+        captured["cmd"], captured["env"] = cmd, kwargs["env"]
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(client_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(gitcmd.subprocess, "run", fake_run)
+    gitcmd.run_git(["ls-remote", "https://example.invalid/repo.git"], cwd=str(tmp_path),
+                   token="tok-SECRET-123", auth_header="Authorization: Basic AbCdEf==")
 
-    client_module._run_git(["status"], cwd=tmp_path, token=TOKEN)
-
-    argv_text = " ".join(captured["cmd"])
-    assert TOKEN not in argv_text
-    # The token isn't raw anywhere either (it travels base64-encoded, as a
-    # Basic-auth value), but it must specifically be out of argv and in env.
-    assert "-c" not in captured["cmd"], "config must not be passed as -c argv"
-    env = captured["env"]
-    assert env is not None
-    count = int(env["GIT_CONFIG_COUNT"])
-    values = [env[f"GIT_CONFIG_VALUE_{i}"] for i in range(count)]
-    assert any("basic" in v.lower() and "AUTHORIZATION" in v.upper() for v in values)
+    assert not any("tok-SECRET-123" in part for part in captured["cmd"])
+    assert not any("AbCdEf==" in part for part in captured["cmd"])
+    assert captured["env"]["GIT_CONFIG_VALUE_0"] == "Authorization: Basic AbCdEf=="
 
 
-def test_hardening_config_always_present(monkeypatch, tmp_path):
+def test_gitcmd_token_alone_still_defaults_to_bearer(monkeypatch, tmp_path):
+    """Locks the existing contract sandbox/other future callers can rely on:
+    passing only `token` (no `auth_header`) is unchanged by this gap wave."""
+    import subprocess
+
     captured = {}
 
     def fake_run(cmd, **kwargs):
-        captured["env"] = kwargs.get("env")
-        return _FakeCompletedProcess()
+        captured["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(client_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(gitcmd.subprocess, "run", fake_run)
+    gitcmd.run_git(["status"], cwd=str(tmp_path), token="tok-SECRET-123")
 
-    client_module._run_git(["status"], cwd=tmp_path)
-
-    env = captured["env"]
-    count = int(env["GIT_CONFIG_COUNT"])
-    keys = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(count)}
-    assert keys["core.hooksPath"] == "/dev/null"
-    assert keys["core.fsmonitor"] == "false"
-    assert env["GIT_CONFIG_GLOBAL"] == "/dev/null"
-
-
-def test_extra_config_merged_without_argv_leak(monkeypatch, tmp_path):
-    captured = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["env"] = kwargs.get("env")
-        return _FakeCompletedProcess()
-
-    monkeypatch.setattr(client_module.subprocess, "run", fake_run)
-
-    client_module._run_git(["commit", "-m", "msg"], cwd=tmp_path,
-                           config={"user.name": "Bot", "user.email": "bot@example.com"})
-
-    assert "-c" not in captured["cmd"]
-    env = captured["env"]
-    count = int(env["GIT_CONFIG_COUNT"])
-    keys = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(count)}
-    assert keys["user.name"] == "Bot"
-    assert keys["user.email"] == "bot@example.com"
-
-
-def test_error_message_redacts_token(monkeypatch, tmp_path):
-    def fake_run(cmd, **kwargs):
-        return _FakeCompletedProcess(returncode=1, stderr=f"fatal: auth failed for token {TOKEN}")
-
-    monkeypatch.setattr(client_module.subprocess, "run", fake_run)
-
-    with pytest.raises(client_module.GitCommandError) as excinfo:
-        client_module._run_git(["push"], cwd=tmp_path, token=TOKEN)
-
-    assert TOKEN not in str(excinfo.value)
+    assert captured["env"]["GIT_CONFIG_VALUE_0"] == "Authorization: Bearer tok-SECRET-123"

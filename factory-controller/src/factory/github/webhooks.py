@@ -66,6 +66,24 @@ class PushToDefault:
 
 
 @dataclass(frozen=True)
+class PushToBranch:
+    """A push to any branch other than the repo's default (e.g. a `factory/*` branch).
+
+    `pusher_is_bot` is true when the event's `sender` is a GitHub App/Bot
+    actor (`sender.type == "Bot"`) or a login ending in `[bot]` (the shape
+    GitHub gives its own Apps' commits). B7 uses this to tell an automated
+    push (the push bot, CI) apart from a human pushing directly to a
+    factory-owned branch -- the latter counts as a human intervention
+    outside the approval flow.
+    """
+    repo: str
+    branch: str
+    sha: str
+    pusher: str | None
+    pusher_is_bot: bool
+
+
+@dataclass(frozen=True)
 class IssueCommentCreated:
     repo: str
     number: int
@@ -73,7 +91,14 @@ class IssueCommentCreated:
     author: str | None
 
 
-WebhookEvent = IssueLabeled | PullRequestReview | CheckSuiteCompleted | PushToDefault | IssueCommentCreated
+WebhookEvent = (IssueLabeled | PullRequestReview | CheckSuiteCompleted | PushToDefault | PushToBranch
+                | IssueCommentCreated)
+
+
+def _sender_is_bot(payload: dict) -> bool:
+    sender = payload.get("sender") or {}
+    login = sender.get("login") or ""
+    return sender.get("type") == "Bot" or login.endswith("[bot]")
 
 
 def _repo_full_name(payload: dict) -> str:
@@ -124,17 +149,26 @@ def parse_event(event: str, payload: dict[str, Any]) -> WebhookEvent | None:
 
     if event == "push":
         ref = payload.get("ref", "")
-        default_branch = payload.get("repository", {}).get("default_branch")
+        if not ref.startswith("refs/heads/"):
+            logger.debug("ignoring non-branch push ref=%s", ref)
+            return None
         branch = ref.removeprefix("refs/heads/")
+        default_branch = payload.get("repository", {}).get("default_branch")
+        pusher = payload.get("pusher", {}).get("name")
         if default_branch and branch == default_branch:
             return PushToDefault(
                 repo=_repo_full_name(payload),
                 branch=branch,
                 after=payload["after"],
-                pusher=payload.get("pusher", {}).get("name"),
+                pusher=pusher,
             )
-        logger.debug("ignoring push to %s (default branch is %s)", ref, default_branch)
-        return None
+        return PushToBranch(
+            repo=_repo_full_name(payload),
+            branch=branch,
+            sha=payload["after"],
+            pusher=pusher,
+            pusher_is_bot=_sender_is_bot(payload),
+        )
 
     if event == "issue_comment" and action == "created":
         comment = payload["comment"]

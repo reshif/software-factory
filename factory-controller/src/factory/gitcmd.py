@@ -23,7 +23,11 @@ workdir (see `sandbox/base.py`) and no `token` at all — sandboxes get no
 credentials. `token`, when given, is passed as an `http.extraHeader` through
 git's environment-based config (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/
 `GIT_CONFIG_VALUE_n`), never on argv, so it doesn't show up in `ps` or
-`/proc/<pid>/cmdline`.
+`/proc/<pid>/cmdline`. By default that header is a Bearer token; a caller
+whose remote wants a different scheme (GitHub's git-over-HTTPS needs Basic
+`x-access-token:<token>`, not Bearer) passes the exact header line via
+`auth_header` instead — `token` is still supplied alongside it purely so
+this module keeps redacting it from error messages.
 """
 from __future__ import annotations
 
@@ -65,6 +69,7 @@ def run_git(
     git_dir: str | None = None,
     work_tree: str | None = None,
     token: str | None = None,
+    auth_header: str | None = None,
     timeout: float = 60.0,
 ) -> str:
     """Run a hardened `git` invocation and return stdout.
@@ -72,6 +77,13 @@ def run_git(
     `git_dir`/`work_tree`, when given, are passed as explicit `--git-dir`/
     `--work-tree` flags rather than relying on git to discover a repository
     from `cwd` — the whole point when `cwd`/`work_tree` is untrusted content.
+
+    `token`/`auth_header`: when `token` alone is given, git's `http.extraHeader`
+    is set to `Authorization: Bearer <token>`. When `auth_header` is also (or
+    instead) given, it's used as that header's exact value verbatim, so a
+    caller needing a different scheme (e.g. GitHub's Basic `x-access-token:
+    <token>`) can supply it directly; `token` is still redacted from error
+    messages either way.
 
     Raises `GitError` on a non-zero exit or a timeout; the message includes
     stderr, with `token` redacted if one was given.
@@ -85,8 +97,11 @@ def run_git(
 
     env = dict(os.environ)
     env.update(_ISOLATED_ENV)
-    if token:
+    if auth_header is not None:
         # Env-based config keeps the credential off argv (visible to `ps`).
+        env.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraHeader",
+                    "GIT_CONFIG_VALUE_0": auth_header})
+    elif token:
         env.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraHeader",
                     "GIT_CONFIG_VALUE_0": f"Authorization: Bearer {token}"})
 

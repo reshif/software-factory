@@ -156,7 +156,15 @@ networks:
   # (item 8): no route out except through a container also on factory-internal
   # (egress-proxy) -- a sandboxed task can reach the proxy's allowlist and
   # nothing else, not even other containers on this compose project directly.
+  #
+  # `name: factory-egress` pins the ACTUAL Docker network name: without it,
+  # Compose prefixes every network with the project name (e.g.
+  # `deploy_factory-egress`), but `DockerSandbox(egress_network="factory-egress")`
+  # (its default -- see `src/factory/sandbox/docker.py`) shells out to
+  # `docker run --network factory-egress` with that literal name. A prefixed
+  # name would make every network=True sandbox container fail to start.
   factory-egress:
+    name: factory-egress
     internal: true
 
 volumes:

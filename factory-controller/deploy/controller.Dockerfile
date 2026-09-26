@@ -14,13 +14,16 @@ RUN apt-get update \
 # uv: the project's own package/dependency manager (pyproject.toml, uv.lock).
 COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /uvx /usr/local/bin/
 
-# The Claude CLI, for `ClaudeRuntime`'s environment-scrubbing wrapper. Pin a
-# version in production; `--force` keeps the build reproducible if the base
-# image's npm/node version drifts. If your environment already has an
-# internal mirror for this, point npm at it via a build arg instead.
+# The Claude CLI, for `ClaudeRuntime`'s environment-scrubbing wrapper. Pinned
+# to an exact version so a rebuild can't silently pick up a newer CLI with
+# different flags/output shape than `runtime/claude.py` was written against --
+# bump this deliberately (check `npm view @anthropic-ai/claude-code versions`)
+# and re-test, never let it float. If your environment already has an internal
+# mirror for this, point npm at it via a build arg instead.
+ARG CLAUDE_CODE_VERSION=2.1.283
 RUN apt-get update \
     && apt-get install -y --no-install-recommends nodejs npm \
-    && npm install -g @anthropic-ai/claude-code \
+    && npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
     && rm -rf /var/lib/apt/lists/*
 ENV FACTORY_CLAUDE_CLI_PATH=/usr/bin/claude
 

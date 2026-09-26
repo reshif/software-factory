@@ -21,17 +21,26 @@ from .base import CheckoutSandbox
 
 logger = logging.getLogger(__name__)
 
+# Module-level, not per-instance: the demo and a production-with-LocalSandbox
+# misconfiguration both create one `LocalSandbox` per task, so logging this in
+# `__init__` printed the same warning a dozen-plus times per `factory demo`
+# run. The warning matters once per process, not once per task.
+_warned_not_a_security_boundary = False
+
 
 class LocalSandbox(CheckoutSandbox):
     """`SandboxPort` backed by a plain checkout and `subprocess.run`. Not isolated."""
 
     def __init__(self, *, repos_root: str, sandbox_root: str):
         super().__init__(repos_root=repos_root, sandbox_root=sandbox_root)
-        logger.warning(
-            "LocalSandbox is NOT a security boundary: commands run as the controller's "
-            "own user with no container isolation and no network control. Use "
-            "DockerSandbox for anything touching untrusted agent output."
-        )
+        global _warned_not_a_security_boundary
+        if not _warned_not_a_security_boundary:
+            _warned_not_a_security_boundary = True
+            logger.warning(
+                "LocalSandbox is NOT a security boundary: commands run as the controller's "
+                "own user with no container isolation and no network control. Use "
+                "DockerSandbox for anything touching untrusted agent output."
+            )
 
     def exec(self, handle: SandboxHandle, cmd: list[str], *, network: bool = False, timeout_s: int = 900) -> ExecResult:
         if network:

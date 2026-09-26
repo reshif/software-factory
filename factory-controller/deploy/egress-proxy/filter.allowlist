@@ -1,15 +1,28 @@
-# One allowed FQDN per line, matched by tinyproxy's `FilterType fqdn` (substring
-# match against the request host). Everything else is refused
-# (`FilterDefaultDeny Yes` in tinyproxy.conf). Keep this list to exactly two
-# kinds of destination (final draft §12.2 M8): the LLM gateway, and a package
-# mirror for dependency installs. Add your real hostnames before deploying.
+# One ANCHORED POSIX-extended-regex pattern per line (`FilterExtended Yes` in
+# tinyproxy.conf), matched against the request's host only (`FilterURLs No`).
+# Everything not matching a pattern here is refused (`FilterDefaultDeny Yes`).
+#
+# Every pattern MUST be anchored with `^...$` and have its dots escaped
+# (`\.`). An unanchored pattern like `pypi.org` (tinyproxy's old `FilterType
+# fqdn` substring mode, no longer used -- see tinyproxy.conf) would also match
+# `pypi.org.evil.tld` or `evil-pypi.org.example.com`: substring/prefix
+# matching on a hostname is not the same thing as matching that exact
+# hostname, and the whole point of this allowlist is that a compromised
+# sandbox can reach ONLY the two kinds of destination below (final draft
+# §12.2 M8) -- not anything that merely contains their name.
+#
+# Keep this list to exactly two kinds of destination: the LLM gateway, and a
+# package mirror for dependency installs. Add your real hostnames before
+# deploying.
 
-# The LLM gateway (LiteLLM proxy). Replace with its real internal hostname.
-litellm.internal
+# The LLM gateway (LiteLLM). This is the Compose SERVICE NAME (`litellm` in
+# docker-compose.yml), not a made-up internal domain -- sandboxes resolve it
+# via Docker's embedded DNS on whatever network reaches this proxy.
+^litellm$
 
 # Package mirrors used by sandboxed builds and tests. Trim this to whatever
 # your products actually need — every extra entry widens the blast radius of
 # a compromised sandbox.
-pypi.org
-files.pythonhosted.org
-registry.npmjs.org
+^pypi\.org$
+^files\.pythonhosted\.org$
+^registry\.npmjs\.org$

@@ -13,10 +13,8 @@ UPDATE` locks the row for the lifetime of that one transaction, and the
 """
 from __future__ import annotations
 
-import base64
 import json
 import logging
-import pickle
 from dataclasses import asdict
 from pathlib import Path
 
@@ -27,7 +25,8 @@ from psycopg.types.json import Json
 from ..controller.approvals import (AlreadyConsumed, ApprovalError, ApprovalRequest, Decision, Expired,
                                     IneligibleApprover, QuorumNotMet, StaleApproval, _require_open)
 from ..controller.intents import Intent
-from ..models import CheckResult, DecisionPacket, EvidenceBundle, MissionRecord, TaskRecord
+from ..models import (CheckResult, DecisionPacket, DeployReceipt, EvidenceBundle, ExecResult,
+                     MissionRecord, RuntimeResult, SandboxHandle, TaskRecord)
 from ..policy import Requirement
 from ..ports import ConcurrentUpdate, NotFound
 
@@ -70,16 +69,31 @@ def apply_migrations(conn: psycopg.Connection, migrations_dir: Path | str | None
 
 
 # ── receipts (opaque application objects, e.g. a DeployReceipt or a plain str) ──
+# JSON only, never pickle: unpickling data pulled back out of our own database is an
+# unsafe-deserialization risk (anyone who can write the DB gets code execution), which is
+# exactly what the security floor's fail-closed rule (§13.1) rules out. Dataclasses are the
+# one non-JSON-native shape we support, and only from this explicit allowlist; anything else
+# is rejected at complete() time instead of silently guessed at.
+_RECEIPT_TYPES: dict[str, type] = {
+    f"{cls.__module__}.{cls.__qualname__}": cls
+    for cls in (DeployReceipt, CheckResult, ExecResult, SandboxHandle, RuntimeResult)
+}
+
+
 def _encode_receipt(receipt: object) -> str | None:
     if receipt is None:
         return None
+    key = f"{type(receipt).__module__}.{type(receipt).__qualname__}"
+    if key in _RECEIPT_TYPES:
+        return json.dumps({"__type__": key, "data": asdict(receipt)})
     try:
         return json.dumps({"json": receipt})
     except TypeError:
-        # Not JSON-native (e.g. a dataclass). This is our own controller's
-        # data written and read back by the same process family, never
-        # bytes supplied by an external or untrusted caller.
-        return json.dumps({"pickle": base64.b64encode(pickle.dumps(receipt)).decode("ascii")})
+        allowed = ", ".join(sorted(_RECEIPT_TYPES))
+        raise TypeError(
+            f"cannot store intent receipt of type {type(receipt).__name__!r}: it is neither "
+            f"JSON-native nor one of the allowlisted factory.models dataclasses ({allowed})"
+        ) from None
 
 
 def _decode_receipt(raw: str | None) -> object:
@@ -88,7 +102,8 @@ def _decode_receipt(raw: str | None) -> object:
     doc = json.loads(raw)
     if "json" in doc:
         return doc["json"]
-    return pickle.loads(base64.b64decode(doc["pickle"]))
+    cls = _RECEIPT_TYPES[doc["__type__"]]
+    return cls(**doc["data"])
 
 
 # ── mission / task / evidence / packet (de)serialization ────────────────────

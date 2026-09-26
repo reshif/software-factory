@@ -38,3 +38,16 @@ def store(request):
         pytest.skip("FACTORY_TEST_DATABASE_URL not set")
     _reset_postgres(PG_URL)
     return PostgresStateStore(PG_URL)
+
+
+@pytest.fixture
+def postgres_only_store():
+    """A fresh Postgres-backed store, for behavior with no memory-backend equivalent.
+
+    The memory `IntentLog` stores a receipt object as-is; only the Postgres adapter
+    has to serialize it, so only it can reject an unsupported type.
+    """
+    if not PG_URL:
+        pytest.skip("FACTORY_TEST_DATABASE_URL not set")
+    _reset_postgres(PG_URL)
+    return PostgresStateStore(PG_URL)

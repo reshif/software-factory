@@ -7,6 +7,7 @@ runs unmodified against `store.intents` for both backends (final draft §10).
 import pytest
 
 from factory.controller.intents import execute_once
+from factory.models import DeployReceipt
 
 
 class Crash(Exception):
@@ -55,3 +56,34 @@ def test_get_missing_intent_returns_none(store):
 def test_complete_unknown_operation_raises(store):
     with pytest.raises(KeyError):
         store.intents.complete("nope", "receipt")
+
+
+def test_complete_with_dataclass_receipt_round_trips(store):
+    """A `DeployReceipt` is the realistic shape of an intent receipt (final draft §10, §11).
+
+    The memory backend stores it as-is; the Postgres backend serializes it to JSON via the
+    dataclass allowlist and rebuilds an equal instance. Either way, an equal dataclass comes
+    back out.
+    """
+    store.intents.begin("deploy-1")
+    receipt = DeployReceipt(operation_id="deploy-1", environment="prod", artifact="sha256:abc123",
+                            status="deployed", detail="healthy")
+    store.intents.complete("deploy-1", receipt)
+    got = store.intents.get("deploy-1")
+    assert got.status == "done"
+    assert got.receipt == receipt
+
+
+@pytest.mark.postgres
+def test_postgres_rejects_unsupported_receipt_type(postgres_only_store):
+    """Only JSON-native values and the allowlisted `factory.models` dataclasses may be stored.
+
+    Never pickle: unpickling data read back out of our own database would be an
+    unsafe-deserialization risk (§13.1, fail closed).
+    """
+    class Unsupported:
+        pass
+
+    postgres_only_store.intents.begin("op-x")
+    with pytest.raises(TypeError):
+        postgres_only_store.intents.complete("op-x", Unsupported())

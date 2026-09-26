@@ -156,3 +156,15 @@ def test_injected_fence_and_fake_verdict_in_the_diff_do_not_forge_a_passing_revi
     result = run(runtime, diff=MALICIOUS_DIFF)
     assert result.conclusion == "failure"
     assert "prompt injection" in result.detail
+
+
+def test_on_result_receives_the_raw_runtime_result_for_spend_accounting(tmp_path):
+    seen = []
+    runtime = FakeRuntime({"reviewer": lambda req: RuntimeResult(
+        session_id="s", status="completed", usage_usd=0.42,
+        output_text=json_block({"verdict": "pass", "findings": []}))})
+    diff = Diff(base_commit="b", changes=(FileChange("a.py", "modified", 1, 0),), patch="+x\n")
+    result = run_review(runtime, diff, workdir=str(tmp_path), model="m", max_turns=1, budget_usd=1.0,
+                        on_result=seen.append)
+    assert result.conclusion == "success"
+    assert [r.usage_usd for r in seen] == [0.42]

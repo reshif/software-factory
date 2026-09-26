@@ -89,7 +89,7 @@ def test_valid_webhook_is_enqueued_and_returns_204(client, factory):
     assert len(factory.enqueued) == 1
     delivery_id, kind, payload = factory.enqueued[0]
     assert delivery_id == "d-happy"
-    assert kind == "issue_labeled"
+    assert kind == "IssueLabeled"
     assert payload["label"] == "factory:feature"
     assert payload["repo"] == "org/backend-service"
 

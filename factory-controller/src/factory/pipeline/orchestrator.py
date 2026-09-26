@@ -1215,10 +1215,10 @@ class Factory:
                                            model=self._model_for(product, "reviewer"), max_turns=REVIEW_MAX_TURNS,
                                            budget_usd=DISCOVERY_BUDGET_USD, gateway_key=self._gateway_key(mission),
                                            gateway_url=self._gateway_url,
-                                           system_prompt=load_prompt(self._kit_dir, "reviewer").system_prompt)
+                                           system_prompt=load_prompt(self._kit_dir, "reviewer").system_prompt,
+                                           on_result=lambda r: self._record_agent_spend(
+                                               mission.mission_id, self._gateway_key(mission), r.usage_usd))
                 check_results["review_agent"] = review_result
-                if review_result.conclusion == "success" and review_result.detail:
-                    self._event(mission.mission_id, telemetry.COST_SPENT, {"usd": 0.0})
 
             required_for_merge = [n for n in product.verification_required if n != "holdout_blackbox"]
             verdict = evaluate_checks(required_for_merge, check_results)

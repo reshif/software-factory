@@ -19,9 +19,10 @@ spec §4). This module keeps no parser of its own. Unparseable/invalid output, o
 finding with severity "blocking", makes the check a failure -- fail closed.
 """
 import logging
+from typing import Callable
 
 from ..agent_output import AgentOutputError, parse_agent_output
-from ..models import CheckResult, Diff, RuntimeRequest
+from ..models import CheckResult, Diff, RuntimeRequest, RuntimeResult
 from ..ports import AgentRuntime
 
 logger = logging.getLogger(__name__)
@@ -80,8 +81,13 @@ def _findings_detail(findings: list[dict]) -> str:
 
 def run_review(runtime: AgentRuntime, diff: Diff, *, workdir: str, model: str, max_turns: int,
                budget_usd: float, allowed_tools: tuple = (), gateway_key: str | None = None,
-               gateway_url: str | None = None, system_prompt: str | None = None) -> CheckResult:
-    """Run the reviewer agent on `diff` and evaluate its verdict. Fail closed."""
+               gateway_url: str | None = None, system_prompt: str | None = None,
+               on_result: Callable[[RuntimeResult], None] | None = None) -> CheckResult:
+    """Run the reviewer agent on `diff` and evaluate its verdict. Fail closed.
+
+    `on_result` receives the raw `RuntimeResult` (e.g. so the caller can record the
+    reviewer's real spend) before the verdict is evaluated.
+    """
     request = RuntimeRequest(
         role="reviewer", prompt=build_reviewer_prompt(diff), workdir=workdir, model=model,
         max_turns=max_turns, budget_usd=budget_usd, allowed_tools=tuple(allowed_tools),
@@ -94,6 +100,8 @@ def run_review(runtime: AgentRuntime, diff: Diff, *, workdir: str, model: str, m
         logger.warning("reviewer run raised %s", exc)
         return CheckResult(CHECK_NAME, "failure", detail=f"reviewer run raised {type(exc).__name__}: {exc}")
 
+    if on_result is not None:
+        on_result(result)
     if result.status != "completed":
         return CheckResult(CHECK_NAME, "failure",
                             detail=f"reviewer run status={result.status}: {result.error or ''}".strip())

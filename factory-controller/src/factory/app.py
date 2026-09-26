@@ -95,9 +95,11 @@ def create_app(settings: Settings, *, factory: Factory | None = None) -> FastAPI
             return JSONResponse(status_code=400, content={"detail": "malformed webhook payload"})
         if event is None:
             return Response(status_code=204)
-        kind = _EVENT_KIND.get(type(event))
-        if kind is None:  # e.g. IssueCommentCreated: parsed, but nothing to act on in v1
+        if type(event) not in _EVENT_KIND:  # e.g. IssueCommentCreated: parsed, but nothing to act on in v1
             return Response(status_code=204)
+        # The queue carries the event's CLASS NAME: `Factory.dispatch_webhooks` rebuilds
+        # it with `getattr(github.webhooks, kind)(**payload)`.
+        kind = type(event).__name__
         # A dict of the already-validated, typed event -- not the raw GitHub
         # payload -- so a redelivery that enqueues the identical `delivery_id`
         # twice (durable dedup is `Factory.enqueue_webhook`'s job, not ours) is

@@ -84,6 +84,11 @@ class StateStore(Protocol):
         Concurrent claimers never receive the same delivery (Postgres: FOR UPDATE SKIP LOCKED)."""
     def ack_webhook(self, delivery_id: str) -> None: ...
 
+    def next_fencing_token(self) -> int:
+        """Globally monotonic token for side effects that have no approval to consume
+        (staging deploys, standing-mandate releases). Same sequence as approval consume
+        tokens (Postgres: approval_fencing_seq), so every deploy token is unique (red team #3 C1/H3)."""
+
     def use_once(self, key: str) -> bool:
         """Atomically record `key` (e.g. an inbox token jti). True the first time, False ever after."""
 

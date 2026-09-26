@@ -75,6 +75,18 @@ class StateStore(Protocol):
     def append_event(self, mission_id: str, kind: str, payload: dict) -> None: ...
     def list_events(self, mission_id: str) -> list[dict]: ...
 
+    # Durable webhook inbox shared by `serve` and `worker` processes (red team #3 H1, M4).
+    def enqueue_webhook(self, delivery_id: str, event: str, payload: dict) -> bool:
+        """Store a verified delivery. Returns False (and stores nothing) for a duplicate delivery id."""
+    def claim_webhooks(self, *, limit: int = 50, lease_seconds: int = 300) -> list[dict]:
+        """Lease up to `limit` un-acked deliveries, oldest first: [{"delivery_id", "event", "payload"}].
+        A lease that expires without an ack makes the delivery claimable again (crash safety).
+        Concurrent claimers never receive the same delivery (Postgres: FOR UPDATE SKIP LOCKED)."""
+    def ack_webhook(self, delivery_id: str) -> None: ...
+
+    def use_once(self, key: str) -> bool:
+        """Atomically record `key` (e.g. an inbox token jti). True the first time, False ever after."""
+
 
 # ── GitHub (M1/M3/M11 edges) ──────────────────────────────────────────────────────────
 @runtime_checkable

@@ -12,6 +12,7 @@ class Settings:
     products_dir: str | None = None         # dir of <product>/factory.yaml (+ mandates/); see pipeline.products
     inbox_base_url: str = "http://localhost:8080"
     inbox_signing_key: str | None = None    # HMAC key for signed inbox/Slack callbacks
+    state_encryption_key: str | None = None # Fernet key: encrypts secrets kept in the store (gateway keys)
 
     github_api_url: str = "https://api.github.com"
     github_webhook_secret: str | None = None
@@ -65,7 +66,7 @@ class Settings:
         if self.mode not in ("local", "production"):
             raise ValueError(f"FACTORY_MODE must be local or production, got {self.mode!r}")
         if self.mode == "production":
-            required = ["database_url", "inbox_signing_key", "github_webhook_secret", "push_app_id",
+            required = ["database_url", "inbox_signing_key", "state_encryption_key", "github_webhook_secret", "push_app_id",
                         "push_app_private_key_path", "merge_app_id", "merge_app_private_key_path",
                         "llm_gateway_url", "llm_gateway_master_key"]
             missing = [f"FACTORY_{name.upper()}" for name in required if not getattr(self, name)]

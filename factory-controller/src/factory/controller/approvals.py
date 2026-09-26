@@ -70,6 +70,10 @@ class ApprovalRequest:
     requester: str
     expires: datetime
     editors: frozenset = frozenset()
+    # approver -> roles, from PRODUCT CONFIG for this gate (red team #3 H2). The factory
+    # always sets it; roles claimed elsewhere (e.g. in an inbox token) are ignored.
+    # None means unrestricted and exists only for unit tests of the bare rules.
+    eligible: dict | None = None
     nonce: str = field(default_factory=lambda: secrets.token_hex(16))
     decisions: list = field(default_factory=list)
     status: str = "open"            # open | void | consumed | invalidated
@@ -119,8 +123,12 @@ def check_decision(req: ApprovalRequest, *, approver: str, roles, decision: str,
     """
     if decision not in ("approve", "revise", "defer", "cancel"):
         raise ValueError(f"unknown decision {decision!r}")
-    roles = frozenset(roles)
     require_open(req)
+    if req.eligible is not None:
+        if approver not in req.eligible:
+            raise IneligibleApprover(f"{approver} is not a listed approver for {req.gate} of this product")
+        roles = req.eligible[approver]   # config wins over any claimed roles
+    roles = frozenset(roles)
     if now >= req.expires:
         raise Expired(f"{req.request_id} expired at {req.expires.isoformat()}")
     if content_hash != req.content_hash:

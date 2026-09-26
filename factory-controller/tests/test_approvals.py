@@ -137,3 +137,19 @@ def test_auto_requirements_never_create_requests(now):
                         content_hash=HASH, policy_version="p", state_version=0,
                         required=parse_requirement("auto"), risk_profile="standard", requester="@x",
                         expires=now)
+
+
+def test_eligible_approvers_are_enforced_and_roles_come_from_config(now):
+    store = ApprovalStore()
+    req = make(store, now, gate="HM", required="1+sec")
+    req.eligible = {"@tl": frozenset({"tech_lead"}), "@sec": frozenset({"security"})}
+    with pytest.raises(IneligibleApprover):
+        store.decide("REQ-1", approver="@backup", roles={"security"}, decision="approve", content_hash=HASH, now=now)
+    with pytest.raises(IneligibleApprover):
+        store.decide("REQ-1", approver="@outsider", roles=set(), decision="cancel", content_hash=HASH, now=now)
+    # @tl claims security in the token, but config says tech_lead only
+    store.decide("REQ-1", approver="@tl", roles={"security"}, decision="approve", content_hash=HASH, now=now)
+    with pytest.raises(QuorumNotMet, match="security"):
+        consume(store, now)
+    store.decide("REQ-1", approver="@sec", roles=set(), decision="approve", content_hash=HASH, now=now)
+    assert consume(store, now)

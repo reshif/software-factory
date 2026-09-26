@@ -1,6 +1,6 @@
 # Phase 0 — Software Factory Experiment Kit
 
-A 2-week, go/no-go experiment from [software-factory-final-draft.md §19.1](../software-factory-final-draft.md). **No platform is built.** Claude runs in plain GitHub Actions through `anthropics/claude-code-action`. Humans only approve or reject.
+A 2-week, go/no-go experiment from [software-factory-final-draft.md §19.1](../docs/software-factory-final-draft.md). **No platform is built.** Claude runs in plain GitHub Actions through `anthropics/claude-code-action`. Humans only approve or reject.
 
 ## The question
 

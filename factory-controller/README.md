@@ -217,9 +217,10 @@ Postgres-password file at container startup; `litellm`'s command does the same
 for its own Anthropic key and (separate, red-team-hardened) database
 credential. None of this shows up in `docker inspect`/`compose config`'s
 plain-text environment listing the way a `${VAR}`-interpolated secret would.
-LiteLLM's own `FACTORY_LLM_GATEWAY_MASTER_KEY` has no such file-based path yet
-(it isn't a file-backed `Settings` field) — keep it out of version control the
-same way as everything else in your real `.env`.
+The LiteLLM admin master key is a Compose secret too
+(`secrets/llm_gateway_master_key.txt`): litellm reads it as `LITELLM_MASTER_KEY`,
+and `entrypoint.sh` exports it as `FACTORY_LLM_GATEWAY_MASTER_KEY` for the
+controller and worker. `deploy/secrets/` and `deploy/.env` are gitignored.
 
 **Running sandboxed tasks needs `DockerSandbox` to launch containers**, which
 this compose file does *not* wire up by default (see its own "Running
@@ -322,13 +323,7 @@ human pushing to a `factory/*` mission branch. What's left:
    `_scrub_controller_artifacts` covers the same safety property a different
    way, but a stdin parameter would let integration hand the sandbox its patch
    without writing anything into the agent-writable workdir at all.
-2. **`FACTORY_LLM_GATEWAY_MASTER_KEY` has no secret-file convention.** Every
-   other credential this build wires up (the Postgres/LiteLLM DB passwords,
-   the Anthropic API key, the two GitHub App private keys) is a Compose
-   `secrets:` file; this one is still a plain environment variable because
-   `Settings.llm_gateway_master_key` has no `_path`/`_file` sibling field to
-   point at a mounted secret the way `push_app_private_key_path` does.
-3. **`DockerSandbox` needs to launch a container per task**, which holding the
+2. **`DockerSandbox` needs to launch a container per task**, which holding the
    host's Docker socket (the standard way to run containers from a container)
    grants effectively host-root access to do. `docker-compose.yml` does NOT
    wire this up by default; `docker-compose.docker-socket.yml` is an explicit,

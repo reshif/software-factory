@@ -23,3 +23,5 @@ node_modules/
 .claude/settings.local.json
 .pytest_cache/
 .claude/worktrees/
+factory-controller/deploy/secrets/
+factory-controller/deploy/.env

@@ -11,4 +11,9 @@ if [ -n "${POSTGRES_PASSWORD_FILE:-}" ] && [ -f "$POSTGRES_PASSWORD_FILE" ]; the
     export FACTORY_DATABASE_URL="postgresql://${POSTGRES_USER:-factory}:${password}@${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-factory}"
 fi
 
+if [ -n "${LLM_GATEWAY_MASTER_KEY_FILE:-}" ] && [ -f "$LLM_GATEWAY_MASTER_KEY_FILE" ]; then
+    FACTORY_LLM_GATEWAY_MASTER_KEY="$(cat "$LLM_GATEWAY_MASTER_KEY_FILE")"
+    export FACTORY_LLM_GATEWAY_MASTER_KEY
+fi
+
 exec "$@"

@@ -28,6 +28,8 @@ secrets:
     file: ./secrets/push-app.pem
   merge_app_private_key:
     file: ./secrets/merge-app.pem
+  llm_gateway_master_key:
+    file: ./secrets/llm_gateway_master_key.txt
 
 services:
   postgres:
@@ -54,7 +56,7 @@ services:
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
     restart: unless-stopped
-    secrets: [anthropic_api_key, litellm_password]
+    secrets: [anthropic_api_key, litellm_password, llm_gateway_master_key]
     # The upstream image has no secret-file convention of its own, so this reads
     # the mounted secrets into the process environment right before exec'ing the
     # real entrypoint -- still never a plain-text value in `environment:` below.
@@ -63,10 +65,9 @@ services:
       - -c
       - |
         export ANTHROPIC_API_KEY="$$(cat /run/secrets/anthropic_api_key)"
+        export LITELLM_MASTER_KEY="$$(cat /run/secrets/llm_gateway_master_key)"
         export LITELLM_DATABASE_URL="postgresql://litellm:$$(cat /run/secrets/litellm_password)@postgres:5432/litellm"
         exec litellm --config /etc/litellm/config.yaml --port 4000
-    environment:
-      LITELLM_MASTER_KEY: ${FACTORY_LLM_GATEWAY_MASTER_KEY:?set FACTORY_LLM_GATEWAY_MASTER_KEY in .env}
     volumes:
       - ./litellm/config.yaml:/etc/litellm/config.yaml:ro
     depends_on:
@@ -100,7 +101,8 @@ services:
       FACTORY_EGRESS_PROXY_URL: http://egress-proxy:8888
       FACTORY_PUSH_APP_PRIVATE_KEY_PATH: /run/secrets/push_app_private_key
       FACTORY_MERGE_APP_PRIVATE_KEY_PATH: /run/secrets/merge_app_private_key
-    secrets: [postgres_password, push_app_private_key, merge_app_private_key]
+      LLM_GATEWAY_MASTER_KEY_FILE: /run/secrets/llm_gateway_master_key  # entrypoint.sh exports FACTORY_LLM_GATEWAY_MASTER_KEY
+    secrets: [postgres_password, push_app_private_key, merge_app_private_key, llm_gateway_master_key]
     ports:
       - "8080:8080"
     volumes:
@@ -129,7 +131,8 @@ services:
       FACTORY_EGRESS_PROXY_URL: http://egress-proxy:8888
       FACTORY_PUSH_APP_PRIVATE_KEY_PATH: /run/secrets/push_app_private_key
       FACTORY_MERGE_APP_PRIVATE_KEY_PATH: /run/secrets/merge_app_private_key
-    secrets: [postgres_password, push_app_private_key, merge_app_private_key]
+      LLM_GATEWAY_MASTER_KEY_FILE: /run/secrets/llm_gateway_master_key  # entrypoint.sh exports FACTORY_LLM_GATEWAY_MASTER_KEY
+    secrets: [postgres_password, push_app_private_key, merge_app_private_key, llm_gateway_master_key]
     volumes:
       - kit-data:/var/lib/factory/kit:ro
       - products-data:/var/lib/factory/products:ro

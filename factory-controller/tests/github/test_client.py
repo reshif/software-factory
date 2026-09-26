@@ -8,6 +8,7 @@ from factory.github.app_auth import AppCredentials
 from factory.github.client import ForbiddenDiff, MergeConflict, RestGitHub
 from factory.models import Diff
 from factory.policy.action_classes import FileChange
+from factory.ports import NotFound
 
 
 class _FixedTokenProvider:
@@ -134,13 +135,51 @@ def test_check_runs_maps_conclusions(policy):
 
 @respx.mock
 def test_pr_reviews(policy):
-    respx.get("https://api.github.com/repos/acme/demo/pulls/9/reviews").mock(
+    route = respx.get("https://api.github.com/repos/acme/demo/pulls/9/reviews").mock(
         return_value=httpx.Response(200, json=[
             {"user": {"login": "alice"}, "state": "APPROVED", "commit_id": "c1"},
         ])
     )
     reviews = make_client(floor=policy.floor).pr_reviews("acme/demo", 9)
     assert reviews == [{"login": "alice", "state": "APPROVED", "commit_id": "c1"}]
+    assert route.calls.last.request.url.params["per_page"] == "100"
+
+
+@respx.mock
+def test_check_runs_paginates_across_two_pages(policy):
+    next_url = "https://api.github.com/repos/acme/demo/commits/deadbeef/check-runs?per_page=100&page=2"
+    page1 = httpx.Response(
+        200,
+        json={"check_runs": [{"name": "lint", "status": "completed", "conclusion": "success"}]},
+        headers={"Link": f'<{next_url}>; rel="next"'},
+    )
+    page2 = httpx.Response(
+        200, json={"check_runs": [{"name": "unit", "status": "completed", "conclusion": "success"}]},
+    )
+    route = respx.get("https://api.github.com/repos/acme/demo/commits/deadbeef/check-runs").mock(
+        side_effect=[page1, page2]
+    )
+    results = make_client(floor=policy.floor).check_runs("acme/demo", "deadbeef")
+    assert [r.name for r in results] == ["lint", "unit"]
+    assert route.call_count == 2
+
+
+@respx.mock
+def test_pr_reviews_paginates_across_two_pages(policy):
+    next_url = "https://api.github.com/repos/acme/demo/pulls/9/reviews?per_page=100&page=2"
+    page1 = httpx.Response(
+        200, json=[{"user": {"login": "alice"}, "state": "APPROVED", "commit_id": "c1"}],
+        headers={"Link": f'<{next_url}>; rel="next"'},
+    )
+    page2 = httpx.Response(
+        200, json=[{"user": {"login": "bob"}, "state": "CHANGES_REQUESTED", "commit_id": "c1"}],
+    )
+    route = respx.get("https://api.github.com/repos/acme/demo/pulls/9/reviews").mock(
+        side_effect=[page1, page2]
+    )
+    reviews = make_client(floor=policy.floor).pr_reviews("acme/demo", 9)
+    assert [r["login"] for r in reviews] == ["alice", "bob"]
+    assert route.call_count == 2
 
 
 @respx.mock
@@ -160,6 +199,76 @@ def test_merge_pr_conflict_on_stale_head(policy):
     )
     with pytest.raises(MergeConflict):
         make_client(floor=policy.floor).merge_pr("acme/demo", 9, expected_head_sha="stale")
+
+
+@respx.mock
+def test_get_issue_404_maps_to_not_found(policy):
+    respx.get("https://api.github.com/repos/acme/demo/issues/404").mock(
+        return_value=httpx.Response(404, json={"message": "Not Found"})
+    )
+    with pytest.raises(NotFound):
+        make_client(floor=policy.floor).get_issue("acme/demo", 404)
+
+
+@respx.mock
+def test_pr_head_sha_404_maps_to_not_found(policy):
+    respx.get("https://api.github.com/repos/acme/demo/pulls/404").mock(
+        return_value=httpx.Response(404, json={"message": "Not Found"})
+    )
+    with pytest.raises(NotFound):
+        make_client(floor=policy.floor).pr_head_sha("acme/demo", 404)
+
+
+@respx.mock
+def test_merge_pr_404_maps_to_not_found_not_merge_conflict(policy):
+    respx.put("https://api.github.com/repos/acme/demo/pulls/404/merge").mock(
+        return_value=httpx.Response(404, json={"message": "Not Found"})
+    )
+    with pytest.raises(NotFound):
+        make_client(floor=policy.floor).merge_pr("acme/demo", 404, expected_head_sha="whatever")
+
+
+@respx.mock
+def test_other_http_errors_still_raise(policy):
+    respx.get("https://api.github.com/repos/acme/demo/issues/42").mock(
+        return_value=httpx.Response(500, json={"message": "boom"})
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        make_client(floor=policy.floor).get_issue("acme/demo", 42)
+
+
+def test_context_manager_closes_owned_client(policy):
+    push_creds = AppCredentials(app_id="push-app", private_key_path="unused", installation_id="1")
+    merge_creds = AppCredentials(app_id="merge-app", private_key_path="unused", installation_id="2")
+    with RestGitHub(push_credentials=push_creds, merge_credentials=merge_creds, floor=policy.floor,
+                    token_provider_factory=_FixedTokenProvider) as gh:
+        assert gh._rest.is_closed is False
+    assert gh._rest.is_closed is True
+
+
+def test_injected_client_is_never_closed(policy):
+    injected = httpx.Client()
+    push_creds = AppCredentials(app_id="push-app", private_key_path="unused", installation_id="1")
+    merge_creds = AppCredentials(app_id="merge-app", private_key_path="unused", installation_id="2")
+    gh = RestGitHub(push_credentials=push_creds, merge_credentials=merge_creds, floor=policy.floor,
+                    http_client=injected, token_provider_factory=_FixedTokenProvider)
+    gh.close()
+    assert injected.is_closed is False
+    injected.close()
+
+
+def test_push_diff_refuses_via_product_forbidden_before_touching_git_or_network(policy, tmp_path):
+    # A path the shared floor doesn't forbid but a product does must still be
+    # refused before minting a token or running git, exactly like a
+    # floor-forbidden path.
+    diff = Diff(base_commit="deadbeef", changes=(
+        FileChange(path="prod.env", status="added", added_lines=1, removed_lines=0),
+    ), patch="not-applied")
+    gh = make_client(floor=policy.floor, repos_root=str(tmp_path / "does-not-exist"),
+                     remote_url_builder=lambda repo: "https://example.invalid/unreachable.git")
+    with pytest.raises(ForbiddenDiff):
+        gh.push_diff("acme/demo", branch="feature/x", diff=diff, message="leak",
+                     product_forbidden=("**/*.env",))
 
 
 def test_push_diff_refuses_ac8_before_touching_git_or_network(policy, tmp_path):

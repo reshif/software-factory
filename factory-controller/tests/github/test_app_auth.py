@@ -86,6 +86,20 @@ def test_token_text_never_logged(rsa_private_key_path, caplog):
         assert "super-secret-token" not in record.getMessage()
 
 
+def test_context_manager_closes_owned_client_only(rsa_private_key_path):
+    creds = make_creds(rsa_private_key_path)
+    owned = InstallationTokenProvider(creds)
+    with owned as provider:
+        assert provider is owned
+    assert owned._client.is_closed is True
+
+    injected_client = httpx.Client()
+    injected = InstallationTokenProvider(creds, client=injected_client)
+    injected.close()
+    assert injected_client.is_closed is False
+    injected_client.close()
+
+
 def _public_key_for(private_key_path):
     from cryptography.hazmat.primitives import serialization
 

@@ -4,6 +4,7 @@ from factory.github.client import ForbiddenDiff, MergeConflict
 from factory.github.fake import FakeGitHub
 from factory.models import CheckResult, Diff, WorkItem
 from factory.policy.action_classes import FileChange
+from factory.ports import NotFound
 
 
 def make_diff(path="src/x.py", added_text="x = 1\n") -> Diff:
@@ -95,3 +96,45 @@ def test_revert_commit_advances_branch(policy):
     revert_sha = gh.revert_commit("acme/demo", sha, branch="main")
     assert revert_sha != sha
     assert gh.head_commit("acme/demo", "main") == revert_sha
+
+
+def test_push_diff_uses_product_forbidden_paths(policy):
+    gh = FakeGitHub(floor=policy.floor)
+    diff = make_diff(path="prod.env", added_text="SECRET=1\n")
+    with pytest.raises(ForbiddenDiff):
+        gh.push_diff("acme/demo", branch="feature/leak", diff=diff, message="leak",
+                     product_forbidden=("**/*.env",))
+
+
+def test_push_diff_uses_product_protected_paths_without_blocking(policy):
+    gh = FakeGitHub(floor=policy.floor)
+    diff = make_diff(path="src/billing/ledger.py", added_text="x = 1\n")
+    # product_protected raises the class to AC6 (approval), not AC8: it must
+    # not be refused outright the way a forbidden path is.
+    sha = gh.push_diff("acme/demo", branch="feature/billing", diff=diff, message="add ledger",
+                       product_protected=("src/billing/**",))
+    assert gh.head_commit("acme/demo", "feature/billing") == sha
+
+
+def test_get_issue_raises_not_found_for_unknown_issue(policy):
+    gh = FakeGitHub(floor=policy.floor)
+    with pytest.raises(NotFound):
+        gh.get_issue("acme/demo", 999)
+
+
+def test_comment_and_mirror_labels_raise_not_found_for_unknown_issue(policy):
+    gh = FakeGitHub(floor=policy.floor)
+    with pytest.raises(NotFound):
+        gh.comment_issue("acme/demo", 999, "hi")
+    with pytest.raises(NotFound):
+        gh.mirror_labels("acme/demo", 999, add=["x"])
+
+
+def test_pr_head_sha_and_merge_raise_not_found_for_unknown_pr(policy):
+    gh = FakeGitHub(floor=policy.floor)
+    with pytest.raises(NotFound):
+        gh.pr_head_sha("acme/demo", 999)
+    with pytest.raises(NotFound):
+        gh.merge_pr("acme/demo", 999, expected_head_sha="whatever")
+    with pytest.raises(NotFound):
+        gh.pr("acme/demo", 999)

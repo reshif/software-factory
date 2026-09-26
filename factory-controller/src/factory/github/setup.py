@@ -11,6 +11,7 @@ from typing import Iterable
 
 import httpx
 
+from ._http import github_headers
 from .app_auth import AppCredentials, InstallationTokenProvider
 
 logger = logging.getLogger(__name__)
@@ -85,7 +86,10 @@ def apply_repo_settings(*, repo: str, merge_bot_app_id: int, token: str | None =
                          branch: str = "main", required_checks: Iterable[str] = DEFAULT_REQUIRED_CHECKS,
                          require_codeowners: bool = True, api_url: str = "https://api.github.com",
                          client: httpx.Client | None = None, dry_run: bool = False) -> dict:
-    """Applies (or, in a dry run, just prints) the recommended repo settings.
+    """Builds the recommended repo settings and, unless `dry_run`, applies them.
+
+    Always returns the plan; it never prints anything (that's the caller's
+    job — see `main`, which prints it in a dry run).
 
     `token` must be an installation token with admin rights on `repo`, unless
     `dry_run` is set (in which case no request is made and no token is needed).
@@ -93,17 +97,12 @@ def apply_repo_settings(*, repo: str, merge_bot_app_id: int, token: str | None =
     plan = build_plan(repo, merge_bot_app_id=merge_bot_app_id, branch=branch,
                        required_checks=required_checks, require_codeowners=require_codeowners)
     if dry_run:
-        print(json.dumps(plan, indent=2, sort_keys=True))
         return plan
 
     if not token:
         raise ValueError("a token is required unless dry_run is set")
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    owns_client = client is None
+    headers = github_headers(token)
+    owns = client is None
     client = client or httpx.Client(timeout=30.0)
     try:
         resp = client.post(f"{api_url}/repos/{repo}/rulesets", json=plan["ruleset"], headers=headers)
@@ -113,7 +112,7 @@ def apply_repo_settings(*, repo: str, merge_bot_app_id: int, token: str | None =
         resp.raise_for_status()
         logger.info("applied recommended settings to %s", repo)
     finally:
-        if owns_client:
+        if owns:
             client.close()
     return plan
 
@@ -147,10 +146,12 @@ def main(argv: list[str] | None = None) -> int:
         creds = AppCredentials(app_id=args.push_app_id, private_key_path=args.push_private_key_path,
                                installation_id=args.push_installation_id, api_url=args.api_url)
         token = InstallationTokenProvider(creds).token()
-    apply_repo_settings(repo=args.repo, merge_bot_app_id=args.merge_bot_app_id, token=token,
-                        branch=args.branch, required_checks=checks,
-                        require_codeowners=args.require_codeowners, api_url=args.api_url,
-                        dry_run=args.dry_run)
+    plan = apply_repo_settings(repo=args.repo, merge_bot_app_id=args.merge_bot_app_id, token=token,
+                               branch=args.branch, required_checks=checks,
+                               require_codeowners=args.require_codeowners, api_url=args.api_url,
+                               dry_run=args.dry_run)
+    if args.dry_run:
+        print(json.dumps(plan, indent=2, sort_keys=True))
     return 0
 
 

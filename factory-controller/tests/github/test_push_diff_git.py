@@ -43,12 +43,22 @@ def bare_repo(tmp_path):
 
 
 def _capture_add_file_diff(seed_checkout, name: str, content: str) -> str:
-    """Uses git itself to produce a real `git diff --cached --binary` patch."""
-    (seed_checkout / name).write_text(content)
+    """Uses git itself to produce a real `git diff --cached --binary` patch.
+
+    Deliberately does NOT pass `-c core.quotePath=false`: a non-ASCII path
+    (e.g. an accented filename) comes out C-quoted in the patch header, just
+    like it would from an unhardened diff capture upstream. `git apply` still
+    understands its own quoting, so the file lands at the right path either
+    way -- the bug this guards against is a *separate*, unquoted `FileChange`
+    path that a caller might pass alongside the patch.
+    """
+    path = seed_checkout / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
     run_git(["add", "-A"], cwd=seed_checkout)
     patch = run_git(["diff", "--cached", "--binary"], cwd=seed_checkout)
     run_git(["reset", "--quiet"], cwd=seed_checkout)
-    (seed_checkout / name).unlink()
+    path.unlink()
     return patch
 
 
@@ -121,3 +131,79 @@ def test_push_diff_refuses_ac8_and_leaves_remote_untouched(policy, tmp_path, bar
 
     branches = run_git(["branch", "-a"], cwd=bare)
     assert "feature/evil" not in branches
+
+
+# ── R-A2 backstop: never trust diff.changes alone ───────────────────────────
+#
+# A real bug: git C-quotes non-ASCII paths in a patch header by default, and
+# an upstream diff-capture step that doesn't unquote them can hand push_diff
+# a `FileChange.path` that no longer matches a forbidden-path glob, even
+# though the patch itself still stages the real (forbidden) file. Each test
+# below builds a real patch for a forbidden path, then pairs it with a
+# `FileChange` whose recorded path is wrong/unquoted -- exactly what the
+# upstream bug produces -- and asserts push_diff still refuses it, because
+# it re-derives the real staged paths from git itself after `git apply`.
+
+@pytest.mark.parametrize("real_path, decoy_path", [
+    # decoy_path mimics what a naive parser gets from git's default (quoted,
+    # non -z) --name-status output for a non-ASCII path: the literal quote
+    # characters and octal escapes, unstripped -- so it no longer starts
+    # with ".github/" or "policies/" and slips past a glob match.
+    (".github/workflows/évil.yml", "\".github/workflows/\\303\\251vil.yml\""),
+    ("policies/é.yaml", "\"policies/\\303\\251.yaml\""),
+])
+def test_push_diff_backstop_catches_forbidden_path_diff_changes_missed(
+    policy, tmp_path, bare_repo, real_path, decoy_path,
+):
+    bare, seed, base_sha = bare_repo
+    patch = _capture_add_file_diff(seed, real_path, "evil: true\n")
+    # The decoy path is deliberately NOT the real one and matches no forbidden
+    # glob, simulating a mis-unquoted upstream FileChange.
+    diff = Diff(base_commit=base_sha, changes=(
+        FileChange(path=decoy_path, status="added", added_lines=1, added_text="evil: true\n"),
+    ), patch=patch)
+    gh = make_client(floor=policy.floor, repos_root=tmp_path / "work", bare_path=bare)
+
+    with pytest.raises(ForbiddenDiff):
+        gh.push_diff("acme/demo", branch="feature/evil", diff=diff, message="sneak in a forbidden file")
+
+    branches = run_git(["branch", "-a"], cwd=bare)
+    assert "feature/evil" not in branches
+    assert list((tmp_path / "work").iterdir()) == []
+
+
+def test_push_diff_backstop_uses_product_forbidden_paths(policy, tmp_path, bare_repo):
+    # prod.env isn't covered by the shared floor's forbidden globs (those only
+    # cover *.env, i.e. a dotfile), but a product can forbid it explicitly.
+    bare, seed, base_sha = bare_repo
+    patch = _capture_add_file_diff(seed, "prod.env", "SECRET=1\n")
+    # Same upstream-mismatch scenario as above: the recorded FileChange path
+    # doesn't even mention the real file, so only the backstop's re-derived
+    # real path, checked against product_forbidden, catches it.
+    diff = Diff(base_commit=base_sha, changes=(
+        FileChange(path="unrelated.txt", status="added", added_lines=1, added_text="SECRET=1\n"),
+    ), patch=patch)
+    gh = make_client(floor=policy.floor, repos_root=tmp_path / "work", bare_path=bare)
+
+    with pytest.raises(ForbiddenDiff):
+        gh.push_diff("acme/demo", branch="feature/leak", diff=diff, message="leak prod secrets",
+                     product_forbidden=("**/*.env",))
+
+    branches = run_git(["branch", "-a"], cwd=bare)
+    assert "feature/leak" not in branches
+
+
+def test_push_diff_product_protected_does_not_block_ac6(policy, tmp_path, bare_repo):
+    # product_protected paths raise the class to AC6 (needs approval) but do
+    # NOT block the push outright -- only AC8 (product_forbidden or the
+    # floor) does that. This distinguishes the two keyword args.
+    bare, seed, base_sha = bare_repo
+    patch = _capture_add_file_diff(seed, "src/billing/ledger.py", "x = 1\n")
+    diff = Diff(base_commit=base_sha, changes=(
+        FileChange(path="src/billing/ledger.py", status="added", added_lines=1, added_text="x = 1\n"),
+    ), patch=patch)
+    gh = make_client(floor=policy.floor, repos_root=tmp_path / "work", bare_path=bare)
+
+    sha = gh.push_diff("acme/demo", branch="feature/billing", diff=diff, message="add ledger",
+                       product_protected=("src/billing/**",))
+    assert len(sha) == 40

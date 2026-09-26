@@ -3,7 +3,7 @@
 # A relaxation may only name AC1–AC4. AC5–AC8 and protected paths are never relaxed.
 
 schema_version: 1
-policy_version: p-2026.10.2
+policy_version: p-2026.10.3
 
 levels:
   L3:

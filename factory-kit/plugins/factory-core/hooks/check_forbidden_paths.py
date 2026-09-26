@@ -54,6 +54,12 @@ FORBIDDEN_PATTERNS = (
     "**/.env.*",
     "**/*.pem",
     "**/*.key",
+    "factory.yaml",
+    "mandates/**",
+    "**/CODEOWNERS",
+    "**/.claude/**",
+    "**/CLAUDE.md",
+    "**/AGENTS.md",
 )
 
 # The tools this hook is wired to via hooks.json's matcher. Anything else is

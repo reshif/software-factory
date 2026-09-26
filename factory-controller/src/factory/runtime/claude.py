@@ -215,7 +215,9 @@ class ClaudeRuntime:
             max_budget_usd=budget_usd,
             allowed_tools=list(allowed_tools),
             system_prompt=system_prompt,
-            setting_sources=["project"],
+            # No filesystem settings: repo-level .claude/ in the sandbox is agent-writable
+            # and must never configure the agent (red team #2).
+            setting_sources=None,
             env=env,
             cli_path=self._wrapper(),
             can_use_tool=self._make_can_use_tool(allowed_tools, on_tool_approval),

@@ -22,7 +22,7 @@ EXAMPLES = {
 
 
 def test_policy_loads_complete_table(policy):
-    assert policy.policy_version == "p-2026.10.2"
+    assert policy.policy_version == "p-2026.10.3"
     for cls in CLASSES:
         for gate in GATES:
             assert set(policy.base[cls][gate]) == set(PROFILES)
@@ -41,7 +41,7 @@ def test_l5_inherits_l4(policy):
 def test_policy_version_mismatch_is_rejected(tmp_path):
     shutil.copytree(KIT / "policies", tmp_path / "policies")
     floor = tmp_path / "policies" / "floor.yaml"
-    floor.write_text(floor.read_text().replace("p-2026.10.2", "p-other"))
+    floor.write_text(floor.read_text().replace("p-2026.10.3", "p-other"))
     with pytest.raises(PolicyError, match="policy_version mismatch"):
         load_policy(tmp_path)
 

@@ -22,7 +22,7 @@ def request(store, now, *, gate, required, request_id, artifact="sha256:d1", sta
             content_hash=HASH, profile="standard", requester="@po"):
     return store.add(ApprovalRequest(
         request_id=request_id, gate=gate, mission_ids=("MIS-1",), operation_id=f"{gate}:{artifact}",
-        artifact=artifact, content_hash=content_hash, policy_version="p-2026.10.2",
+        artifact=artifact, content_hash=content_hash, policy_version="p-2026.10.3",
         state_version=state_version, required=required, risk_profile=profile, requester=requester,
         expires=now + timedelta(hours=8)))
 
@@ -34,7 +34,7 @@ def approve(store, request_id, now, approver="@tl", roles=("tech_lead",), conten
 
 def consume(store, request_id, now, state_version=1, content_hash=HASH):
     return store.consume(request_id, executor="controller", now=now, state_version=state_version,
-                         content_hash=content_hash, policy_version="p-2026.10.2")
+                         content_hash=content_hash, policy_version="p-2026.10.3")
 
 
 def patch_mandate():

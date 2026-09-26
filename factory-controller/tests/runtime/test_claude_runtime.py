@@ -114,7 +114,7 @@ class TestOptionConstruction:
         assert options.max_budget_usd == request.budget_usd
         assert options.allowed_tools == list(request.allowed_tools)
         assert options.system_prompt == request.system_prompt
-        assert options.setting_sources == ["project"]
+        assert options.setting_sources is None
         assert gen.captured_prompt == request.prompt
 
     def test_cli_path_is_a_generated_wrapper_not_the_raw_target(self, runtime, monkeypatch):

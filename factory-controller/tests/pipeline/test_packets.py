@@ -8,7 +8,7 @@ from factory.pipeline import packets
 def _mission() -> MissionRecord:
     return MissionRecord(mission_id="MIS-1", product="backend-service", repo="org/backend-service",
                          work_item_id="org/backend-service#1", lane="feature", risk_profile="standard",
-                         autonomy_level="L3", kit_version="factory-kit@0.1.0", policy_version="p-2026.10.2")
+                         autonomy_level="L3", kit_version="factory-kit@0.1.0", policy_version="p-2026.10.3")
 
 
 def test_new_request_id_is_scoped_to_the_gate():

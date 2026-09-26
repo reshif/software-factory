@@ -2,7 +2,7 @@
 # Spec: docs/software-factory-final-draft.md §13
 
 schema_version: 1
-policy_version: p-2026.10.2
+policy_version: p-2026.10.3
 
 # Agent diffs touching these are AC8 (rejected before push).
 forbidden_paths:
@@ -15,6 +15,13 @@ forbidden_paths:
   - "**/.env.*"
   - "**/*.pem"
   - "**/*.key"
+  # Product control files: approvers, risk profile, checks, mandates, agent config (red team #2).
+  - "factory.yaml"
+  - "mandates/**"
+  - "**/CODEOWNERS"
+  - "**/.claude/**"
+  - "**/CLAUDE.md"
+  - "**/AGENTS.md"
 
 # Agent diffs touching these are AC6 (approval with security role).
 protected_paths:

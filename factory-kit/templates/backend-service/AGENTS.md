@@ -19,7 +19,7 @@ Full behavior is defined in `docs/software-factory-final-draft.md`
 | Autonomy level | `L3` |
 | Runtime | `claude` |
 | Kit version | `factory-kit@0.1.0` |
-| Policy version | `p-2026.10.2` |
+| Policy version | `p-2026.10.3` |
 | Lanes | patch, feature |
 | Holdout repo | `org/backend-service-holdouts` |
 | Observation window | `24h` |

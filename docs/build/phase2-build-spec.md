@@ -78,7 +78,6 @@ factory-controller/
 │   ├── worker.py       B7: background loop (timeouts, dispatch, reconciliation)
 │   ├── cli.py          B7: `factory` command
 │   └── demo/           B7: scripted end-to-end scenarios on fakes
-├── migrations/         B1
 ├── deploy/             B3: litellm/, egress-proxy/, sandbox/Dockerfile · B7: docker-compose.yml, Dockerfile
 └── tests/<module>/
 factory-kit/
@@ -93,7 +92,7 @@ factory-kit/
 
 ## 3. Module assignments
 
-### B1: State store (`src/factory/store/`, `migrations/`, `tests/store/`)
+### B1: State store (`src/factory/store/` incl. packaged `store/migrations/`, `tests/store/`)
 - `MemoryStateStore`: implements `StateStore`, using `controller.approvals.ApprovalStore` and `controller.intents.IntentLog`.
 - `PostgresStateStore` (psycopg 3):
   - Tables: missions, tasks, evidence, packets, events, approvals, approval_decisions, intents.
@@ -103,7 +102,7 @@ factory-kit/
     - atomic single-use consume, with the fencing token from a Postgres **sequence**;
     - `invalidate_for_artifact`, `list_open`.
   - Intents use write-ahead semantics.
-- `migrations/NNN_*.sql` plus `apply_migrations(conn)`. The migrations must be idempotent.
+- `src/factory/store/migrations/NNN_*.sql` (packaged, loaded via `importlib.resources`) plus `apply_migrations(conn)`. The migrations must be idempotent and run under a Postgres advisory lock.
 - `open_store(settings) -> StateStore`: memory if `database_url` is unset.
 - **Contract tests** run the **same test functions against both stores**. The Postgres run is skipped without `FACTORY_TEST_DATABASE_URL`. Port every behavior tested in `tests/test_approvals.py` and `tests/test_intents_and_budget.py`.
 

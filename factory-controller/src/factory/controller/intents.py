@@ -4,6 +4,7 @@ Durable execution doesn't make side effects exactly-once. So: record the intent
 BEFORE acting, record the receipt AFTER, and on recovery reconcile a pending
 intent against the real target state before retrying.
 """
+import threading
 from dataclasses import dataclass
 from typing import Callable
 
@@ -19,22 +20,26 @@ class IntentLog:
     """In-memory reference implementation. Phase 2 backs this with Postgres."""
 
     def __init__(self):
+        self._lock = threading.Lock()
         self._intents: dict[str, Intent] = {}
 
     def get(self, operation_id: str) -> Intent | None:
-        return self._intents.get(operation_id)
+        with self._lock:
+            return self._intents.get(operation_id)
 
     def begin(self, operation_id: str) -> Intent:
-        intent = self._intents.setdefault(operation_id, Intent(operation_id))
-        return intent
+        with self._lock:
+            return self._intents.setdefault(operation_id, Intent(operation_id))
 
     def complete(self, operation_id: str, receipt) -> None:
-        intent = self._intents[operation_id]
-        intent.status = "done"
-        intent.receipt = receipt
+        with self._lock:
+            intent = self._intents[operation_id]
+            intent.status = "done"
+            intent.receipt = receipt
 
     def pending(self) -> list[Intent]:
-        return [i for i in self._intents.values() if i.status == "pending"]
+        with self._lock:
+            return [i for i in self._intents.values() if i.status == "pending"]
 
 
 def execute_once(log: IntentLog, operation_id: str, *, action: Callable[[], object],

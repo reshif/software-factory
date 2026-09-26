@@ -97,6 +97,74 @@ class ApprovalRequest:
         return True
 
 
+def require_open(req: ApprovalRequest) -> None:
+    """Raise if `req` is already void, invalidated or consumed. The one open-ness check."""
+    if req.status == "void":
+        raise Voided(f"{req.request_id} was voided by a revise/cancel decision")
+    if req.status == "invalidated":
+        raise Voided(f"{req.request_id} was invalidated (e.g. by a rollback)")
+    if req.status == "consumed":
+        raise AlreadyConsumed(f"{req.request_id} already consumed")
+
+
+def check_decision(req: ApprovalRequest, *, approver: str, roles, decision: str, content_hash: str,
+                   now: datetime) -> Decision | None:
+    """Validate a decision against `req` and return the `Decision` to record.
+
+    Returns `None` for an idempotent duplicate approve (nothing to record, nothing
+    changes). Raises the same `ApprovalError` subclasses `ApprovalStore.decide` always
+    has. Pure: never mutates `req`, so both the in-memory store and the Postgres
+    adapter can lock their own way, call this, and persist the result identically
+    (`C1`: the rule lives in exactly one place).
+    """
+    if decision not in ("approve", "revise", "defer", "cancel"):
+        raise ValueError(f"unknown decision {decision!r}")
+    roles = frozenset(roles)
+    require_open(req)
+    if now >= req.expires:
+        raise Expired(f"{req.request_id} expired at {req.expires.isoformat()}")
+    if content_hash != req.content_hash:
+        raise StaleApproval(f"{req.request_id}: decision is for different content")
+    if decision in ("revise", "cancel", "defer"):
+        return Decision(approver, roles, decision, now)
+    if req.gate == "HM" and approver in req.editors:
+        raise IneligibleApprover(f"{approver} edited this change and can't approve its merge")
+    if req.risk_profile == "regulated" and approver == req.requester:
+        raise IneligibleApprover(f"{approver} requested this and can't approve it (regulated)")
+    if any(d.approver == approver for d in req.approvers()):
+        return None  # idempotent duplicate
+    return Decision(approver, roles, "approve", now)
+
+
+def check_consumable(req: ApprovalRequest, *, now: datetime, state_version: int, content_hash: str,
+                     policy_version: str) -> None:
+    """Raise unless `req` may be consumed right now. Pure: doesn't consume it.
+
+    The caller still has to hand out the actual fencing token (a plain counter in
+    memory, a Postgres sequence value for the real store) and persist the
+    `consumed` state; this only decides whether that's allowed.
+    """
+    if req.status == "consumed":
+        raise AlreadyConsumed(f"{req.request_id} was consumed by {req.consumed_by} at {req.consumed_at}")
+    require_open(req)
+    if not req.quorum_met():
+        raise QuorumNotMet(f"{req.request_id}: {len(req.approvers())}/{req.needed} approvals"
+                           + (" (security required)" if req.required.security else ""))
+    if now >= req.expires:
+        raise Expired(f"{req.request_id}: operation must start before {req.expires.isoformat()}")
+    if (state_version, content_hash, policy_version) != (req.state_version, req.content_hash,
+                                                         req.policy_version):
+        raise StaleApproval(f"{req.request_id}: state, content or policy changed since the request")
+
+
+def _not_found(request_id: str) -> Exception:
+    # Local import: factory.ports imports this module, so a module-level import
+    # the other way round would be circular. By the time anything actually calls
+    # into the store, both modules are fully loaded.
+    from ..ports import NotFound
+    return NotFound(request_id)
+
+
 class ApprovalStore:
     """In-memory reference implementation. Phase 2 backs this with Postgres (same semantics)."""
 
@@ -112,8 +180,15 @@ class ApprovalStore:
             self._requests[request.request_id] = request
             return request
 
+    def _get(self, request_id: str) -> ApprovalRequest:
+        try:
+            return self._requests[request_id]
+        except KeyError:
+            raise _not_found(request_id) from None
+
     def get(self, request_id: str) -> ApprovalRequest:
-        return self._requests[request_id]
+        with self._lock:
+            return self._get(request_id)
 
     def list_open(self, mission_id: str | None = None) -> list[ApprovalRequest]:
         with self._lock:
@@ -122,48 +197,24 @@ class ApprovalStore:
 
     def decide(self, request_id: str, *, approver: str, roles, decision: str, content_hash: str,
                now: datetime) -> ApprovalRequest:
-        if decision not in ("approve", "revise", "defer", "cancel"):
-            raise ValueError(f"unknown decision {decision!r}")
         with self._lock:
-            req = self._requests[request_id]
-            _require_open(req)
-            if now >= req.expires:
-                raise Expired(f"{request_id} expired at {req.expires.isoformat()}")
-            if content_hash != req.content_hash:
-                raise StaleApproval(f"{request_id}: decision is for different content")
-            roles = frozenset(roles)
-            if decision in ("revise", "cancel"):
-                req.decisions.append(Decision(approver, roles, decision, now))
-                req.status = "void"
-                return req
-            if decision == "defer":
-                req.decisions.append(Decision(approver, roles, decision, now))
-                return req
-            if req.gate == "HM" and approver in req.editors:
-                raise IneligibleApprover(f"{approver} edited this change and can't approve its merge")
-            if req.risk_profile == "regulated" and approver == req.requester:
-                raise IneligibleApprover(f"{approver} requested this and can't approve it (regulated)")
-            if any(d.approver == approver for d in req.approvers()):
+            req = self._get(request_id)
+            d = check_decision(req, approver=approver, roles=roles, decision=decision,
+                               content_hash=content_hash, now=now)
+            if d is None:
                 return req  # idempotent duplicate
-            req.decisions.append(Decision(approver, roles, "approve", now))
+            req.decisions.append(d)
+            if d.decision in ("revise", "cancel"):
+                req.status = "void"
             return req
 
     def consume(self, request_id: str, *, executor: str, now: datetime, state_version: int,
                 content_hash: str, policy_version: str) -> int:
         """Atomically consume an approval right before the side effect. Returns a fencing token."""
         with self._lock:
-            req = self._requests[request_id]
-            if req.status == "consumed":
-                raise AlreadyConsumed(f"{request_id} was consumed by {req.consumed_by} at {req.consumed_at}")
-            _require_open(req)
-            if not req.quorum_met():
-                raise QuorumNotMet(f"{request_id}: {len(req.approvers())}/{req.needed} approvals"
-                                   + (" (security required)" if req.required.security else ""))
-            if now >= req.expires:
-                raise Expired(f"{request_id}: operation must start before {req.expires.isoformat()}")
-            if (state_version, content_hash, policy_version) != (req.state_version, req.content_hash,
-                                                                 req.policy_version):
-                raise StaleApproval(f"{request_id}: state, content or policy changed since the request")
+            req = self._get(request_id)
+            check_consumable(req, now=now, state_version=state_version, content_hash=content_hash,
+                            policy_version=policy_version)
             self._fencing += 1
             req.status = "consumed"
             req.consumed_by = executor
@@ -180,15 +231,6 @@ class ApprovalStore:
                     req.status = "invalidated"
                     hit.append(req.request_id)
             return hit
-
-
-def _require_open(req: ApprovalRequest) -> None:
-    if req.status == "void":
-        raise Voided(f"{req.request_id} was voided by a revise/cancel decision")
-    if req.status == "invalidated":
-        raise Voided(f"{req.request_id} was invalidated (e.g. by a rollback)")
-    if req.status == "consumed":
-        raise AlreadyConsumed(f"{req.request_id} already consumed")
 
 
 class FencedTarget:

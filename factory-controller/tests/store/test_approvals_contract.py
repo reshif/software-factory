@@ -12,6 +12,7 @@ import pytest
 from factory.controller.approvals import (AlreadyConsumed, ApprovalRequest, Expired, IneligibleApprover,
                                           QuorumNotMet, StaleApproval, Voided)
 from factory.policy import parse_requirement
+from factory.ports import NotFound
 
 HASH = "sha256:aaa"
 
@@ -154,9 +155,20 @@ def test_rollback_invalidates_open_approvals_for_the_artifact(store, now):
     assert [r.request_id for r in store.approvals.list_open()] == ["REQ-3"]
 
 
-def test_get_missing_request_raises(store):
-    with pytest.raises(KeyError):
+def test_get_missing_request_raises_not_found(store):
+    with pytest.raises(NotFound):
         store.approvals.get("no-such-request")
+
+
+def test_decide_missing_request_raises_not_found(store, now):
+    with pytest.raises(NotFound):
+        store.approvals.decide("no-such-request", approver="@tl", roles={"tech_lead"},
+                              decision="approve", content_hash=HASH, now=now)
+
+
+def test_consume_missing_request_raises_not_found(store, now):
+    with pytest.raises(NotFound):
+        consume(store, now, request_id="no-such-request")
 
 
 def test_auto_requirements_never_create_requests(now):

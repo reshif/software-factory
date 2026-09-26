@@ -220,8 +220,126 @@ factory-kit/
   - the holdout runner against a local stdlib HTTP server
   - the hook script blocks a forbidden path
 
-### B7: Integration, wave 2 (`src/factory/pipeline/`, `wiring.py`, `app.py`, `worker.py`, `cli.py`, `demo/`, `deploy/docker-compose.yml`, `Dockerfile`, `tests/pipeline/`, `tests/e2e/`)
-Specified separately after wave 1 merges.
+### B7: Integration, wave 2 (`src/factory/pipeline/`, `wiring.py`, `app.py`, `worker.py`, `cli.py`, `demo/`, `deploy/docker-compose.yml`, `deploy/controller.Dockerfile`, `tests/pipeline/`, `tests/e2e/`)
+
+B7 wires the modules into the mission lifecycle of §7 and §14.1. **B7 only depends on ports.** It never imports concrete adapters, except in `wiring.py`.
+
+**Products** (`pipeline/products.py`)
+- `ProductRegistry` loads `<products_dir>/<product>/factory.yaml` and `mandates/*.yaml`, validating both against the kit schemas. Invalid config fails loudly at startup.
+- It maps repo → product through the `repo` field.
+- `checks` maps check names to sandbox commands. Every required name except `review_agent` and `holdout_blackbox` must have a command, or startup fails.
+
+**Triggers**
+- The issue label `factory:patch` or `factory:feature` on a repo registered to a product starts a mission.
+- It's idempotent: one mission per work item. Re-labeling doesn't duplicate.
+- Other labels are mirrors of state only (`factory:state/<STATE>`). The controller never reads labels as truth.
+
+**Tool guard** (`pipeline/tool_guard.py`)
+- Agents run with `allowed_tools=()`, so **every** tool call goes through `on_tool_approval`.
+- The guard allows Read/Glob/Grep/Edit/Write only when the resolved path is inside the task's sandbox workdir. Edit/Write additionally need the path inside the task's `owned_paths` and not matching the floor or product forbidden paths.
+- It denies Bash, WebFetch, WebSearch and everything else. **The controller, not the agent, runs code**: checks run through `SandboxPort.exec(network=False)`, and failures feed back into the repair prompt.
+- Document this as the v1 containment model. The runtime process itself moves into the sandbox container in Phase 3.
+
+**Lifecycle** (`pipeline/orchestrator.py`, class `Factory`)
+
+Every step is idempotent and re-entrant. Every mission update is a CAS through `store.update_mission`. Every side effect (push, merge, deploy, rollback) goes through `controller.intents.execute_once` with a stable operation id.
+1. **Intake.** Run the intake agent on the issue, with the issue text passed as quoted data. Then classify.
+   - A patch lane with a matching standing mandate (`coverage.check_request`) → `covered` → ADMITTED.
+   - Otherwise → DISCOVERING.
+2. **Discovery.** Run the architect agent on a read-only sandbox checkout, then parse and validate the §4 JSON.
+   - Build the H1 `DecisionPacket` (`pipeline/packets.py`).
+   - Create an `ApprovalRequest` with `gate_resolver.resolve(...).h1`, then `notifier.decision_requested`.
+   - Move to AWAITING_H1.
+   - Invalid architect output → the mission goes to AWAITING_HX with the error. It never advances.
+3. **Decisions** (`Factory.decide(request_id, approver, roles, decision, content_hash)`). This is the function the inbox calls. It records the decision.
+   - Quorum met → consume the approval right before the guarded action and fire the FSM event.
+   - revise → back to DISCOVERING.
+   - cancel/decline → ARCHIVED or CANCELED as the FSM says.
+4. **Admission.** `approval_budget.can_admit` plus the mission budget. Create a per-mission gateway key (`BudgetGateway.create_key`). Create tasks from the plan with `TaskRecord` contracts that are schema-valid. Move to ACTIVE.
+5. **Tasks.** The controller releases READY tasks, with at most `max_parallel_workers` running.
+   1. Create a sandbox at `base_commit`.
+   2. Run the implementer agent.
+   3. `capture_diff`, then `classify` it.
+   4. For standing missions, run `coverage.check_diff`. Exceeding coverage → `coverage_exceeded` → DISCOVERING.
+   5. Run the product `checks` in the sandbox with no network, and `verification.checks.evaluate`.
+   6. On failure, repair: resume or rerun with the trimmed check output, up to `repair_attempts[lane]`. Exhausted → `boundary` → AWAITING_HX.
+   7. Record spend from the gateway. Over budget → `budget_exhausted`.
+6. **Join + integrate.** When every task is DONE (AND barrier), apply all task diffs onto a fresh sandbox at the base. A conflict → `conflict` → ACTIVE, with a repair task.
+   - Rerun the checks and the **reviewer** check (`verification.review`) on the combined diff.
+   - Build the evidence (`verification.evidence.build_evidence`).
+   - The push bot runs `github.push_diff` to branch `factory/<mission_id>`, then `open_pr` with a **controller-generated** body: evidence summary, checks table and rule fired. The body has no agent-authored free text except the architect summary, rendered as a quoted block.
+7. **HM.** Resolve with `protected_touched`.
+   - `auto` → consume nothing and merge once the required GitHub check runs are all `success` (fail closed).
+   - Otherwise → HM request plus a notification. GitHub `pull_request_review` APPROVED events on the **current head sha** from a listed approver are converted into `decide(... approve ...)`. The inbox works too.
+   - The merge bot calls `merge_pr(expected_head_sha)` after consume → MERGED.
+   - Create the mission flag (default OFF) via `FlagProvider.create`.
+8. **Post-merge.** Check runs on the merge sha. Failure → `release.revert.auto_revert` → REVERTED → ACTIVE (repair).
+9. **Release candidate.**
+   1. `DeployTarget.build(repo, merge_sha)` → artifact, then deploy to `staging`.
+   2. `HoldoutRunner.run(product, staging_url, artifact)` → a `holdout_blackbox` CheckResult: success only if `passed == total > 0`.
+   3. Complete the evidence → RELEASE_READY.
+   4. H2 = `release_requirement([...])`: v1 has one mission per release. `standing` → DEPLOYING. Otherwise H2 request + notification → AWAITING_H2.
+10. **Deploy.** Consume H2, getting a fencing token. `execute_once(deploy prod)`. `flags.set_rollout(flag, 100)`. Then OBSERVING.
+11. **Observe** (worker).
+    - Healthy through `observation_window` → DELIVERED.
+    - Unhealthy → `flags.kill`, `DeployTarget.rollback`, then `store.approvals.invalidate_for_artifact` → RECOVERING. The recovery plan is followed; with no automated fix path → AWAITING_HX.
+12. **HX.** The packet offers alternatives: extend budget by 50% and reset repair attempts, reduce scope, or cancel. Approve → ACTIVE with the extension applied. Decline → CANCELED.
+13. **Events.** Append store events for every transition, decision, check and deploy. Use the kinds B5's `telemetry/metrics.py` expects, reading B5's docs. **Human interventions outside approvals** (a human commit on a factory branch, a manual re-run) are recorded when detected from webhooks: a push to `factory/*` by a non-bot user.
+
+**Worker** (`worker.py`)
+- `run_once(now)` does the following:
+  - applies timeouts (`mission_fsm.TIMEOUTS`): notify the backup approver first, then fire `timeout`
+  - releases READY tasks
+  - reconciles pending intents
+  - advances OBSERVING missions
+- `run_forever(interval)`.
+
+**App** (`app.py`, FastAPI)
+- `POST /webhooks/github`: verify the signature, parse the event, dispatch. Unknown events → 204.
+- `/inbox`: B4's router with `decide = factory.decide`.
+- `GET /healthz`.
+- `GET /metrics`: B5's Prometheus text.
+- No other endpoints.
+
+**Wiring** (`wiring.py`): `build_factory(settings) -> Factory`.
+- `local`: MemoryStateStore (or Postgres if `database_url`), FakeGitHub, FakeRuntime (demo scripts), LocalSandbox, FakeBudgetGateway, RecordingNotifier (which also logs the inbox links), FakeHoldoutRunner, FakeDeployTarget, FakeFlagProvider.
+- `production`: the real adapters from Settings.
+
+**CLI** (`cli.py`, entry point `factory`)
+- `factory serve`
+- `factory worker`
+- `factory migrate`
+- `factory validate-kit`
+- `factory products validate`
+- `factory classify --git BASE..HEAD [--repo PATH]`
+- `factory gates --class AC4 --profile standard [--level L3] [--protected]`
+- `factory inbox-link --request REQ --approver @x --roles tech_lead`
+- `factory demo [--scenario NAME|all] [--serve]`
+
+**Demo** (`demo/`)
+- It uses the kit's `templates/backend-service` sample app, copied into a temporary git repo, with FakeGitHub and FakeRuntime scripts that **really edit the sample app**.
+- Scenarios:
+  - `happy_path` (feature: H1 → HM → H2 → DELIVERED)
+  - `patch_standing` (covered patch, auto/1 gates per the table)
+  - `coverage_exceeded`
+  - `h1_reject`
+  - `repair_then_pass`
+  - `repair_exhausted_hx`
+  - `forbidden_path_blocked` (the agent tries `.github/workflows` → AC8 → blocked before push)
+  - `post_merge_revert`
+  - `prod_regression_rollback`
+  - `stale_approval_rejected`
+  - `replay_after_rollback`
+- Each scenario prints a readable timeline (state transitions, packets, decisions, receipts) and **asserts** its expected end state.
+- `--serve` starts the app with fakes plus a background worker, and prints signed inbox links, so a human can approve in the browser.
+
+**Deploy**
+- `deploy/docker-compose.yml`: postgres, litellm (B3 config), egress-proxy (B3 config), controller (`factory serve`) and worker (`factory worker`). The sandbox network is internal. Secrets come via env_file (`.env.example` documents every `FACTORY_*` variable).
+- `deploy/controller.Dockerfile`.
+
+**Tests**
+- `tests/pipeline/`: unit tests of each lifecycle step with fakes.
+- `tests/e2e/`: every demo scenario runs as a test and asserts its end state.
 
 ---
 

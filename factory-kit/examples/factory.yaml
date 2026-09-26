@@ -26,6 +26,13 @@ infra_retries: 3
 verification:
   required: [lint, types, secret_scan, dep_audit, unit, review_agent, holdout_blackbox]
   mutation: "off"
+checks:
+  lint: "ruff check ."
+  types: "mypy src"
+  secret_scan: "gitleaks detect --no-git --source ."
+  dep_audit: "pip-audit"
+  unit: "python -m pytest -q"
+repo: "org/pilot-api"
 holdout_repo: "org/pilot-api-holdouts"
 observation_window: 24h
 standing_mandates: [SM-pilot-patch]

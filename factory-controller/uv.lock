@@ -254,6 +254,7 @@ dependencies = [
     { name = "claude-agent-sdk" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "jsonschema" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "pyyaml" },
@@ -262,7 +263,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "jsonschema" },
     { name = "pytest" },
     { name = "respx" },
     { name = "rfc3339-validator" },
@@ -273,6 +273,7 @@ requires-dist = [
     { name = "claude-agent-sdk", specifier = ">=0.2.160" },
     { name = "fastapi", specifier = ">=0.141.1" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "jsonschema", specifier = ">=4.19" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.15.0" },
     { name = "pyyaml", specifier = ">=6" },
@@ -281,7 +282,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "jsonschema", specifier = ">=4.19" },
     { name = "pytest", specifier = ">=8" },
     { name = "respx", specifier = ">=0.23.1" },
     { name = "rfc3339-validator", specifier = ">=0.1.4" },

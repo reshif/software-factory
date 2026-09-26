@@ -9,6 +9,7 @@ class Settings:
     mode: str = "local"                     # local (fakes, for demo/tests) | production
     database_url: str | None = None         # postgresql://... ; None -> in-memory store
     kit_dir: str | None = None              # defaults to ../factory-kit
+    products_dir: str | None = None         # dir of <product>/factory.yaml (+ mandates/); see pipeline.products
     inbox_base_url: str = "http://localhost:8080"
     inbox_signing_key: str | None = None    # HMAC key for signed inbox/Slack callbacks
 

@@ -90,6 +90,12 @@
         "mutation": { "enum": ["off", "diff_scoped", "full"] }
       }
     },
+    "checks": {
+      "description": "Check name -> command run in the sandbox with NO network. Every name in verification.required except review_agent and holdout_blackbox must appear here.",
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
     "holdout_repo": { "type": "string" },
     "observation_window": { "type": "string", "pattern": "^\\d+[hd]$" },
     "standing_mandates": { "type": "array", "items": { "type": "string" } }

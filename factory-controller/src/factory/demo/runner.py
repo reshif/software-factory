@@ -98,7 +98,9 @@ def serve_demo(*, host: str = "127.0.0.1", port: int = 8080) -> None:
     print(f"\nServing on http://{host}:{port} (Ctrl+C to stop)\n")
 
     try:
-        uvicorn.run(app, host=host, port=port)
+        # Inbox approval tokens travel in the URL query string (see the printed
+        # links above) -- access_log=False keeps them out of uvicorn's request log.
+        uvicorn.run(app, host=host, port=port, access_log=False)
     finally:
         stop.set()
         ctx.cleanup()

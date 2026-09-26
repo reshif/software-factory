@@ -430,6 +430,100 @@ def human_push_recorded() -> bool:
         ctx.cleanup()
 
 
+# ── 12: second_release_standing (real fencing tokens, red team #3 item 1) ──────
+def second_release_standing() -> bool:
+    """Two consecutive standing-mandate (auto-H1, auto-H2) releases to the SAME
+    product, back to back. A constant deploy fencing token (the bug red team #3
+    C1/H3 found) would make the second release's staging AND production deploys
+    collide with the first release's already-used token and fail closed --
+    this scenario is green only when both releases actually reach production
+    with their own artifact and their own token."""
+    ctx = new_context(risk_profile="experimental", autonomy_level="L5")
+    try:
+        def run_one(n: int, contents: dict) -> str:
+            # FakeGitHub's "main" only ever moves in-memory after a merge (no
+            # matching real git commit for LocalSandbox to check out); reset it to
+            # the real base commit before every mission in this multi-mission run.
+            ctx.adapters["github"].set_head(ctx.repo, "main", ctx.base_commit)
+            runtime = ctx.adapters["runtime"]
+            runtime.set_script("intake", _intake("patch", "AC3"))
+            runtime.set_script("implementer", _implementer(contents))
+            runtime.set_script("reviewer", _reviewer("pass"))
+            item = ctx.add_work_item(title=f"Standing release number {n} for second_release_standing",
+                                     body="...", labels=("factory:patch",))
+            mission = ctx.start(item)
+            assert mission.state == "ACTIVE", (n, mission.state)  # standing mandate: no H1
+            ctx.factory.run_ready_tasks(mission.mission_id)
+            advance_to_merged(ctx, mission.mission_id)
+            advance_post_merge_ok(ctx, mission.mission_id)
+            m = ctx.mission(mission.mission_id)
+            assert m.state == "OBSERVING", f"expected a standing H2 straight to OBSERVING, got {m.state}"
+            deliver(ctx, mission.mission_id)
+            assert ctx.mission(mission.mission_id).state == "DELIVERED"
+            return mission.mission_id
+
+        first_id = run_one(1, {"app/first.py": "VALUE = 1\n"})
+        second_id = run_one(2, {"app/second.py": "VALUE = 2\n"})
+        ctx.print_timeline(first_id, title="second_release_standing (release 1)")
+        ctx.print_timeline(second_id, title="second_release_standing (release 2)")
+
+        receipts = ctx.adapters["deploy"].receipts
+        prod = [r for r in receipts if r.environment == "production" and r.status == "deployed"]
+        staging = [r for r in receipts if r.environment == "staging"]
+        assert len(prod) == 2, f"expected 2 successful production deploys, got {len(prod)}"
+        assert len(staging) == 2, f"expected 2 successful staging deploys, got {len(staging)}"
+        assert prod[0].artifact != prod[1].artifact, "each release must deploy its own artifact"
+        return True
+    finally:
+        ctx.cleanup()
+
+
+# ── 13: kill_switch_resume (red team #3 item 11's operator entry points) ───────
+def kill_switch_resume() -> bool:
+    """`Factory.kill_switch()` pauses an in-flight mission to HELD; `resume()`
+    lands it in AWAITING_HX (it was plain ACTIVE, not at a human gate, when
+    killed) with a fresh approval request actually open; approving that HX
+    request returns it to ACTIVE and lets it finish. `unblock()` is exercised
+    too: deferring that same HX request parks the mission in BLOCKED, and
+    `unblock()` opens the fresh HX approval that's the only way out of it."""
+    ctx = new_context()
+    try:
+        runtime = ctx.adapters["runtime"]
+        runtime.set_script("intake", _intake("feature", "AC4"))
+        runtime.set_script("architect", _architect(tasks=[task("T-1", "Add a greet() helper with a test.")]))
+        runtime.set_script("implementer", _implementer({"app/greet.py": fixtures.GREET_APP,
+                                                        "tests/test_greet.py": fixtures.GREET_TEST_PASS}))
+        runtime.set_script("reviewer", _reviewer("pass"))
+
+        item = ctx.add_work_item(title="A feature that gets kill-switched mid-run", body="...",
+                                 labels=("factory:feature",))
+        mission = ctx.start(item)
+        ctx.decide(mission.mission_id, "H1", "approve")
+        assert ctx.mission(mission.mission_id).state == "ACTIVE"
+
+        ctx.factory.kill_switch()
+        assert ctx.mission(mission.mission_id).state == "HELD"
+
+        ctx.factory.resume(mission.mission_id)
+        assert ctx.mission(mission.mission_id).state == "AWAITING_HX"
+
+        # Defer that HX request: BLOCKED, and only a fresh HX approval gets it out.
+        ctx.decide(mission.mission_id, "HX", "defer")
+        assert ctx.mission(mission.mission_id).state == "BLOCKED"
+        ctx.factory.unblock(mission.mission_id)
+        ctx.decide(mission.mission_id, "HX", "approve")
+        assert ctx.mission(mission.mission_id).state == "ACTIVE"
+
+        ctx.factory.run_ready_tasks(mission.mission_id)
+        advance_to_merged(ctx, mission.mission_id)
+        ctx.print_timeline(mission.mission_id, title="kill_switch_resume")
+        state = ctx.mission(mission.mission_id).state
+        assert state == "MERGED", f"expected MERGED, got {state}"
+        return True
+    finally:
+        ctx.cleanup()
+
+
 SCENARIOS = {
     "happy_path": happy_path,
     "patch_standing": patch_standing,
@@ -443,6 +537,8 @@ SCENARIOS = {
     "stale_approval_rejected": stale_approval_rejected,
     "replay_after_rollback": replay_after_rollback,
     "human_push_recorded": human_push_recorded,
+    "second_release_standing": second_release_standing,
+    "kill_switch_resume": kill_switch_resume,
 }
 
 __all__ = ["SCENARIOS", *SCENARIOS.keys()]

@@ -262,6 +262,7 @@ def build_factory(settings: Settings, *, clock=None, adapters: dict | None = Non
         flags=built["flags"], products=products, policy=policy, clock=clock or SystemClock(),
         kit_dir=settings.kit_path, inbox_base_url=settings.inbox_base_url, evidence_dir=settings.evidence_dir,
         repos_root=settings.repos_root, mirror=built["mirror"], gateway_url=settings.llm_gateway_url,
+        state_encryption_key=settings.state_encryption_key,
     )
 
 

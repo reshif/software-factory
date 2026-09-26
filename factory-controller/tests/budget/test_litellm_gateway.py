@@ -36,7 +36,7 @@ def test_create_key_posts_max_budget_and_mission_metadata(gateway):
 
 @respx.mock
 def test_spent_reads_key_info(gateway):
-    respx.post(f"{BASE_URL}/key/info").mock(
+    respx.get(f"{BASE_URL}/key/info").mock(
         return_value=httpx.Response(200, json={"key": "sk-mission-key-1", "info": {"spend": 3.75}})
     )
 
@@ -46,20 +46,29 @@ def test_spent_reads_key_info(gateway):
 
 
 @respx.mock
-def test_spent_sends_the_key_in_the_body_not_the_query_string(gateway):
-    """R-A4: the key must never appear in a URL/query string, where it would end up
-    verbatim in access logs and any intermediate proxy's own logging."""
-    route = respx.post(f"{BASE_URL}/key/info").mock(
+def test_spent_uses_documented_get_and_never_logs_the_key(gateway, caplog):
+    """LiteLLM documents GET /key/info?key=...; R-A4: the key must not reach our logs."""
+    import logging
+    caplog.set_level(logging.DEBUG)
+    route = respx.get(f"{BASE_URL}/key/info").mock(
         return_value=httpx.Response(200, json={"info": {"spend": 0.0}})
     )
 
     gateway.spent("sk-mission-key-1")
 
-    request = route.calls.last.request
-    assert "sk-mission-key-1" not in str(request.url)
-    assert request.url.params == httpx.QueryParams()
-    body = _json.loads(request.content)
-    assert body == {"key": "sk-mission-key-1"}
+    assert route.calls.last.request.url.params["key"] == "sk-mission-key-1"
+    assert "sk-mission-key-1" not in caplog.text
+
+
+@respx.mock
+def test_transport_error_does_not_leak_the_url(gateway):
+    respx.get(f"{BASE_URL}/key/info").mock(side_effect=httpx.ConnectError("boom"))
+
+    with pytest.raises(LiteLLMGatewayError) as excinfo:
+        gateway.spent("sk-mission-key-should-not-leak")
+
+    assert "sk-mission-key-should-not-leak" not in str(excinfo.value)
+    assert "gateway.internal" not in str(excinfo.value)
 
 
 @respx.mock
@@ -96,7 +105,7 @@ def test_error_message_has_no_scheme_host_or_query(gateway):
 
 @respx.mock
 def test_spent_error_message_redacts_the_key(gateway):
-    respx.post(f"{BASE_URL}/key/info").mock(return_value=httpx.Response(404, json={"error": "not found"}))
+    respx.get(f"{BASE_URL}/key/info").mock(return_value=httpx.Response(404, json={"error": "not found"}))
 
     with pytest.raises(LiteLLMGatewayError) as excinfo:
         gateway.spent("sk-mission-key-should-not-leak")

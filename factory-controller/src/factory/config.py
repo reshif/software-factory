@@ -22,6 +22,7 @@ class Settings:
     merge_app_private_key_path: str | None = None
     merge_app_installation_id: str | None = None
 
+    claude_cli_path: str | None = None      # real `claude` CLI; required so agent env can be scrubbed
     llm_gateway_url: str | None = None      # LiteLLM proxy base URL
     llm_gateway_master_key: str | None = None
     slack_webhook_url: str | None = None    # channel FYI only: never carries approval links

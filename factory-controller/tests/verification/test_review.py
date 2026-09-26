@@ -1,6 +1,7 @@
 from factory.models import Diff, RuntimeResult
 from factory.policy.action_classes import FileChange
-from factory.runtime.fake import FakeRuntime, json_block, scripted
+from factory.agent_output import render_json_block as json_block
+from factory.runtime.fake import FakeRuntime, scripted
 from factory.verification.review import build_reviewer_prompt, run_review
 
 DIFF = Diff(base_commit="abc123", changes=(FileChange(path="a.py", status="modified"),),

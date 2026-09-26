@@ -143,21 +143,25 @@ def _run_sync(coro: Coroutine[Any, Any, RuntimeResult]) -> RuntimeResult:
 class ClaudeRuntime:
     """`AgentRuntime` backed by the Claude Agent SDK."""
 
-    def __init__(self, *, cli_path: str | None = None, allow_direct_provider_key: bool = False):
+    def __init__(self, *, cli_path: str | None = None, allow_direct_provider_key: bool = False,
+                 allow_unscrubbed_env: bool = False):
         self._sessions: dict[str, _SessionContext] = {}
         self._allow_direct_provider_key = allow_direct_provider_key
+        self._allow_unscrubbed_env = allow_unscrubbed_env
         self._target_cli = cli_path or shutil.which("claude")
         self._wrapper_path: str | None = None
         self._home_dirs: set[str] = set()
-        if self._target_cli is None:
-            logger.warning(
-                "no Claude CLI found (pass cli_path= or put `claude` on PATH): the "
-                "environment-scrubbing wrapper (red team R-A3) will NOT be applied, and "
-                "the agent subprocess will inherit this process's full environment"
-            )
 
     def _wrapper(self) -> str | None:
         if self._target_cli is None:
+            # Fail closed (red team R-A3): without the wrapper the agent subprocess would
+            # inherit this process's full environment, secrets included.
+            if not self._allow_unscrubbed_env:
+                raise RuntimeError(
+                    "no Claude CLI found: set FACTORY_CLAUDE_CLI_PATH (or pass cli_path=) so the "
+                    "environment-scrubbing wrapper can be applied; refusing to run an agent "
+                    "with the controller's unscrubbed environment")
+            logger.warning("running an agent WITHOUT environment scrubbing (allow_unscrubbed_env=True)")
             return None
         if self._wrapper_path is None:
             self._wrapper_path = _write_env_scrubbing_wrapper(self._target_cli)

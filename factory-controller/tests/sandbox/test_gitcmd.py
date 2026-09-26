@@ -99,3 +99,17 @@ def test_run_git_disables_hooks_from_a_hostile_repo_config(tmp_path):
     gitcmd.run_git(["commit", "-q", "-m", "init"], cwd=str(repo))
 
     assert not marker.exists()
+
+
+def test_token_never_appears_on_argv(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"], seen["env"] = cmd, kwargs["env"]
+        import subprocess
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(gitcmd.subprocess, "run", fake_run)
+    gitcmd.run_git(["ls-remote", "https://example.invalid/repo.git"], cwd=str(tmp_path), token="tok-SECRET-123")
+    assert not any("tok-SECRET-123" in part for part in seen["cmd"])
+    assert seen["env"]["GIT_CONFIG_VALUE_0"] == "Authorization: Bearer tok-SECRET-123"

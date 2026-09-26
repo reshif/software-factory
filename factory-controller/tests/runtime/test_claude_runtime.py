@@ -425,3 +425,12 @@ class TestAsyncEntryPoints:
                 runtime.resume("sess-loop", "continue")
 
         asyncio.run(call_sync_resume_from_a_loop())
+
+
+def test_missing_cli_fails_closed_instead_of_skipping_env_scrubbing(monkeypatch):
+    import factory.runtime.claude as claude_mod
+    monkeypatch.setattr(claude_mod.shutil, "which", lambda name: None)
+    runtime = claude_mod.ClaudeRuntime()
+    with pytest.raises(RuntimeError, match="FACTORY_CLAUDE_CLI_PATH"):
+        runtime._wrapper()
+    assert claude_mod.ClaudeRuntime(allow_unscrubbed_env=True)._wrapper() is None

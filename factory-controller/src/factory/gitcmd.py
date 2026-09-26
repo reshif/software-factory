@@ -20,12 +20,10 @@ filter/diff drivers, `ext::` remote helpers — so every invocation here:
 
 `sandbox/` uses this with an explicit `git_dir` OUTSIDE the mounted/executed
 workdir (see `sandbox/base.py`) and no `token` at all — sandboxes get no
-credentials. `token` exists so the github module (B2) can adopt this runner
-for its own authenticated clone/push operations instead of shelling out on
-its own; it is passed to git as an `http.extraHeader`, which does mean the
-token is visible in this **host** process's own argv (e.g. to `ps`) for the
-duration of the call — acceptable for a trusted controller host, but callers
-that need to avoid even that should use a git credential helper instead.
+credentials. `token`, when given, is passed as an `http.extraHeader` through
+git's environment-based config (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/
+`GIT_CONFIG_VALUE_n`), never on argv, so it doesn't show up in `ps` or
+`/proc/<pid>/cmdline`.
 """
 from __future__ import annotations
 
@@ -83,13 +81,14 @@ def run_git(
         prefix.append(f"--git-dir={git_dir}")
     if work_tree is not None:
         prefix.append(f"--work-tree={work_tree}")
-    cmd = ["git", *prefix, *_HARDENED_FLAGS]
-    if token:
-        cmd += ["-c", f"http.extraHeader=Authorization: Bearer {token}"]
-    cmd += args
+    cmd = ["git", *prefix, *_HARDENED_FLAGS, *args]
 
     env = dict(os.environ)
     env.update(_ISOLATED_ENV)
+    if token:
+        # Env-based config keeps the credential off argv (visible to `ps`).
+        env.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraHeader",
+                    "GIT_CONFIG_VALUE_0": f"Authorization: Bearer {token}"})
 
     logger.debug("running: %s", _redact(" ".join(cmd), token))
     try:

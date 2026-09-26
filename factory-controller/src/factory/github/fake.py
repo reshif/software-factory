@@ -13,6 +13,7 @@ from typing import Iterable
 from ..models import CheckResult, Diff, WorkItem
 from ..policy import Floor
 from ..policy.action_classes import classify
+from ..ports import NotFound
 from .client import ForbiddenDiff, MergeConflict
 
 
@@ -70,18 +71,30 @@ class FakeGitHub:
         return set(self._issues[(repo, number)].labels)
 
     def pr(self, repo: str, number: int) -> _PullRequest:
-        return self._prs[(repo, number)]
+        return self._get_pr(repo, number)
+
+    def _get_issue(self, repo: str, number: int) -> _Issue:
+        try:
+            return self._issues[(repo, number)]
+        except KeyError:
+            raise NotFound(f"no issue {repo}#{number}") from None
+
+    def _get_pr(self, repo: str, number: int) -> _PullRequest:
+        try:
+            return self._prs[(repo, number)]
+        except KeyError:
+            raise NotFound(f"no pull request {repo}#{number}") from None
 
     # ── GitHubPort: read-only ────────────────────────────────────────────────
     def get_issue(self, repo: str, number: int) -> WorkItem:
-        return self._issues[(repo, number)].item
+        return self._get_issue(repo, number).item
 
     def comment_issue(self, repo: str, number: int, body: str) -> None:
-        self._issues[(repo, number)].comments.append(body)
+        self._get_issue(repo, number).comments.append(body)
 
     def mirror_labels(self, repo: str, number: int, *, add: Iterable[str] = (),
                        remove: Iterable[str] = ()) -> None:
-        labels = self._issues[(repo, number)].labels
+        labels = self._get_issue(repo, number).labels
         labels.difference_update(remove)
         labels.update(add)
 
@@ -98,7 +111,7 @@ class FakeGitHub:
         return number
 
     def pr_head_sha(self, repo: str, number: int) -> str:
-        pr = self._prs[(repo, number)]
+        pr = self._get_pr(repo, number)
         return self._branches.get((repo, pr.head), pr.head)
 
     def check_runs(self, repo: str, sha: str) -> list[CheckResult]:
@@ -108,8 +121,10 @@ class FakeGitHub:
         return list(self._reviews.get((repo, number), []))
 
     # ── GitHubPort: writes ───────────────────────────────────────────────────
-    def push_diff(self, repo: str, *, branch: str, diff: Diff, message: str) -> str:
-        classification = classify(diff.changes, self._floor)
+    def push_diff(self, repo: str, *, branch: str, diff: Diff, message: str,
+                  product_forbidden: Iterable[str] = (), product_protected: Iterable[str] = ()) -> str:
+        classification = classify(diff.changes, self._floor, product_forbidden=product_forbidden,
+                                  product_protected=product_protected)
         if classification.blocked:
             raise ForbiddenDiff(
                 f"refusing to push AC8 diff to {repo}: {'; '.join(classification.reasons)}"
@@ -126,7 +141,7 @@ class FakeGitHub:
         return revert_sha
 
     def merge_pr(self, repo: str, number: int, *, expected_head_sha: str) -> str:
-        pr = self._prs[(repo, number)]
+        pr = self._get_pr(repo, number)
         actual = self.pr_head_sha(repo, number)
         if actual != expected_head_sha:
             raise MergeConflict(

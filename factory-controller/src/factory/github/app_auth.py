@@ -16,6 +16,8 @@ from pathlib import Path
 import httpx
 import jwt
 
+from ._http import github_headers
+
 logger = logging.getLogger(__name__)
 
 # Refresh this long before GitHub's own expiry so a slow caller never races it.
@@ -45,8 +47,8 @@ class InstallationTokenProvider:
     def __init__(self, credentials: AppCredentials, *, client: httpx.Client | None = None,
                  monotonic=time.monotonic, wall_clock=time.time):
         self._creds = credentials
+        self._owns = client is None
         self._client = client or httpx.Client(timeout=10.0)
-        self._owns_client = client is None
         self._monotonic = monotonic
         self._wall_clock = wall_clock
         self._lock = threading.Lock()
@@ -68,8 +70,14 @@ class InstallationTokenProvider:
             self._expires_at = 0.0
 
     def close(self) -> None:
-        if self._owns_client:
+        if self._owns:
             self._client.close()
+
+    def __enter__(self) -> "InstallationTokenProvider":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()
 
     def _private_key(self) -> str:
         return Path(self._creds.private_key_path).read_text()
@@ -86,14 +94,7 @@ class InstallationTokenProvider:
     def _fetch(self) -> str:
         app_jwt = self._make_jwt()
         url = f"{self._creds.api_url}/app/installations/{self._creds.installation_id}/access_tokens"
-        response = self._client.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {app_jwt}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-        )
+        response = self._client.post(url, headers=github_headers(app_jwt))
         response.raise_for_status()
         data = response.json()
         ttl = _parse_expiry_seconds(data["expires_at"])

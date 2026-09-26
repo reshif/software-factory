@@ -46,11 +46,12 @@ def test_build_plan_bundles_both():
     assert set(plan) == {"ruleset", "actions_permissions"}
 
 
-def test_dry_run_prints_json_and_makes_no_request(capsys):
+def test_dry_run_returns_plan_and_prints_nothing_and_makes_no_request(capsys):
+    # apply_repo_settings never prints (that's main()'s job) and, in a dry run,
+    # never touches the network either -- no client/token is even required.
     plan = apply_repo_settings(repo="acme/demo", merge_bot_app_id=1, dry_run=True)
-    out = capsys.readouterr().out
-    printed = json.loads(out)
-    assert printed == plan
+    assert plan == build_plan("acme/demo", merge_bot_app_id=1)
+    assert capsys.readouterr().out == ""
 
 
 def test_apply_requires_a_token_when_not_dry_run():

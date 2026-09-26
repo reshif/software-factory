@@ -18,13 +18,26 @@ allowed hosts, and neither of them is a place to exfiltrate secrets to.
 
 ## Files
 
-- `tinyproxy.conf`: tinyproxy configured with `FilterDefaultDeny Yes`, so only
-  hostnames in `filter.allowlist` are reachable.
-- `filter.allowlist`: the allowed FQDNs, one per line. **Edit this before
-  deploying** — the shipped list is a placeholder (`litellm.internal`, plus
-  common Python/Node package mirrors). Keep it as short as your products
+- `tinyproxy.conf`: tinyproxy configured with `FilterDefaultDeny Yes` (an
+  ALLOWlist: only a destination matching `filter.allowlist` is reachable,
+  everything else is refused), `FilterExtended Yes` (patterns are POSIX
+  extended regular expressions) and `FilterURLs No` (match the request host,
+  not the full URL).
+- `filter.allowlist`: the allowed hosts, one **anchored** regex per line —
+  `^litellm$`, `^pypi\.org$`, etc. **Edit this before deploying** — the
+  shipped list is `litellm` (the LLM gateway's Compose service name) plus
+  common Python/Node package mirrors. Keep it as short as your products
   actually need; every extra entry widens what a compromised sandbox can
   reach.
+
+  **Every pattern must be anchored (`^...$`) with dots escaped (`\.`).**
+  tinyproxy's filter match is a regex search, not a full-string equality
+  check: an unanchored pattern like `pypi.org` also matches
+  `pypi.org.evil.tld` (a subdomain of an attacker's domain) and
+  `evil-pypi.org` (the `.` matches any character, and nothing pins the match
+  to the start/end of the host) — either one would let a compromised sandbox
+  exfiltrate data to a domain merely containing the allowed name. `^pypi\.org$`
+  matches only that exact host.
 
 ## Running it
 
@@ -38,7 +51,11 @@ docker run -d --name factory-egress-proxy --network factory-egress \
 
 Point `FACTORY_EGRESS_PROXY_URL` at `http://factory-egress-proxy:8888` and
 construct `DockerSandbox(egress_network="factory-egress", egress_proxy_url=...)`
-from it (see `src/factory/sandbox/docker.py`).
+from it (see `src/factory/sandbox/docker.py`). Under `docker-compose.yml`,
+this proxy IS the `egress-proxy` service, on both `factory-egress` (reachable
+from sandboxes) and `factory-internal` (so it can reach `litellm` by its
+Compose service name) — the gateway's allowlist entry is that service name,
+`litellm`, never a made-up `*.internal` domain that nothing actually resolves.
 
 ## Squid alternative
 

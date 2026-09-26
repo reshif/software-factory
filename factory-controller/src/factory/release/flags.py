@@ -5,6 +5,9 @@ dormant." Flags are always created OFF (0% rollout); `kill()` is the fail-closed
 escape hatch used by recovery plans and sets the rollout back to 0.
 """
 import json
+import os
+import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 
@@ -20,11 +23,26 @@ class FileFlagProvider:
         try:
             return json.loads(self._path.read_text())
         except json.JSONDecodeError:
+            # Unlike the deploy fencing file, resetting to "no flags known" here is
+            # merely fail-safe (every flag reads back as 0%/off), not fail-dangerous,
+            # so a corrupt file is tolerated rather than raised.
             return {}
 
     def _save(self, state: dict[str, int]) -> None:
+        """Write atomically: a temp file plus `os.replace`, so a crash mid-write can
+        never leave a half-written, corrupt flags file behind."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(state))
+        fd, tmp_name = tempfile.mkstemp(dir=str(self._path.parent), prefix=".flags-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as tmp:
+                tmp.write(json.dumps(state))
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.replace(tmp_name, self._path)
+        except BaseException:
+            with suppress(FileNotFoundError):
+                os.remove(tmp_name)
+            raise
 
     def create(self, flag: str) -> None:
         state = self._load()

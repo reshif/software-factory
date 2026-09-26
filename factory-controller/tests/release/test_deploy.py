@@ -1,17 +1,21 @@
+import fcntl
+
 import pytest
 
 from factory.controller.approvals import StaleApproval
-from factory.release.deploy import CommandDeployTarget, DeployCommandError, FakeDeployTarget
+from factory.release.deploy import CommandDeployTarget, DeployCommandError, FakeDeployTarget, FencingStateError
 
 
 def make_target(tmp_path, **overrides):
     commands = {
         "build": 'python3 -c "import hashlib,os;'
-                 'print(\'sha256:\'+hashlib.sha256((os.environ[\'REPO\']+\'@\'+os.environ[\'SHA\']).encode()).hexdigest())"',
-        "deploy": 'echo "deployed $ARTIFACT to $ENVIRONMENT ($OPERATION_ID)"',
+                 'print(\'sha256:\'+hashlib.sha256((os.environ[\'FACTORY_DEPLOY_REPO\']+\'@\'+'
+                 'os.environ[\'FACTORY_DEPLOY_SHA\']).encode()).hexdigest())"',
+        "deploy": 'echo "deployed $FACTORY_DEPLOY_ARTIFACT to $FACTORY_DEPLOY_ENVIRONMENT '
+                  '($FACTORY_DEPLOY_OPERATION_ID)"',
         "health": "true",
-        "rollback": 'echo "rolled back $ENVIRONMENT to $TO_ARTIFACT"',
-        "url": 'echo "https://$ENVIRONMENT.example.com"',
+        "rollback": 'echo "rolled back $FACTORY_DEPLOY_ENVIRONMENT to $FACTORY_DEPLOY_TO_ARTIFACT"',
+        "url": 'echo "https://$FACTORY_DEPLOY_ENVIRONMENT.example.com"',
     }
     commands.update(overrides)
     return CommandDeployTarget(commands=commands, fencing_state_path=str(tmp_path / "fencing.json"))
@@ -97,6 +101,65 @@ def test_failing_deploy_command_raises_and_does_not_advance_fencing(tmp_path):
     # fencing wasn't recorded, so the same token can be retried
     target2 = make_target(tmp_path)
     target2.deploy("sha256:abc", environment="staging", operation_id="op-2", fencing_token=1)
+
+
+# -- Q-M4: fencing file never silently resets, atomic writes, locked critical section ----
+
+def test_corrupt_fencing_file_raises_never_resets(tmp_path):
+    (tmp_path / "fencing.json").write_text("{this is not valid json")  # pre-corrupt it
+    target = make_target(tmp_path)  # uses tmp_path / "fencing.json", same file
+    with pytest.raises(FencingStateError):
+        target.deploy("sha256:abc", environment="prod", operation_id="op-1", fencing_token=1)
+
+
+def test_atomic_write_leaves_no_temp_files_behind(tmp_path):
+    target = make_target(tmp_path)
+    target.deploy("sha256:abc", environment="prod", operation_id="op-1", fencing_token=1)
+    assert list(tmp_path.glob(".fencing-*.tmp")) == []
+    assert (tmp_path / "fencing.json").exists()
+
+
+def test_fencing_lock_is_held_exclusively_during_the_critical_section(tmp_path):
+    target = make_target(tmp_path)
+    with target._fencing_lock():
+        with open(target._lock_path, "a+") as other_handle:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(other_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    # released once the context manager exits
+    with open(target._lock_path, "a+") as other_handle:
+        fcntl.flock(other_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(other_handle, fcntl.LOCK_UN)
+
+
+# -- S3: hooks run with a minimal, allowlisted environment --------------------------------
+
+def test_hooks_do_not_inherit_the_full_process_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOME_UNRELATED_SECRET", "leaked-if-present")
+    target = make_target(tmp_path, deploy='echo "secret=[$SOME_UNRELATED_SECRET]"')
+    receipt = target.deploy("sha256:abc", environment="staging", operation_id="op-1", fencing_token=1)
+    assert "leaked-if-present" not in receipt.detail
+    assert "secret=[]" in receipt.detail
+
+
+def test_extra_env_constructor_param_is_passed_to_hooks(tmp_path):
+    target = CommandDeployTarget(
+        commands={
+            "build": "echo sha256:x", "health": "true", "url": "echo url",
+            "rollback": "echo rollback",
+            "deploy": 'echo "registry=$REGISTRY_URL artifact=$FACTORY_DEPLOY_ARTIFACT"',
+        },
+        fencing_state_path=str(tmp_path / "fencing.json"),
+        extra_env={"REGISTRY_URL": "registry.example.com"},
+    )
+    receipt = target.deploy("sha256:abc", environment="staging", operation_id="op-1", fencing_token=1)
+    assert "registry=registry.example.com" in receipt.detail
+    assert "artifact=sha256:abc" in receipt.detail
+
+
+def test_env_vars_are_prefixed_factory_deploy(tmp_path):
+    target = make_target(tmp_path, deploy='env | grep -c "^FACTORY_DEPLOY_" || true')
+    receipt = target.deploy("sha256:abc", environment="staging", operation_id="op-1", fencing_token=1)
+    assert receipt.detail.strip() == "3"  # ARTIFACT, ENVIRONMENT, OPERATION_ID
 
 
 # -- FakeDeployTarget --------------------------------------------------------------------

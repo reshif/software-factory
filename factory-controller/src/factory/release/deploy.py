@@ -5,30 +5,62 @@ The only holder of prod credentials; consumes H2." `CommandDeployTarget` is the
 production adapter: it shells out to operator-supplied commands and never touches
 git, GitHub or LLM credentials.
 
-Fencing: an approval is single-use and consumed with a compare-and-swap plus a
+**Environment.** Each hook runs with a minimal, allowlisted environment: `PATH` and
+`HOME` (so the shell and any tool it invokes can find a binary and a home directory),
+whatever the caller passes as `extra_env` (its own deploy-specific configuration,
+e.g. a kubeconfig path or a registry URL), and the identifiers this module defines
+for that call, all under a `FACTORY_DEPLOY_` prefix (`FACTORY_DEPLOY_ARTIFACT`,
+`FACTORY_DEPLOY_ENVIRONMENT`, ...). The controller process's own environment is never
+inherited wholesale -- these hooks run with agent-adjacent trust (an operator wrote
+them, but they're driven by data the pipeline produced), and a stray secret sitting in
+the controller's process environment (an API key, a database URL, ...) must not leak
+into them just because `os.environ` happened to contain it.
+
+**Fencing.** An approval is single-use and consumed with a compare-and-swap plus a
 monotonically increasing fencing token (final draft §10, `controller.approvals`).
 `CommandDeployTarget` enforces the same rule at the point of effect: it keeps the
 highest fencing token it has ever accepted **per environment**, persisted to a small
 JSON file so a restarted controller doesn't forget it, and rejects anything not
 strictly greater. This is a second, independent check -- the approval store already
 guards `consume()` -- defense in depth against a stale or replayed deploy.
+
+The fencing file is never silently reset: if it exists but doesn't parse, that's
+`FencingStateError`, not "assume nothing was ever deployed" -- a reset would let an
+already-superseded (stale) fencing token pass the check again. Writes are atomic
+(write a temp file, `os.replace` it into place), so a crash mid-write can't leave a
+half-written, corrupt file behind. An `fcntl.flock` -- held on a dedicated lock file,
+never on the data file itself, so the atomic rename can't invalidate a lock a
+concurrent process is still holding -- spans the check, the deploy command, and the
+record, so two concurrent `deploy()` calls for the same environment can't both read
+the same "highest token so far" and both proceed.
 """
+import fcntl
 import json
-import logging
 import os
 import subprocess
+import tempfile
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from ..controller.approvals import StaleApproval
 from ..models import DeployReceipt
 
-logger = logging.getLogger(__name__)
-
 REQUIRED_COMMANDS = ("build", "deploy", "health", "rollback", "url")
+ENV_PREFIX = "FACTORY_DEPLOY_"
+ALLOWLISTED_HOST_ENV = ("PATH", "HOME")
 
 
 class DeployCommandError(Exception):
     """A configured shell hook exited non-zero."""
+
+
+class FencingStateError(Exception):
+    """The persisted fencing state file exists but couldn't be parsed.
+
+    This never falls back to "treat it as empty": that would silently reset every
+    environment's highest-seen fencing token to 0, letting an already-superseded
+    (stale) deploy token pass the check again.
+    """
 
 
 class CommandDeployTarget:
@@ -36,17 +68,25 @@ class CommandDeployTarget:
 
     `commands` maps each of REQUIRED_COMMANDS to a shell command string. Each command
     receives the artifact digest, environment, and related identifiers as **environment
-    variables** (ARTIFACT, ENVIRONMENT, REPO, SHA, OPERATION_ID, TO_ARTIFACT) -- never as
-    interpolated shell arguments, so a value can't break out of the command.
+    variables**, prefixed `FACTORY_DEPLOY_` (`FACTORY_DEPLOY_ARTIFACT`,
+    `FACTORY_DEPLOY_ENVIRONMENT`, `FACTORY_DEPLOY_REPO`, `FACTORY_DEPLOY_SHA`,
+    `FACTORY_DEPLOY_OPERATION_ID`, `FACTORY_DEPLOY_TO_ARTIFACT`) -- never interpolated
+    into the command string, so a value can't break out of the command. `extra_env`
+    (unprefixed, used as-is) carries whatever else the hooks need -- a kubeconfig path,
+    a registry URL -- since the full controller process environment is never passed
+    through (see the module docstring).
     """
 
-    def __init__(self, *, commands: dict[str, str], fencing_state_path: str, timeout_s: int = 900):
+    def __init__(self, *, commands: dict[str, str], fencing_state_path: str, timeout_s: int = 900,
+                 extra_env: dict[str, str] | None = None):
         missing = [name for name in REQUIRED_COMMANDS if name not in commands]
         if missing:
             raise ValueError(f"CommandDeployTarget is missing commands for: {', '.join(missing)}")
         self._commands = dict(commands)
         self._fencing_path = Path(fencing_state_path)
+        self._lock_path = self._fencing_path.with_name(self._fencing_path.name + ".lock")
         self._timeout_s = timeout_s
+        self._extra_env = dict(extra_env or {})
 
     def build(self, repo: str, sha: str) -> str:
         out = self._run("build", {"REPO": repo, "SHA": sha})
@@ -58,10 +98,18 @@ class CommandDeployTarget:
         return digest
 
     def deploy(self, artifact: str, *, environment: str, operation_id: str, fencing_token: int) -> DeployReceipt:
-        self._check_fencing(environment, fencing_token)
-        out = self._run("deploy", {
-            "ARTIFACT": artifact, "ENVIRONMENT": environment, "OPERATION_ID": operation_id})
-        self._record_fencing(environment, fencing_token)
+        with self._fencing_lock():
+            highest = self._read_fencing().get(environment, 0)
+            if fencing_token <= highest:
+                raise StaleApproval(f"deploy to {environment!r}: fencing token {fencing_token} <= {highest}")
+
+            out = self._run("deploy", {
+                "ARTIFACT": artifact, "ENVIRONMENT": environment, "OPERATION_ID": operation_id})
+
+            state = self._read_fencing()
+            state[environment] = max(fencing_token, state.get(environment, 0))
+            self._write_fencing_atomic(state)
+
         return DeployReceipt(operation_id=operation_id, environment=environment, artifact=artifact,
                               status="deployed", detail=out.strip())
 
@@ -83,31 +131,55 @@ class CommandDeployTarget:
 
     # -- fencing -----------------------------------------------------------------------
 
-    def _load_fencing(self) -> dict[str, int]:
+    @contextmanager
+    def _fencing_lock(self):
+        """Hold an exclusive lock across a check + deploy + record cycle.
+
+        The lock lives on a dedicated `<fencing_state_path>.lock` file, never on the
+        data file itself: `_write_fencing_atomic` replaces the data file's inode via
+        `os.replace`, and flock is bound to the *file description*, not the path -- a
+        lock taken on a path that then gets replaced would silently stop protecting
+        the new file. The lock file's own identity never changes, so this is safe.
+        """
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._lock_path, "a+") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+    def _read_fencing(self) -> dict[str, int]:
         if not self._fencing_path.exists():
             return {}
-        try:
-            return json.loads(self._fencing_path.read_text())
-        except json.JSONDecodeError:
-            logger.warning("fencing state file %s is corrupt; treating as empty", self._fencing_path)
+        content = self._fencing_path.read_text()
+        if not content.strip():
             return {}
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise FencingStateError(f"fencing state file {self._fencing_path} is corrupt: {exc}") from exc
 
-    def _check_fencing(self, environment: str, fencing_token: int) -> None:
-        highest = self._load_fencing().get(environment, 0)
-        if fencing_token <= highest:
-            raise StaleApproval(
-                f"deploy to {environment!r}: fencing token {fencing_token} <= {highest}")
-
-    def _record_fencing(self, environment: str, fencing_token: int) -> None:
-        state = self._load_fencing()
-        state[environment] = max(fencing_token, state.get(environment, 0))
+    def _write_fencing_atomic(self, state: dict[str, int]) -> None:
         self._fencing_path.parent.mkdir(parents=True, exist_ok=True)
-        self._fencing_path.write_text(json.dumps(state))
+        fd, tmp_name = tempfile.mkstemp(dir=str(self._fencing_path.parent), prefix=".fencing-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as tmp:
+                tmp.write(json.dumps(state))
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.replace(tmp_name, self._fencing_path)
+        except BaseException:
+            with suppress(FileNotFoundError):
+                os.remove(tmp_name)
+            raise
 
     # -- shelling out --------------------------------------------------------------------
 
-    def _run(self, name: str, extra_env: dict[str, str]) -> str:
-        env = {**os.environ, **extra_env}
+    def _run(self, name: str, hook_vars: dict[str, str]) -> str:
+        env = {key: os.environ[key] for key in ALLOWLISTED_HOST_ENV if key in os.environ}
+        env.update(self._extra_env)
+        env.update({ENV_PREFIX + key: value for key, value in hook_vars.items()})
         try:
             result = subprocess.run(self._commands[name], shell=True, env=env, capture_output=True,
                                      text=True, timeout=self._timeout_s)

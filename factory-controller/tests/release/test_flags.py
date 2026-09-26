@@ -59,3 +59,24 @@ def test_file_flag_provider_persists_across_instances(tmp_path):
 
     c = FileFlagProvider(path)
     assert c.rollout("mission-1") == 0
+
+
+# -- Q-M4: FileFlagProvider uses the same atomic write as the deploy fencing file --------
+
+def test_write_is_atomic_and_leaves_no_temp_files_behind(tmp_path):
+    provider = FileFlagProvider(str(tmp_path / "flags.json"))
+    provider.create("mission-1")
+    provider.set_rollout("mission-1", 30)
+    provider.kill("mission-1")
+    assert list(tmp_path.glob(".flags-*.tmp")) == []
+    assert (tmp_path / "flags.json").exists()
+
+
+def test_corrupt_flags_file_is_tolerated_and_reads_as_off(tmp_path):
+    """Unlike the deploy fencing file, a corrupt flags file fails *safe*: every flag
+    reads back as 0%/off rather than raising, since that can only ever turn releases
+    off, never let a stale one back on."""
+    path = tmp_path / "flags.json"
+    path.write_text("{not valid json")
+    provider = FileFlagProvider(str(path))
+    assert provider.rollout("mission-1") == 0

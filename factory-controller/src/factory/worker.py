@@ -34,7 +34,9 @@ class Worker:
     def run_once(self, now=None) -> None:
         now = now or self._now()
         self._factory.dispatch_webhooks()
+        self._factory.process_approvals()
         self._apply_timeouts(now)
+        self._factory.release_admitted_missions()
         self._factory.run_ready_tasks()
         self._reconcile_intents()
         self._advance_observing(now)

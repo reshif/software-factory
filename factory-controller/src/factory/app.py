@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse
 from .clock import SystemClock
 from .config import Settings
 from .github.webhooks import (CheckSuiteCompleted, IssueCommentCreated, IssueLabeled, PullRequestReview,
-                              PushToDefault, verify_signature)
+                              PushToBranch, PushToDefault, verify_signature)
 from .github import webhooks as gh_webhooks
 from .inbox.router import build_inbox_router
 from .inbox.signing import TokenSigner
@@ -40,6 +40,7 @@ _EVENT_KIND = {
     PullRequestReview: "pull_request_review",
     CheckSuiteCompleted: "check_suite_completed",
     PushToDefault: "push_to_default",
+    PushToBranch: "push_to_branch",
 }
 
 

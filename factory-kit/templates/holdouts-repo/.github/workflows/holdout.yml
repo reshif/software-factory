@@ -3,12 +3,22 @@ name: holdout
 # Controller-triggered black-box run against a staging digest (final draft
 # §9.2, §13.1 #4). No agent identity can trigger or read this workflow's
 # scenarios -- only the controller's read-only holdout identity.
+#
+# `run-name` carries the caller's `correlation_id` verbatim (Q-M3): the
+# verification runner (B5) polls this workflow_dispatch run by matching on
+# that exact run name, since the dispatch API doesn't hand back a run id.
+
+run-name: holdout ${{ inputs.correlation_id }}
 
 on:
   workflow_dispatch:
     inputs:
       staging_url:
         description: "Staging URL to run scenarios against."
+        required: true
+        type: string
+      correlation_id:
+        description: "Opaque id the caller polls this run by (becomes the run-name, exactly)."
         required: true
         type: string
       artifact:

@@ -63,11 +63,15 @@ DEFAULT_ENVIRONMENT = "production"
 
 def _at(event: dict) -> datetime:
     value = event.get("at")
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str):
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    raise ValueError(f"event has no usable 'at' timestamp: {event!r}")
+        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if not isinstance(value, datetime):
+        raise ValueError(f"event has no usable 'at' timestamp: {event!r}")
+    # A naive datetime (no tzinfo) is treated as UTC -- whether it arrived as a
+    # datetime object directly or was parsed from a naive ISO string above -- so it
+    # can always be compared and subtracted against the aware datetimes elsewhere in
+    # this module without raising.
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 def _field(event: dict, key: str, default=None):
@@ -82,7 +86,9 @@ def _kind(event: dict) -> str:
 
 @dataclass(frozen=True)
 class DoraMetrics:
-    """The 5 DORA metrics (final draft §18)."""
+    """The 5 DORA metrics (final draft §18), plus `deployment_count` -- the supporting
+    count of production deploys the other 5 fields were computed from, not itself one
+    of the 5."""
     change_lead_time_seconds: float | None
     deployment_frequency_per_day: float
     failed_deployment_recovery_seconds: float | None
@@ -123,7 +129,7 @@ def compute_dora_metrics(events_by_mission: dict[str, list[dict]], *,
     incident_count = 0
     rework_count = 0
 
-    for mission_id, events in events_by_mission.items():
+    for events in events_by_mission.values():
         by_time = sorted(events, key=_at)
 
         first_push = next((e for e in by_time if _kind(e) == REVISION_PUSHED), None)
@@ -234,7 +240,7 @@ def _mean(values: list[float]) -> float | None:
 
 _PROM_METRICS = (
     ("factory_change_lead_time_seconds", "gauge",
-     "Median... mean time from first commit to production deploy, in seconds.",
+     "Mean time from first commit to production deploy, in seconds.",
      lambda r: r.dora.change_lead_time_seconds),
     ("factory_deployment_frequency_per_day", "gauge",
      "Production deployments per day.", lambda r: r.dora.deployment_frequency_per_day),

@@ -5,14 +5,24 @@ returns pass/fail counts only)." `WorkflowHoldoutRunner` drives that separate re
 GitHub Actions workflow with its **own read-only identity** -- it never uses the push-
 or merge-bot credentials. It:
 
-  1. Dispatches `workflow_dispatch` on the holdout repo's workflow with
-     `{"product": ..., "staging_url": ..., "artifact": ...}` inputs.
-  2. Polls `GET .../actions/workflows/{workflow}/runs` for the run it just triggered
-     (matched by the dispatch timestamp, since `workflow_dispatch` doesn't hand back a
-     run id) until it reaches a terminal status.
+  1. Dispatches `workflow_dispatch` on the holdout repo's workflow with `{"product":
+     ..., "staging_url": ..., "artifact": ..., "correlation_id": ...}` inputs.
+     `correlation_id` is `"<product>-<artifact short hash>"`.
+  2. Polls `GET .../actions/workflows/{workflow}/runs` for a run whose `name` or
+     `display_title` equals ``"holdout <correlation_id>"`` -- the holdouts template's
+     `run-name: holdout ${{ inputs.correlation_id }}` sets exactly that -- until it
+     reaches a terminal status. Matching on that server-assigned identity, rather than
+     on a dispatch timestamp, means two dispatches racing within the same second (or a
+     clock skewed between the controller and GitHub) can never be confused for one
+     another.
   3. Downloads the `holdout-result` artifact and reads `holdout-result.json`, a JSON
      object `{"passed": int, "total": int}` -- nothing else. It never inspects the
      holdout repo's scenario bodies or logs.
+
+Artifact downloads redirect (302) to short-lived blob storage; the client follows that
+redirect (`follow_redirects=True`) so the download actually completes. httpx itself
+drops the `Authorization` header when a redirect crosses origins, which is exactly the
+behavior we want: the holdout identity's GitHub token is never sent to blob storage.
 
 A run that never completes, fails, or produces no matching artifact raises
 `HoldoutRunError` -- the caller must treat that as a failed check (fail closed),
@@ -23,8 +33,6 @@ import json
 import logging
 import time
 import zipfile
-from dataclasses import dataclass
-from datetime import datetime, timezone
 
 import httpx
 
@@ -38,12 +46,11 @@ class HoldoutRunError(Exception):
     """The holdout run could not be triggered, did not complete, or produced no result."""
 
 
-@dataclass(frozen=True)
-class _RunSummary:
-    id: int
-    status: str
-    conclusion: str | None
-    created_at: str
+def correlation_id(product: str, artifact: str) -> str:
+    """`"<product>-<artifact short hash>"`, sent as a workflow_dispatch input and used
+    to find the run it triggered by identity rather than by timestamp."""
+    digest = artifact.removeprefix("sha256:") or artifact
+    return f"{product}-{digest[:12]}"
 
 
 class WorkflowHoldoutRunner:
@@ -72,39 +79,38 @@ class WorkflowHoldoutRunner:
         self._clock = clock
 
     def run(self, product: str, *, staging_url: str, artifact: str) -> tuple[int, int]:
-        dispatched_at = self._now_iso()
-        self._dispatch(product, staging_url=staging_url, artifact=artifact)
-        run_id = self._find_dispatched_run(dispatched_at)
+        corr_id = correlation_id(product, artifact)
+        self._dispatch(product, staging_url=staging_url, artifact=artifact, corr_id=corr_id)
+        run_id = self._find_dispatched_run(corr_id)
         self._wait_for_completion(run_id)
         return self._read_result(run_id)
 
     # -- steps -----------------------------------------------------------------------
 
-    def _now_iso(self) -> str:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    def _dispatch(self, product: str, *, staging_url: str, artifact: str) -> None:
+    def _dispatch(self, product: str, *, staging_url: str, artifact: str, corr_id: str) -> None:
         resp = self._client.post(
             f"/repos/{self._repo}/actions/workflows/{self._workflow_file}/dispatches",
             json={"ref": self._ref,
-                  "inputs": {"product": product, "staging_url": staging_url, "artifact": artifact}})
+                  "inputs": {"product": product, "staging_url": staging_url, "artifact": artifact,
+                             "correlation_id": corr_id}})
         if resp.status_code not in (204, 201):
             raise HoldoutRunError(f"dispatch failed: {resp.status_code} {resp.text}")
 
-    def _find_dispatched_run(self, dispatched_at: str, *, attempts: int = 10) -> int:
+    def _find_dispatched_run(self, corr_id: str, *, attempts: int = 10) -> int:
+        expected_title = f"holdout {corr_id}"
         for _ in range(attempts):
             resp = self._client.get(
                 f"/repos/{self._repo}/actions/workflows/{self._workflow_file}/runs",
-                params={"event": "workflow_dispatch", "per_page": 5})
+                params={"event": "workflow_dispatch", "per_page": 20})
             if resp.status_code != 200:
                 raise HoldoutRunError(f"listing runs failed: {resp.status_code} {resp.text}")
             runs = resp.json().get("workflow_runs", [])
-            candidates = [r for r in runs if r.get("created_at", "") >= dispatched_at]
-            if candidates:
-                newest = max(candidates, key=lambda r: r["created_at"])
-                return newest["id"]
+            match = next((r for r in runs
+                          if r.get("name") == expected_title or r.get("display_title") == expected_title), None)
+            if match is not None:
+                return match["id"]
             self._sleep(self._poll_interval_s)
-        raise HoldoutRunError("no workflow_dispatch run appeared after dispatching")
+        raise HoldoutRunError(f"no run named {expected_title!r} appeared after dispatching")
 
     def _wait_for_completion(self, run_id: int) -> None:
         deadline = self._clock() + self._timeout_s
@@ -131,8 +137,13 @@ class WorkflowHoldoutRunner:
         if match is None:
             raise HoldoutRunError(f"run {run_id} produced no {ARTIFACT_NAME!r} artifact")
 
-        download = self._client.get(f"/repos/{self._repo}/actions/artifacts/{match['id']}/zip")
-        if download.status_code not in (200, 302):
+        # GitHub's artifact download redirects (302) to short-lived blob storage.
+        # follow_redirects=True is required for the download to actually complete;
+        # httpx drops the Authorization header on a cross-origin redirect on its own,
+        # so the GitHub token is never sent to blob storage.
+        download = self._client.get(f"/repos/{self._repo}/actions/artifacts/{match['id']}/zip",
+                                     follow_redirects=True)
+        if download.status_code != 200:
             raise HoldoutRunError(f"downloading artifact {match['id']} failed: {download.status_code}")
 
         try:

@@ -1,17 +1,16 @@
+from factory.github.fake import FakeGitHub
 from factory.release.revert import auto_revert
 
 
-class FakeGitHubForRevert:
-    def __init__(self):
-        self.reverted = []
-
-    def revert_commit(self, repo, sha, *, branch="main"):
-        self.reverted.append((repo, sha, branch))
-        return f"revert-of-{sha}"
-
-
-def test_auto_revert_calls_github_and_returns_sha():
-    github = FakeGitHubForRevert()
+def test_auto_revert_calls_github_and_returns_sha(policy):
+    github = FakeGitHub(floor=policy.floor)
     revert_sha = auto_revert(github, "acme/app", "deadbeef")
-    assert revert_sha == "revert-of-deadbeef"
-    assert github.reverted == [("acme/app", "deadbeef", "main")]
+    assert revert_sha == github.revert_commit("acme/app", "deadbeef")
+
+
+def test_auto_revert_updates_the_default_branch_head(policy):
+    github = FakeGitHub(floor=policy.floor)
+    head_before = github.head_commit("acme/app", "main")
+    revert_sha = auto_revert(github, "acme/app", head_before)
+    assert github.head_commit("acme/app", "main") == revert_sha
+    assert revert_sha != head_before

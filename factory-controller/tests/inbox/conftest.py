@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import timedelta
 
 import pytest
@@ -18,6 +19,35 @@ CONTENT_HASH = "sha256:packet-content"
 SIGNING_SECRET = "test-signing-secret"
 
 
+class _MemoryStoreWithUseOnce:
+    """`MemoryStateStore`, plus the `use_once` the `StateStore` port now declares.
+
+    B1 is adding `use_once` (an atomic check-and-set: True the first time a key is
+    seen, False ever after) to `MemoryStateStore`/`PostgresStateStore` in parallel;
+    it isn't there yet. The inbox router is written straight against the port
+    (`store.use_once(...)`), so this test-only shim supplies a correct, thread-safe
+    implementation of just that one method and delegates everything else to a real
+    `MemoryStateStore`. Once B1 lands `use_once` on `MemoryStateStore` itself, this
+    class can be deleted and `store` can go back to being a bare `MemoryStateStore()`
+    — nothing in `factory.inbox` would need to change.
+    """
+
+    def __init__(self) -> None:
+        self._inner = MemoryStateStore()
+        self._lock = threading.Lock()
+        self._used_once: set[str] = set()
+
+    def use_once(self, key: str) -> bool:
+        with self._lock:
+            if key in self._used_once:
+                return False
+            self._used_once.add(key)
+            return True
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 @pytest.fixture
 def clock(now):
     return FakeClock(now)
@@ -30,10 +60,7 @@ def signer():
 
 @pytest.fixture
 def store():
-    # B1's MemoryStateStore (factory.store.memory) is the real StateStore adapter now
-    # that it exists; it wraps the same reference ApprovalStore/IntentLog the inbox
-    # was already tested against, so nothing else here changes.
-    return MemoryStateStore()
+    return _MemoryStoreWithUseOnce()
 
 
 @pytest.fixture
@@ -64,12 +91,12 @@ def client(app):
 
 def make_approval(store, now, *, request_id="REQ-1", gate="HM", required="1", requester="@po",
                   editors=(), artifact="sha256:artifact-1", state_version=3,
-                  expires_in=timedelta(hours=8)) -> ApprovalRequest:
+                  expires_in=timedelta(hours=8), eligible: dict | None = None) -> ApprovalRequest:
     request = ApprovalRequest(
         request_id=request_id, gate=gate, mission_ids=("MIS-1",), operation_id=f"merge:{artifact}",
         artifact=artifact, content_hash=CONTENT_HASH, policy_version="p-1", state_version=state_version,
         required=parse_requirement(required), risk_profile="standard", requester=requester,
-        editors=frozenset(editors), expires=now + expires_in,
+        editors=frozenset(editors), expires=now + expires_in, eligible=eligible,
     )
     return store.approvals.add(request)
 

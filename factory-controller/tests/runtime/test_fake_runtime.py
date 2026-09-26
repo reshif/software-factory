@@ -6,8 +6,9 @@ import os
 
 import pytest
 
+from factory.agent_output import render_json_block
 from factory.models import RuntimeRequest
-from factory.runtime.fake import FakeRuntime, json_block, scripted
+from factory.runtime.fake import FakeRuntime, scripted
 
 
 def make_request(role: str, workdir: str, **overrides) -> RuntimeRequest:
@@ -25,7 +26,7 @@ def make_request(role: str, workdir: str, **overrides) -> RuntimeRequest:
 
 
 def test_json_block_is_fenced_and_parseable():
-    block = json_block({"status": "done", "summary": "ok"})
+    block = render_json_block({"status": "done", "summary": "ok"})
     assert block.startswith("```json\n")
     assert block.endswith("\n```")
     inner = block.removeprefix("```json\n").removesuffix("\n```")
@@ -87,7 +88,7 @@ def test_run_assigns_a_session_id_and_resume_reuses_the_script(tmp_path):
     def script(request: RuntimeRequest):
         calls.append(request.prompt)
         from factory.models import RuntimeResult
-        return RuntimeResult(session_id="", status="completed", output_text=json_block({"status": "done"}))
+        return RuntimeResult(session_id="", status="completed", output_text=render_json_block({"status": "done"}))
 
     runtime = FakeRuntime({"implementer": script})
     first = runtime.run(make_request("implementer", str(tmp_path), prompt="start"))

@@ -3,25 +3,22 @@
 A script is a plain callable `RuntimeRequest -> RuntimeResult`. It may write
 files into `request.workdir` (standing in for what a real agent would edit)
 and its `output_text` is expected to end with the fenced ```json block the
-pipeline parses (final draft §12.3, build spec §4). `json_block` and
-`scripted` are convenience helpers for building one.
+pipeline parses (final draft §12.3, build spec §4), rendered by
+`factory.agent_output.render_json_block` — the one shared implementation
+also used by the real parser, so a fake output is always in the exact shape
+the pipeline expects. `scripted` is a convenience helper for building one.
 """
 from __future__ import annotations
 
 import dataclasses
-import json
 import os
 import uuid
 from collections.abc import Callable
 
+from ..agent_output import render_json_block
 from ..models import RuntimeRequest, RuntimeResult
 
 Script = Callable[[RuntimeRequest], RuntimeResult]
-
-
-def json_block(payload: dict) -> str:
-    """Render `payload` as the fenced ```json block agent output formats end with (build spec §4)."""
-    return "```json\n" + json.dumps(payload, indent=2) + "\n```"
 
 
 def write_files(workdir: str, files: dict[str, str]) -> None:
@@ -52,7 +49,7 @@ def scripted(
         return RuntimeResult(
             session_id="",
             status=status,
-            output_text=json_block(output),
+            output_text=render_json_block(output),
             usage_usd=usage_usd,
             num_turns=num_turns,
             error=error,

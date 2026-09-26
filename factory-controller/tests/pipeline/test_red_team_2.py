@@ -179,7 +179,7 @@ def test_pr_review_on_a_different_sha_is_ignored():
 
         # The real reviewer, on the real pushed sha, on the other hand, merges it.
         ctx.factory.on_pull_request_review(PullRequestReview(
-            repo=ctx.repo, number=mission.pr_number, reviewer="@po", state="APPROVED", commit_id=pushed_sha))
+            repo=ctx.repo, number=mission.pr_number, reviewer="@tl", state="APPROVED", commit_id=pushed_sha))
         assert ctx.mission(mission.mission_id).state == "MERGED"
     finally:
         ctx.cleanup()

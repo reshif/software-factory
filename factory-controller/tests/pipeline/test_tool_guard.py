@@ -79,3 +79,49 @@ def test_glob_and_grep_with_no_path_default_to_workdir(guard):
 def test_relative_paths_resolve_against_workdir(guard):
     assert guard("Read", {"file_path": "app/x.py"}) is True
     assert guard("Edit", {"file_path": "../escape.py"}) is False
+
+
+# ── red team #3 item 7 (L2) ──────────────────────────────────────────────────────
+def test_denies_read_when_file_path_is_present_but_not_a_string(guard):
+    assert guard("Read", {"file_path": 12345}) is False
+    assert guard("Read", {"file_path": ["app/x.py"]}) is False
+    assert guard("Read", {"file_path": None}) is False
+
+
+def test_denies_glob_pattern_that_is_absolute(guard):
+    assert guard("Glob", {"pattern": "/etc/**"}) is False
+
+
+def test_denies_glob_pattern_with_dotdot_traversal(guard):
+    assert guard("Glob", {"pattern": "../**/*.py"}) is False
+    assert guard("Glob", {"pattern": "app/../../etc/passwd"}) is False
+
+
+def test_denies_grep_glob_option_that_traverses(guard):
+    assert guard("Grep", {"pattern": "TODO", "glob": "../**"}) is False
+
+
+def test_denies_glob_pattern_expanding_home(guard):
+    assert guard("Glob", {"pattern": "~/.ssh/**"}) is False
+
+
+def test_allows_a_normal_relative_glob_pattern(guard):
+    assert guard("Glob", {"pattern": "app/**/*.py"}) is True
+
+
+def test_unicode_is_normalized_to_nfc_before_matching_owned_paths(tmp_path):
+    # "é" as one precomposed codepoint (NFC) vs "e" + combining acute (NFD, 2
+    # codepoints) must be treated as the same path -- otherwise a task whose
+    # owned_paths were written in one form could be bypassed, or legitimately
+    # matching files denied, by an agent using the other form.
+    import unicodedata
+
+    nfc_name = unicodedata.normalize("NFC", "café.py")
+    nfd_name = unicodedata.normalize("NFD", "café.py")
+    assert nfc_name != nfd_name, "the test fixture must actually use two different encodings"
+
+    os.makedirs(os.path.join(str(tmp_path), "app"), exist_ok=True)
+    guard = ToolGuard(workdir=str(tmp_path), owned_paths=(f"app/{nfc_name}",),
+                      forbidden_globs=(), protected_globs=())
+    # Requesting the NFD-encoded name must still match the NFC-encoded owned_paths entry.
+    assert guard("Write", {"file_path": os.path.join(str(tmp_path), "app", nfd_name)}) is True

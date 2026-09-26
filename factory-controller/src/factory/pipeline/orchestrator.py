@@ -88,6 +88,7 @@ STAGING_ENVIRONMENT = "staging"
 # item 5): nothing the controller writes here may ever appear in a captured diff.
 CONTROLLER_TMP_DIRNAME = ".factory-controller-tmp"
 PR_SUMMARY_MAX_CHARS = 2000
+MAX_PACKET_DIFF_CHARS = 200_000
 
 
 class MissionNotFound(NotFound):
@@ -422,23 +423,51 @@ class Factory:
         request_id = packets.new_request_id(gate)
         timeout, _ = mission_fsm.TIMEOUTS[f"AWAITING_{gate}"]
         expires = self._clock.now() + timeout
+        # Every request gets ITS OWN eligible approver -> roles map, from exactly
+        # this product's factory.yaml for exactly this gate (red team #3 H2). This is
+        # never a global union across products: `check_decision` rejects anyone not
+        # in it and uses these roles regardless of what a caller claims.
+        eligible = product.eligible_for(gate)
         request = ApprovalRequest(
             request_id=request_id, gate=gate, mission_ids=(mission.mission_id, *extra_mission_ids),
             operation_id=f"{gate}:{mission.mission_id}", artifact=mission.artifact, content_hash=content_hash,
             policy_version=mission.policy_version, state_version=mission.state_version, required=required,
             risk_profile=product.risk_profile, requester=self._requester(mission),
-            expires=expires, editors=frozenset(mission.editors))
+            expires=expires, editors=frozenset(mission.editors), eligible=eligible)
         self._store.approvals.add(request)
+        if not raw_diff and evidence is not None:
+            raw_diff = self._packet_diff(evidence)
         packet = packets.build_packet(request_id=request_id, gate=gate, mission=mission, title=title,
                                       recommendation=recommendation, summary=summary, required=str(required),
                                       expires=expires, content_hash=content_hash, raw_diff=raw_diff,
                                       alternatives=alternatives, evidence=evidence, recovery_plan=recovery_plan,
                                       cost_usd=cost_usd, untrusted_inputs=untrusted_inputs,
-                                      extra_mission_ids=extra_mission_ids)
+                                      extra_mission_ids=extra_mission_ids,
+                                      # Forward-compatible hook for the notifier to scope its roster to THIS
+                                      # request's eligible approvers only (red team #3 H2) -- `Notifier`/
+                                      # `SlackNotifier` (inbox module) don't read this yet; see the final
+                                      # report's "Requests to orchestrator" for routing this to that owner.
+                                      links={"eligible_approvers": sorted(eligible)})
         self._store.save_packet(packet)
         self._event(mission.mission_id, telemetry.APPROVAL_REQUESTED, {"gate": gate, "request_id": request_id})
         inbox_url = self._inbox_base_url
         self._notifier.decision_requested(packet, inbox_url=inbox_url)
+
+    def _packet_diff(self, evidence: EvidenceBundle | None) -> str:
+        """The raw diff for an HM/H2 packet (final draft §10 "the raw diff and a
+        preview"), read from `evidence.diff_ref` and capped so a huge diff can't
+        blow up the packet page -- a note replaces the tail past the cap."""
+        if evidence is None or not evidence.diff_ref:
+            return ""
+        try:
+            with open(evidence.diff_ref) as f:
+                text = f.read(MAX_PACKET_DIFF_CHARS + 1)
+        except OSError:
+            logger.warning("could not read diff_ref %r for a packet", evidence.diff_ref)
+            return ""
+        if len(text) > MAX_PACKET_DIFF_CHARS:
+            return text[:MAX_PACKET_DIFF_CHARS] + f"\n... [truncated; full diff at {evidence.diff_ref}]"
+        return text
 
     def _requester(self, mission: MissionRecord) -> str:
         cached = self._recall(mission.mission_id, "requester")

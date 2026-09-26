@@ -112,19 +112,35 @@ class Product:
     root_dir: Path
 
     def approvers_for(self, gate: str) -> tuple:
-        """Resolve the approver-login list for `gate`.
-
-        `hm: codeowners` is resolved to the product's `product` and `tech_lead`
-        owners (backed by the golden-path CODEOWNERS, which lists the same two
-        logins) -- the pipeline doesn't parse CODEOWNERS files itself in v1.
-        """
-        value = self.approvers.get(gate.lower())
-        if value == "codeowners":
-            return tuple(login for role, login in self.owners.items() if role in ("product", "tech_lead"))
-        return tuple(value or ())
+        """Resolve the approver-login list for `gate` (see `eligible_for` for the
+        authoritative approver -> roles mapping an `ApprovalRequest` is built
+        from; this is the plain login list, used e.g. to pick a default approver
+        in the demo)."""
+        return tuple(self.eligible_for(gate).keys())
 
     def roles_for(self, login: str) -> tuple:
         return self.owner_roles.get(login, ())
+
+    def eligible_for(self, gate: str) -> dict:
+        """Approver login -> roles, from THIS product's `factory.yaml`, for exactly
+        this gate (red team #3 H2). This is what `ApprovalRequest.eligible` is built
+        from: `check_decision` then rejects any approver not in this mapping and
+        uses these roles regardless of what a caller (e.g. an inbox token) claims,
+        so approval eligibility is never a global union across products and never
+        trusts a claimed role over the product's own config.
+
+        `hm: codeowners` resolves to the owners holding the `tech_lead` or
+        `security` role (not `product`): those are the two roles the golden-path
+        CODEOWNERS file lists as reviewers in v1, since the pipeline doesn't parse
+        CODEOWNERS itself.
+        """
+        value = self.approvers.get(gate.lower())
+        if value == "codeowners":
+            logins = [login for login, roles in self.owner_roles.items()
+                     if "tech_lead" in roles or "security" in roles]
+        else:
+            logins = list(value or ())
+        return {login: self.owner_roles.get(login, ()) for login in logins}
 
     def mandate_for(self, *, labels) -> StandingMandate | None:
         """The first standing mandate whose label requirement `labels` could satisfy."""
@@ -174,6 +190,21 @@ class ProductRegistry:
         if missing_commands:
             raise ProductConfigError(
                 f"{factory_yaml}: verification.required names {missing_commands} with no `checks` command")
+
+        # Verification floor (red team #3 item 15): a product can add checks, but
+        # can never drop the reviewer or (outside `experimental`) the holdout below
+        # what final draft §9.2 requires as the pre-merge/pre-release gates.
+        risk_profile = doc["risk_profile"]
+        floor_missing = []
+        if "review_agent" not in required:
+            floor_missing.append("review_agent")
+        if risk_profile in ("standard", "regulated") and "holdout_blackbox" not in required:
+            floor_missing.append("holdout_blackbox")
+        if floor_missing:
+            raise ProductConfigError(
+                f"{factory_yaml}: verification.required is missing the floor requirement(s) "
+                f"{floor_missing} (review_agent is always required; holdout_blackbox is required "
+                f"for standard/regulated products, this one is {risk_profile!r})")
 
         protected = tuple(doc.get("protected_paths", ()))
         forbidden = tuple(doc.get("forbidden_paths", ()))

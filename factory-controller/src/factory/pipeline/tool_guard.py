@@ -24,6 +24,7 @@ defense in depth rather than the only line; see `factory-controller/README.md`.
 from __future__ import annotations
 
 import logging
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +40,24 @@ ALLOWED_TOOLS = READ_ONLY_TOOLS | WRITE_TOOLS
 
 # Where each tool carries the path(s) it wants to touch.
 _PATH_KEYS = ("file_path", "path", "notebook_path")
+# Glob/Grep also carry a glob/regex PATTERN, which can itself smuggle an absolute
+# path or a `..` traversal without ever touching `path` (red team #3 L2).
+_PATTERN_KEYS = ("pattern", "glob")
+
+
+def _nfc(text: str) -> str:
+    """Normalize Unicode to NFC before any check (red team #3 L2): a combining
+    sequence that LOOKS like `..` or `/` after normalization must be caught,
+    not compared byte-for-byte against its pre-normalization form."""
+    return unicodedata.normalize("NFC", text)
+
+
+def _looks_like_traversal(pattern: str) -> bool:
+    normalized = _nfc(pattern)
+    if normalized.startswith("/") or normalized.startswith("~"):
+        return True
+    parts = normalized.replace("\\", "/").split("/")
+    return ".." in parts
 
 
 @dataclass(frozen=True)
@@ -52,8 +71,20 @@ class ToolGuard:
     def _resolved_root(self) -> Path:
         return Path(self.workdir).resolve()
 
-    def _extract_paths(self, tool_input: dict) -> list[str]:
-        found = [tool_input[key] for key in _PATH_KEYS if isinstance(tool_input.get(key), str)]
+    def _extract_paths(self, tool_name: str, tool_input: dict) -> list[str] | None:
+        """Returns the path-like values to check, or `None` if one was present but
+        malformed (not a string) -- the caller must deny outright in that case,
+        never silently skip it (red team #3 L2)."""
+        found = []
+        for key in _PATH_KEYS:
+            if key not in tool_input:
+                continue
+            value = tool_input[key]
+            if not isinstance(value, str):
+                logger.warning("tool guard: denying %s, %s is present but not a string: %r",
+                              tool_name, key, value)
+                return None
+            found.append(_nfc(value))
         return found
 
     def _within_workdir(self, raw_path: str) -> Path | None:
@@ -78,7 +109,19 @@ class ToolGuard:
             logger.warning("tool guard: denying tool %r outright (not in the allowed set)", tool_name)
             return False
 
-        paths = self._extract_paths(tool_input)
+        if tool_name in READ_ONLY_TOOLS:
+            for key in _PATTERN_KEYS:
+                value = tool_input.get(key)
+                if value is None:
+                    continue
+                if not isinstance(value, str) or _looks_like_traversal(value):
+                    logger.warning("tool guard: denying %s, %s looks like a traversal: %r",
+                                  tool_name, key, value)
+                    return False
+
+        paths = self._extract_paths(tool_name, tool_input)
+        if paths is None:
+            return False
         if not paths:
             # Glob/Grep with no explicit path search the cwd, which is already the
             # sandbox workdir -- nothing to resolve, nothing to deny.

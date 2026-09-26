@@ -12,8 +12,13 @@ class Recorded:
     inbox_url: str
 
 
-class RecordingNotifier:
-    """`Notifier` that just remembers what it was told, for assertions in tests and the demo."""
+class FakeNotifier:
+    """`Notifier` that just remembers what it was told, for assertions in tests and the demo.
+
+    Named to match the rest of the codebase's `Fake...` adapters (`FakeGitHub`,
+    `FakeRuntime`, `FakeClock`, ...). `RecordingNotifier` is kept as an alias for any
+    caller written against the earlier name.
+    """
 
     def __init__(self) -> None:
         self.decisions: list[Recorded] = []
@@ -26,4 +31,7 @@ class RecordingNotifier:
         self.info_messages.append(text)
 
 
-__all__ = ["Recorded", "RecordingNotifier"]
+RecordingNotifier = FakeNotifier
+
+
+__all__ = ["FakeNotifier", "Recorded", "RecordingNotifier"]

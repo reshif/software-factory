@@ -1,6 +1,11 @@
 """FastAPI TestClient tests for the approval inbox router (final draft §10, §13.1 #6, #8)."""
 from datetime import timedelta
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from factory.inbox.router import build_inbox_router
+
 from .conftest import CONTENT_HASH, issue_token, make_approval, make_packet
 
 
@@ -149,3 +154,66 @@ def test_list_inbox_shows_open_packets(client, store, now, signer):
 
     assert response.status_code == 200
     assert "Ship the widget" in response.text
+
+
+def test_general_list_token_can_view_but_cannot_decide(client, store, now, signer):
+    """S5: separation of duties — a general (request_id=None) token can browse the
+    inbox, but recording a decision always requires a token scoped to that request."""
+    request = make_approval(store, now)
+    store.save_packet(make_packet(request))
+    general_token = issue_token(signer, now, request_id=None)
+
+    view = client.get(f"/inbox/{request.request_id}", params={"token": general_token})
+    assert view.status_code == 200
+
+    decide_attempt = client.post(f"/inbox/{request.request_id}/decision",
+                                 data={"token": general_token, "decision": "approve",
+                                       "content_hash": CONTENT_HASH})
+    assert decide_attempt.status_code == 403
+    assert store.approvals.get(request.request_id).approvers() == []
+
+
+def test_replayed_decision_token_is_rejected(client, store, now, signer):
+    """A signed token's jti may record exactly one decision, even for an "approve"
+    that the approval store itself would otherwise treat as an idempotent no-op."""
+    request = make_approval(store, now, required="2")
+    store.save_packet(make_packet(request))
+    token = issue_token(signer, now, approver="@tl", roles=("tech_lead",))
+
+    first = client.post(f"/inbox/{request.request_id}/decision",
+                        data={"token": token, "decision": "approve", "content_hash": CONTENT_HASH})
+    assert first.status_code == 200
+
+    replay = client.post(f"/inbox/{request.request_id}/decision",
+                         data={"token": token, "decision": "approve", "content_hash": CONTENT_HASH})
+    assert replay.status_code == 409
+
+    approvers = [d.approver for d in store.approvals.get(request.request_id).approvers()]
+    assert approvers == ["@tl"]  # the replay recorded nothing new
+
+
+def test_links_respect_the_mount_prefix(store, decide, signer, clock, now):
+    """Low: rendered links use `request.url_for`, so they still work when the router
+    is mounted under a prefix instead of at the app root."""
+    request = make_approval(store, now)
+    store.save_packet(make_packet(request, title="Ship the widget"))
+
+    application = FastAPI()
+    application.include_router(build_inbox_router(store, decide, signer, clock), prefix="/mounted")
+    mounted_client = TestClient(application)
+
+    list_token = issue_token(signer, now, request_id=None)
+    list_response = mounted_client.get("/mounted/inbox", params={"token": list_token})
+    assert list_response.status_code == 200
+    assert f"/mounted/inbox/{request.request_id}?token=" in list_response.text
+
+    packet_token = issue_token(signer, now)
+    packet_response = mounted_client.get(f"/mounted/inbox/{request.request_id}",
+                                         params={"token": packet_token})
+    assert packet_response.status_code == 200
+    assert f'action="http://testserver/mounted/inbox/{request.request_id}/decision"' in packet_response.text
+
+    decision = mounted_client.post(f"/mounted/inbox/{request.request_id}/decision",
+                                   data={"token": packet_token, "decision": "approve",
+                                         "content_hash": CONTENT_HASH})
+    assert decision.status_code == 200

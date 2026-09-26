@@ -16,14 +16,24 @@ Security notes (final draft §13.1 #6, #8):
     different origin — there is nothing here for a blind cross-site POST to replay.
   - Tokens are verified with `TokenSigner` (constant-time compare, explicit expiry)
     before anything in the store is read or changed.
+  - A *decision* (the POST) requires a token scoped to that exact `request_id`
+    (final draft §6.3/§13.1 #8, separation of duties). A general inbox token
+    (`request_id=None`, meant for browsing the list page) can view a packet but
+    can never record a decision through it.
+  - Each token's `jti` may record exactly one decision: the router checks the
+    store's event log before calling `decide` and records the `jti` after a
+    successful call, so replaying the same token string is rejected even though
+    the approval store is already idempotent/self-voiding for duplicate decisions
+    (see the module docstring in `signing.py`).
 """
 from __future__ import annotations
 
 import html
 import logging
 from typing import Callable
+from urllib.parse import quote
 
-from fastapi import APIRouter, Form, HTTPException, Query
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from ..controller.approvals import (AlreadyConsumed, ApprovalError, Expired, IneligibleApprover,
@@ -34,12 +44,23 @@ from .signing import InvalidToken, TokenExpired, TokenPayload, TokenSigner
 
 logger = logging.getLogger(__name__)
 
-DecideCallable = Callable[[str, str, "frozenset | tuple", str, str], object]
+# Roles as a caller presents them: usually a frozenset (from a token payload) or a
+# plain tuple (e.g. in tests). `decide` itself only ever iterates/tests membership.
+RolesArg = frozenset | tuple
+DecideCallable = Callable[[str, str, RolesArg, str, str], object]
 
 DECISIONS = ("approve", "revise", "defer", "cancel")
 
-# ApprovalError subclasses -> HTTP status. Order matters: checked most-specific first
-# via isinstance, but these classes don't nest so a dict lookup by exact type is enough.
+_DECISION_TOKEN_CONSUMED = "inbox_decision_token_consumed"
+
+
+class ReplayedDecisionToken(Exception):
+    """The same signed token was already used once to record a decision."""
+
+
+# ApprovalError subclasses -> HTTP status. These are flat siblings of ApprovalError
+# (none subclasses another), so a plain dict keyed by exact type is enough — no
+# isinstance/most-specific-first ordering is needed.
 _ERROR_STATUS: dict[type, int] = {
     Expired: 410,           # the operation had to start before `expires`; it's gone
     AlreadyConsumed: 409,   # someone already executed on this approval
@@ -71,7 +92,8 @@ def build_inbox_router(store: StateStore, decide: DecideCallable, signer: TokenS
     """
     router = APIRouter()
 
-    def _verify(token: str, request_id: str | None = None) -> TokenPayload:
+    def _verify_for_viewing(token: str, request_id: str | None = None) -> TokenPayload:
+        """Verify a token for a GET: a general (request_id=None) token may view anything."""
         try:
             payload = signer.verify(token, now=clock.now())
         except TokenExpired as exc:
@@ -82,15 +104,49 @@ def build_inbox_router(store: StateStore, decide: DecideCallable, signer: TokenS
             raise HTTPException(status_code=403, detail="token is not valid for this request")
         return payload
 
+    def _verify_for_decision(token: str, request_id: str) -> TokenPayload:
+        """Verify a token for a POST: it must be scoped to exactly this `request_id`.
+
+        A general/list token (`request_id=None`) is deliberately rejected here even
+        though it would pass `_verify_for_viewing` — separation of duties requires that
+        recording a decision always use a token minted for that one request.
+        """
+        payload = _verify_for_viewing(token, request_id)
+        if payload.request_id != request_id:
+            raise HTTPException(status_code=403,
+                                detail="a general inbox token can't be used to record a decision")
+        return payload
+
+    def _check_not_replayed(request_id: str, approver: str, jti: str) -> None:
+        """Reject a token whose `jti` already recorded a decision for this request.
+
+        This is on top of, not instead of, the approval store's own protections: a
+        duplicate "approve" from the same approver is already a no-op there, and a
+        "revise"/"cancel" already voids the round so a second `decide()` call fails.
+        Relying on that alone would still let the *same token string* be resubmitted
+        right up until someone changes their mind — this makes the token itself
+        single-use for the write path, using the store's event log as durable memory
+        of which tokens have already been spent.
+        """
+        for event in store.list_events(request_id):
+            used = event.get("payload", {})
+            if event.get("kind") == _DECISION_TOKEN_CONSUMED and used.get("jti") == jti \
+                    and used.get("approver") == approver:
+                raise ReplayedDecisionToken(f"token {jti} for {approver} on {request_id} was already used")
+
+    def _mark_consumed(request_id: str, approver: str, jti: str, decision: str) -> None:
+        store.append_event(request_id, _DECISION_TOKEN_CONSUMED,
+                           {"approver": approver, "jti": jti, "decision": decision})
+
     def _load_packet(request_id: str) -> DecisionPacket:
         try:
             return store.get_packet(request_id)
         except (KeyError, NotFound) as exc:
             raise HTTPException(status_code=404, detail="no such approval request") from exc
 
-    @router.get("/inbox", response_class=HTMLResponse)
-    def list_inbox(token: str = Query(...)) -> str:
-        payload = _verify(token)
+    @router.get("/inbox", response_class=HTMLResponse, name="inbox_list")
+    def list_inbox(request: Request, token: str = Query(...)) -> str:
+        payload = _verify_for_viewing(token)
         open_requests = store.approvals.list_open()
         if payload.request_id is not None:
             open_requests = [r for r in open_requests if r.request_id == payload.request_id]
@@ -100,26 +156,31 @@ def build_inbox_router(store: StateStore, decide: DecideCallable, signer: TokenS
                 packets.append(store.get_packet(req.request_id))
             except (KeyError, NotFound):
                 continue  # no packet built yet for this request; nothing to show
-        return _render_list(packets, token=token, approver=payload.approver)
+        return _render_list(packets, token=token, approver=payload.approver, request=request)
 
-    @router.get("/inbox/{request_id}", response_class=HTMLResponse)
-    def get_packet_page(request_id: str, token: str = Query(...)) -> str:
-        payload = _verify(token, request_id)
+    @router.get("/inbox/{request_id}", response_class=HTMLResponse, name="inbox_packet")
+    def get_packet_page(request: Request, request_id: str, token: str = Query(...)) -> str:
+        payload = _verify_for_viewing(token, request_id)
         packet = _load_packet(request_id)
-        return _render_packet(packet, token=token, approver=payload.approver)
+        return _render_packet(packet, token=token, approver=payload.approver, request=request)
 
-    @router.post("/inbox/{request_id}/decision", response_class=HTMLResponse)
+    @router.post("/inbox/{request_id}/decision", response_class=HTMLResponse, name="inbox_decision")
     def post_decision(request_id: str, token: str = Form(...), decision: str = Form(...),
                       content_hash: str = Form(...)) -> HTMLResponse:
-        payload = _verify(token, request_id)
+        payload = _verify_for_decision(token, request_id)
         if decision not in DECISIONS:
             raise HTTPException(status_code=400, detail=f"unknown decision {decision!r}")
+        try:
+            _check_not_replayed(request_id, payload.approver, payload.jti)
+        except ReplayedDecisionToken as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         try:
             decide(request_id, payload.approver, payload.roles, decision, content_hash)
         except ApprovalError as exc:
             raise HTTPException(status_code=_status_for(exc), detail=str(exc)) from exc
         except (KeyError, NotFound) as exc:
             raise HTTPException(status_code=404, detail="no such approval request") from exc
+        _mark_consumed(request_id, payload.approver, payload.jti, decision)
         logger.info("approval %s: %s recorded %s", request_id, payload.approver, decision)
         return HTMLResponse(_render_ack(request_id, payload.approver, decision))
 
@@ -144,13 +205,19 @@ def _page(title: str, body: str) -> str:
             f"<body>{body}</body></html>")
 
 
-def _render_list(packets: list[DecisionPacket], *, token: str, approver: str) -> str:
+def _packet_url(request: Request, request_id: str, token: str) -> str:
+    """The packet page URL, honoring the router's mount prefix (`request.url_for`)."""
+    base = str(request.url_for("inbox_packet", request_id=request_id))
+    return f"{base}?token={quote(token, safe='')}"
+
+
+def _render_list(packets: list[DecisionPacket], *, token: str, approver: str, request: Request) -> str:
     if not packets:
         body = f"<h1>Inbox</h1><p>No open approvals for {_escape(approver)}.</p>"
         return _page("Inbox", body)
     rows = "".join(
         f"<tr><td>{_escape(p.gate)}</td>"
-        f"<td><a href=\"/inbox/{_escape(p.request_id)}?token={_escape(token)}\">{_escape(p.title)}</a></td>"
+        f"<td><a href=\"{_escape(_packet_url(request, p.request_id, token))}\">{_escape(p.title)}</a></td>"
         f"<td>{_escape(p.required)}</td><td>{_escape(p.expires.isoformat())}</td></tr>"
         for p in packets
     )
@@ -177,13 +244,14 @@ def _render_checks(evidence: EvidenceBundle | None) -> str:
             f"{holdout}")
 
 
-def _render_packet(packet: DecisionPacket, *, token: str, approver: str) -> str:
+def _render_packet(packet: DecisionPacket, *, token: str, approver: str, request: Request) -> str:
     alternatives = "".join(f"<li>{_escape(a)}</li>" for a in packet.alternatives) or "<li>(none offered)</li>"
     untrusted = "".join(f"<li>{_escape(u)}</li>" for u in packet.untrusted_inputs) or "<li>(none recorded)</li>"
     buttons = "".join(
         f"<button type=\"submit\" name=\"decision\" value=\"{d}\">{d.capitalize()}</button>"
         for d in DECISIONS
     )
+    decision_url = str(request.url_for("inbox_decision", request_id=packet.request_id))
     body = f"""
 <h1>{_escape(packet.title)}</h1>
 <p class="warn">Approving as {_escape(approver)}. Expires {_escape(packet.expires.isoformat())}.
@@ -204,7 +272,7 @@ Required: {_escape(packet.required)}.</p>
 <h2>Untrusted inputs the agents read</h2>
 <ul>{untrusted}</ul>
 <h2>Decide</h2>
-<form class="decision-form" method="post" action="/inbox/{_escape(packet.request_id)}/decision">
+<form class="decision-form" method="post" action="{_escape(decision_url)}">
   <input type="hidden" name="token" value="{_escape(token)}">
   <input type="hidden" name="content_hash" value="{_escape(packet.content_hash)}">
   {buttons}
@@ -219,4 +287,4 @@ def _render_ack(request_id: str, approver: str, decision: str) -> str:
     return _page("Recorded", body)
 
 
-__all__ = ["build_inbox_router"]
+__all__ = ["ReplayedDecisionToken", "build_inbox_router"]

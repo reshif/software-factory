@@ -9,8 +9,16 @@ cross-site, and never evaluated as code.
 
 A token with `request_id` set is scoped to exactly that approval request (used for
 one-click Slack action links). A token with `request_id` left as `None` is a general
-inbox token: valid for browsing and acting on any open request, still bound to the
-approver's identity and to the token's own expiry.
+inbox token: valid for browsing any open request, but — the router enforces this,
+not this module — never for recording a decision.
+
+Every token also carries a `jti` (a random token id, unrelated to the approval
+store's own fencing token): the router uses it, together with the store's event
+log, to refuse a *decision* made by replaying the same token string twice. This is
+defense in depth on top of the approval store's own protections (a duplicate
+"approve" from the same approver is already a no-op, and a "revise"/"cancel" already
+voids the round so a second `decide()` call fails); the jti check makes the token
+itself single-use for the write path even before the store is consulted.
 """
 from __future__ import annotations
 
@@ -18,6 +26,7 @@ import base64
 import hashlib
 import hmac
 import json
+import secrets
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -39,6 +48,7 @@ class TokenPayload:
     approver: str
     roles: tuple
     exp: int                      # unix seconds
+    jti: str                      # random token id; unique per issued token
     request_id: str | None = None
 
 
@@ -64,13 +74,19 @@ class TokenSigner:
             raise ValueError("signing secret must not be empty")
         self._secret = secret
 
-    def issue(self, *, approver: str, roles, expires: datetime, request_id: str | None = None) -> str:
-        """Build a signed token for `approver`, valid until `expires`."""
+    def issue(self, *, approver: str, roles, expires: datetime, request_id: str | None = None,
+             jti: str | None = None) -> str:
+        """Build a signed token for `approver`, valid until `expires`.
+
+        `jti` defaults to a fresh random id; callers only pass one explicitly in tests
+        that need to control it.
+        """
         payload = {
             "request_id": request_id,
             "approver": approver,
             "roles": sorted(set(roles)),
             "exp": int(expires.timestamp()),
+            "jti": jti or secrets.token_urlsafe(12),
         }
         body = _b64encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
         return f"{body}.{self._sign(body)}"
@@ -91,6 +107,7 @@ class TokenSigner:
                 approver=str(raw["approver"]),
                 roles=tuple(raw["roles"]),
                 exp=int(raw["exp"]),
+                jti=str(raw["jti"]),
                 request_id=raw.get("request_id"),
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:

@@ -12,8 +12,7 @@ from factory.inbox.router import build_inbox_router
 from factory.inbox.signing import TokenSigner
 from factory.models import CheckResult, DecisionPacket, EvidenceBundle
 from factory.policy import parse_requirement
-
-from .stub_store import StubStateStore
+from factory.store.memory import MemoryStateStore
 
 CONTENT_HASH = "sha256:packet-content"
 SIGNING_SECRET = "test-signing-secret"
@@ -31,7 +30,10 @@ def signer():
 
 @pytest.fixture
 def store():
-    return StubStateStore()
+    # B1's MemoryStateStore (factory.store.memory) is the real StateStore adapter now
+    # that it exists; it wraps the same reference ApprovalStore/IntentLog the inbox
+    # was already tested against, so nothing else here changes.
+    return MemoryStateStore()
 
 
 @pytest.fixture

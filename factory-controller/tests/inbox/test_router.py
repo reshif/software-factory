@@ -1,0 +1,151 @@
+"""FastAPI TestClient tests for the approval inbox router (final draft §10, §13.1 #6, #8)."""
+from datetime import timedelta
+
+from .conftest import CONTENT_HASH, issue_token, make_approval, make_packet
+
+
+def test_malicious_title_is_escaped(client, store, now, signer):
+    request = make_approval(store, now)
+    packet = make_packet(request, title="<script>alert('pwn')</script>")
+    store.save_packet(packet)
+    token = issue_token(signer, now)
+
+    response = client.get(f"/inbox/{request.request_id}", params={"token": token})
+
+    assert response.status_code == 200
+    assert "<script>alert" not in response.text
+    assert "&lt;script&gt;alert(&#x27;pwn&#x27;)&lt;/script&gt;" in response.text
+
+
+def test_untrusted_diff_and_inputs_are_escaped(client, store, now, signer):
+    request = make_approval(store, now)
+    packet = make_packet(request)
+    packet.raw_diff = "<img src=x onerror=alert(1)>"
+    packet.untrusted_inputs = ("<b>issue body</b>",)
+    store.save_packet(packet)
+    token = issue_token(signer, now)
+
+    response = client.get(f"/inbox/{request.request_id}", params={"token": token})
+
+    assert response.status_code == 200
+    assert "<img src=x" not in response.text
+    assert "<b>issue body</b>" not in response.text
+    assert "&lt;img src=x onerror=alert(1)&gt;" in response.text
+
+
+def test_tampered_token_is_rejected(client, store, now, signer):
+    request = make_approval(store, now)
+    store.save_packet(make_packet(request))
+    token = issue_token(signer, now)
+    body, signature = token.rsplit(".", 1)
+    tampered = f"{body}.{signature[:-1]}{'a' if signature[-1] != 'a' else 'b'}"
+
+    response = client.get(f"/inbox/{request.request_id}", params={"token": tampered})
+
+    assert response.status_code == 403
+
+
+def test_expired_token_is_rejected(client, store, now, signer):
+    request = make_approval(store, now, expires_in=timedelta(days=1))
+    store.save_packet(make_packet(request))
+    # Issued an hour before `now` with a 5-minute lifetime: already expired relative to
+    # the server clock (which the fixtures pin at `now`), independent of the approval's
+    # own (much later) expiry.
+    stale_token = issue_token(signer, now - timedelta(hours=1), expires_in=timedelta(minutes=5))
+
+    response = client.get(f"/inbox/{request.request_id}", params={"token": stale_token})
+
+    assert response.status_code == 410
+
+
+def test_token_scoped_to_another_request_is_rejected(client, store, now, signer):
+    request = make_approval(store, now)
+    store.save_packet(make_packet(request))
+    other_token = issue_token(signer, now, request_id="REQ-OTHER")
+
+    response = client.get(f"/inbox/{request.request_id}", params={"token": other_token})
+
+    assert response.status_code == 403
+
+
+def test_unknown_request_id_is_404(client, signer, now):
+    token = issue_token(signer, now, request_id="REQ-GHOST")
+
+    response = client.get("/inbox/REQ-GHOST", params={"token": token})
+
+    assert response.status_code == 404
+
+
+def test_wrong_content_hash_gives_409(client, store, now, signer):
+    request = make_approval(store, now)
+    store.save_packet(make_packet(request))
+    token = issue_token(signer, now)
+
+    response = client.post(f"/inbox/{request.request_id}/decision",
+                           data={"token": token, "decision": "approve", "content_hash": "sha256:wrong"})
+
+    assert response.status_code == 409
+
+
+def test_approving_after_expiry_gives_410(client, store, clock, now, signer):
+    # The token outlives the approval request, so advancing the clock isolates the
+    # store's "operation must start before expires" rule (Expired) from token expiry.
+    request = make_approval(store, now, expires_in=timedelta(hours=1))
+    store.save_packet(make_packet(request))
+    token = issue_token(signer, now, expires_in=timedelta(hours=20))
+    clock.advance(hours=2)
+
+    response = client.post(f"/inbox/{request.request_id}/decision",
+                           data={"token": token, "decision": "approve", "content_hash": CONTENT_HASH})
+
+    assert response.status_code == 410
+
+
+def test_revise_voids_the_round(client, store, now, signer):
+    request = make_approval(store, now, required="2")
+    store.save_packet(make_packet(request))
+    tl_token = issue_token(signer, now, approver="@tl", roles=("tech_lead",))
+    po_token = issue_token(signer, now, approver="@po2", roles=("product",))
+
+    revise = client.post(f"/inbox/{request.request_id}/decision",
+                         data={"token": tl_token, "decision": "revise", "content_hash": CONTENT_HASH})
+    assert revise.status_code == 200
+
+    approve = client.post(f"/inbox/{request.request_id}/decision",
+                          data={"token": po_token, "decision": "approve", "content_hash": CONTENT_HASH})
+    assert approve.status_code == 409
+
+
+def test_decision_is_attributed_to_the_token_approver(client, store, now, signer):
+    request = make_approval(store, now)
+    store.save_packet(make_packet(request))
+    token = issue_token(signer, now, approver="@tl", roles=("tech_lead",))
+
+    response = client.post(f"/inbox/{request.request_id}/decision",
+                           data={"token": token, "decision": "approve", "content_hash": CONTENT_HASH})
+
+    assert response.status_code == 200
+    approvers = [d.approver for d in store.approvals.get(request.request_id).approvers()]
+    assert approvers == ["@tl"]
+
+
+def test_ineligible_editor_gets_403(client, store, now, signer):
+    request = make_approval(store, now, gate="HM", editors=("@dev",))
+    store.save_packet(make_packet(request))
+    token = issue_token(signer, now, approver="@dev", roles=("tech_lead",))
+
+    response = client.post(f"/inbox/{request.request_id}/decision",
+                           data={"token": token, "decision": "approve", "content_hash": CONTENT_HASH})
+
+    assert response.status_code == 403
+
+
+def test_list_inbox_shows_open_packets(client, store, now, signer):
+    request = make_approval(store, now)
+    store.save_packet(make_packet(request, title="Ship the widget"))
+    token = issue_token(signer, now, request_id=None)
+
+    response = client.get("/inbox", params={"token": token})
+
+    assert response.status_code == 200
+    assert "Ship the widget" in response.text

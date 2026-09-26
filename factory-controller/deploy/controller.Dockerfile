@@ -40,6 +40,9 @@ RUN uv sync --frozen --no-dev
 # (final draft §13.3), not a container rebuild.
 ENV PATH="/app/.venv/bin:${PATH}"
 
+COPY factory-controller/deploy/entrypoint.sh /usr/local/bin/factory-entrypoint.sh
+RUN chmod +x /usr/local/bin/factory-entrypoint.sh
+
 RUN mkdir -p /var/lib/factory/sandboxes /var/lib/factory/repos /var/lib/factory/evidence \
     && chown -R factory:factory /var/lib/factory /app
 USER factory
@@ -51,5 +54,9 @@ ENV FACTORY_MODE=production \
 
 EXPOSE 8080
 
+# Builds FACTORY_DATABASE_URL from a mounted secret file when POSTGRES_PASSWORD_FILE
+# is set (see entrypoint.sh, docker-compose.yml), so the DB password is never a
+# plain env var visible to `docker inspect`/`compose config` (red-team #2 item 8).
+ENTRYPOINT ["/usr/local/bin/factory-entrypoint.sh"]
 # docker-compose.yml overrides this per service (`factory serve` / `factory worker`).
 CMD ["factory", "serve", "--host", "0.0.0.0", "--port", "8080"]

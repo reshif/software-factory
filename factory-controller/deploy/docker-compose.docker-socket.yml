@@ -1,0 +1,20 @@
+# OPT-IN override: mounts the HOST'S Docker socket into `controller`/`worker` so
+# `DockerSandbox` can launch task containers directly (red-team #2 item 8).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.docker-socket.yml up
+#
+# *** WARNING ***
+# A container with `/var/run/docker.sock` can start a privileged container that
+# mounts the host's root filesystem -- holding this socket is equivalent to root
+# on the HOST, not just the container. Only use this on a host you are prepared
+# to treat as fully accessible to whatever `controller`/`worker` run (which
+# includes agent-driven task execution). See docker-compose.yml's "Running
+# sandboxed tasks" note for the recommended alternative (a separate rootless
+# Docker-in-Docker daemon reached over TCP+TLS, never a mounted socket).
+services:
+  controller:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+  worker:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

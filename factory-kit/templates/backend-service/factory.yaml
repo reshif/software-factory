@@ -25,6 +25,10 @@ infra_retries: 3
 verification:
   required: [lint, unit]
   mutation: "off"
+checks:                                   # run in the sandbox with NO network
+  lint: "python -m compileall -q app tests"
+  unit: "python -m unittest discover -s tests -t ."
+repo: "org/backend-service"
 holdout_repo: "org/backend-service-holdouts"
 observation_window: 24h
 standing_mandates: [SM-patch]

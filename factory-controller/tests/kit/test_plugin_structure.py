@@ -5,6 +5,8 @@ Spec: docs/build/phase2-build-spec.md §3 (B6), final draft §11-13.
 import json
 import re
 
+from factory.pipeline.tool_guard import ALLOWED_TOOLS
+
 from .conftest import parse_frontmatter
 
 EXPECTED_AGENTS = {"intake", "architect", "coordinator", "implementer", "qa", "reviewer"}
@@ -66,6 +68,36 @@ def test_agent_prompts_end_with_a_json_output_block(plugin_dir):
         text = path.read_text()
         assert "## Output" in text, f"{path.name} has no Output section"
         assert "```json" in text, f"{path.name} has no example JSON output block"
+
+
+def test_no_agent_frontmatter_grants_bash(plugin_dir):
+    """The pipeline's ToolGuard (factory.pipeline.tool_guard.ALLOWED_TOOLS)
+    denies Bash outright for every role -- only the controller ever runs
+    commands, through its own sandboxed exec. Granting Bash in an agent's
+    frontmatter would be a dead, misleading permission: the SDK would still
+    offer the tool, `on_tool_approval` would still refuse every call."""
+    for path in sorted((plugin_dir / "agents").glob("*.md")):
+        frontmatter = parse_frontmatter(path)
+        tools = [t.strip() for t in frontmatter["tools"].split(",")]
+        assert "Bash" not in tools, f"{path.name} grants Bash, which the controller's tool guard always denies"
+
+
+def test_no_agent_frontmatter_grants_a_tool_the_guard_would_deny(plugin_dir):
+    """Generalizes the Bash check to every tool: an agent's `tools:` frontmatter
+    should never promise more than factory.pipeline.tool_guard.ALLOWED_TOOLS
+    will actually let through at runtime (Read, Glob, Grep, Edit, Write)."""
+    for path in sorted((plugin_dir / "agents").glob("*.md")):
+        frontmatter = parse_frontmatter(path)
+        tools = {t.strip() for t in frontmatter["tools"].split(",")}
+        extra = tools - ALLOWED_TOOLS
+        assert not extra, f"{path.name} grants {extra}, which the controller's tool guard always denies"
+
+
+def test_implementer_and_qa_explain_the_controller_runs_checks(plugin_dir):
+    for name in ("implementer", "qa"):
+        body = (plugin_dir / "agents" / f"{name}.md").read_text()
+        assert "no `Bash`" in body or "no `bash`" in body.lower()
+        assert "controller" in body.lower() and ("runs" in body.lower() or "ran" in body.lower())
 
 
 def test_all_five_skills_present(plugin_dir):

@@ -23,7 +23,13 @@ budgets:
 repair_attempts: { patch: 2, feature: 3 }
 infra_retries: 3
 verification:
-  required: [lint, unit]
+  # review_agent and holdout_blackbox need no `checks` command: the reviewer
+  # runs as an agent (verification.review) and the holdout runs in the
+  # separate holdouts repo (verification.holdout). B7's ProductRegistry
+  # enforces review_agent for every product and holdout_blackbox for
+  # standard/regulated risk profiles as a floor -- listing both here just
+  # makes that explicit rather than relying on the enforced default.
+  required: [lint, unit, review_agent, holdout_blackbox]
   mutation: "off"
 checks:                                   # run in the sandbox with NO network
   lint: "python -m compileall -q app tests"

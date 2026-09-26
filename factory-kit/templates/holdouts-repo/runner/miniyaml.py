@@ -11,6 +11,27 @@ just avoids taking a dependency to do it.
 from __future__ import annotations
 
 
+def _strip_comment(line: str) -> str:
+    """Strip a trailing `# comment`, but never a `#` inside a quoted value.
+
+    A bug here previously did `line.split("#", 1)[0]` unconditionally, which
+    truncated any value containing a literal `#` even inside quotes (e.g.
+    `body_contains: "no #1 result"` silently became `body_contains: "no `).
+    """
+    in_quote = None
+    for i, ch in enumerate(line):
+        if in_quote:
+            if ch == in_quote:
+                in_quote = None
+            continue
+        if ch in ("'", '"'):
+            in_quote = ch
+            continue
+        if ch == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i]
+    return line
+
+
 def _coerce(value: str):
     if value == "":
         return ""
@@ -33,7 +54,7 @@ def parse(text: str) -> dict:
     """Parse a scenario file into a nested dict of str -> (scalar | dict)."""
     rows: list[tuple[int, str, object]] = []
     for raw in text.splitlines():
-        line = raw.split("#", 1)[0].rstrip()
+        line = _strip_comment(raw).rstrip()
         if not line.strip():
             continue
         indent = len(line) - len(line.lstrip(" "))

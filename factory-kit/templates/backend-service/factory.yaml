@@ -27,7 +27,10 @@ verification:
   mutation: "off"
 checks:                                   # run in the sandbox with NO network
   lint: "python -m compileall -q app tests"
-  unit: "python -m unittest discover -s tests -t ."
+  unit:
+    command: "python -m pytest -q --junitxml=.factory/junit-unit.xml"
+    junit: ".factory/junit-unit.xml"
+    min_tests: 10
 repo: "org/backend-service"
 holdout_repo: "org/backend-service-holdouts"
 observation_window: 24h

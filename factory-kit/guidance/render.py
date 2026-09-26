@@ -16,18 +16,31 @@ Placeholders in `base.md` use `{{name}}` and are substituted from a flat
 context built by `build_context()` below. An unknown placeholder is a
 programming error in `base.md` (or a stale one after a schema change) and
 raises, rather than silently leaving `{{...}}` in the rendered guide.
+
+Requires PyYAML and jsonschema (both already used elsewhere in this repo):
+`factory.yaml` is validated against `factory-kit/schemas/factory.schema.json`
+before anything is rendered from it, so a broken profile fails loudly here
+instead of quietly producing guidance that looks fine but reflects a document
+the rest of the factory would actually reject.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
 from typing import Iterable
 
+import jsonschema
 import yaml
 
 PLACEHOLDER = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
+SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "factory.schema.json"
+
+
+class FactoryYamlError(ValueError):
+    """`factory.yaml` doesn't validate against factory.schema.json."""
 
 
 def _bullets(items: Iterable[str], empty: str = "(none declared)") -> str:
@@ -89,8 +102,24 @@ def render(template: str, context: dict) -> str:
     return PLACEHOLDER.sub(substitute, template)
 
 
-def render_product(factory_yaml: Path, base_md: Path) -> str:
+def validate_factory_yaml(profile: dict, schema_path: Path = SCHEMA_PATH) -> None:
+    """Raise FactoryYamlError if `profile` doesn't match factory.schema.json.
+
+    Run before build_context() ever touches the document: build_context does
+    plain dict indexing (`profile["owners"]`, ...) and would raise a confusing
+    KeyError on a malformed profile instead of a clear schema error.
+    """
+    schema_doc = json.loads(Path(schema_path).read_text())
+    validator = jsonschema.Draft202012Validator(schema_doc, format_checker=jsonschema.FormatChecker())
+    errors = sorted(validator.iter_errors(profile), key=lambda e: list(e.path))
+    if errors:
+        details = "; ".join(f"{list(e.path)}: {e.message}" for e in errors)
+        raise FactoryYamlError(f"factory.yaml does not match factory.schema.json: {details}")
+
+
+def render_product(factory_yaml: Path, base_md: Path, *, schema_path: Path = SCHEMA_PATH) -> str:
     profile = yaml.safe_load(factory_yaml.read_text())
+    validate_factory_yaml(profile, schema_path)
     template = base_md.read_text()
     return render(template, build_context(profile))
 
@@ -108,7 +137,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    rendered = render_product(args.factory_yaml, args.base)
+    try:
+        rendered = render_product(args.factory_yaml, args.base)
+    except FactoryYamlError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     out_dir = args.out_dir or args.factory_yaml.parent
     out_dir.mkdir(parents=True, exist_ok=True)

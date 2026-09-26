@@ -46,7 +46,7 @@ def test_factory_yaml_kit_version_matches_mandate(backend_service):
 
 def test_backend_service_template_files_present(backend_service):
     for rel in (
-        "factory.yaml", "CLAUDE.md", "AGENTS.md", "CODEOWNERS",
+        "factory.yaml", "CLAUDE.md", "AGENTS.md", "CODEOWNERS", ".gitignore",
         ".claude/settings.json", ".github/workflows/ci.yml",
         "mandates/SM-patch.yaml", "specs/README.md",
         "app/__init__.py", "app/store.py", "app/server.py",
@@ -68,3 +68,19 @@ def test_holdouts_repo_template_files_present(kit_dir):
     ):
         assert (holdouts / rel).is_file(), f"missing {rel}"
     assert list((holdouts / "scenarios").glob("*.yaml")), "no scenario files"
+
+
+def test_holdout_workflow_takes_a_correlation_id_and_sets_run_name(kit_dir):
+    """Q-M3: B5's verification runner polls this workflow_dispatch run by
+    matching on an exact run-name, since the dispatch API hands back no run
+    id. The line must be byte-exact -- not just "close enough" -- or that
+    match fails."""
+    text = (kit_dir / "templates" / "holdouts-repo" / ".github" / "workflows" / "holdout.yml").read_text()
+    assert "run-name: holdout ${{ inputs.correlation_id }}" in text.splitlines()
+
+    doc = yaml.safe_load(text)
+    triggers = doc[True] if True in doc else doc["on"]  # PyYAML may parse bare `on:` as boolean True
+    inputs = triggers["workflow_dispatch"]["inputs"]
+    assert "correlation_id" in inputs
+    assert inputs["correlation_id"]["required"] is True
+    assert inputs["correlation_id"]["type"] == "string"

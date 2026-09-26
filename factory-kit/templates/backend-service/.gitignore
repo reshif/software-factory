@@ -1,0 +1,7 @@
+# Check-command output, e.g. the pytest junit report factory.yaml's
+# checks.unit.junit points at (.factory/junit-unit.xml). Never commit it —
+# the controller reads it fresh from each sandbox run.
+.factory/
+
+__pycache__/
+*.pyc

@@ -39,7 +39,6 @@ import logging
 import os
 import shlex
 import shutil
-import threading
 import uuid
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -89,6 +88,8 @@ STAGING_ENVIRONMENT = "staging"
 CONTROLLER_TMP_DIRNAME = ".factory-controller-tmp"
 PR_SUMMARY_MAX_CHARS = 2000
 MAX_PACKET_DIFF_CHARS = 200_000
+MAX_WEBHOOK_ATTEMPTS = 5
+AWAITING_STATES = ("AWAITING_H1", "AWAITING_HM", "AWAITING_H2", "AWAITING_HX")
 
 
 class MissionNotFound(NotFound):
@@ -137,18 +138,15 @@ class Factory:
         self._task_diffs: dict[str, Diff] = {}
         self._work_items: dict[str, WorkItem] = {}
 
-        # Webhook events are enqueued fast (by the HTTP handler, on the event loop)
-        # and drained by the worker loop (a plain background thread), so a webhook
-        # request never blocks on an agent run or a GitHub call. This queue is
-        # process-local -- an accepted v1 limitation, see README "v1 scope notes".
-        self._webhook_lock = threading.Lock()
-        self._webhook_queue: list[tuple[str, object]] = []
-
-        # Same pattern for approval decisions: `decide()` records the decision and
-        # enqueues fast; `process_approvals` (worker-driven) does the consume and
-        # the actual follow-up action, which may run an agent or call GitHub/deploy.
-        self._approval_lock = threading.Lock()
-        self._approval_queue: list[tuple[str, str]] = []
+        # Webhook deliveries and approval decisions are durable (`store.enqueue_webhook`/
+        # `claim_webhooks`/`ack_webhook`; `store.approvals`), not in-process queues
+        # (red team #3 H1): any Factory instance sharing this store -- a `serve`
+        # process and a `worker` process, say -- converges on the same outcome
+        # regardless of which instance recorded the webhook or the decision.
+        # This is the only process-local, best-effort bookkeeping left: a retry
+        # counter for the webhook poison-message guard (resets on restart, which
+        # just means a few extra retries, never fewer than the guard requires).
+        self._webhook_attempts: dict[str, int] = {}
 
     # ── public accessors for the worker loop (`worker.py`) and the inbox/app ───
     @property
@@ -449,6 +447,11 @@ class Factory:
                                       # report's "Requests to orchestrator" for routing this to that owner.
                                       links={"eligible_approvers": sorted(eligible)})
         self._store.save_packet(packet)
+        # Durable pointer from mission -> its current request, so `process_approvals`
+        # can find and react to a revise/cancel/defer decision even after
+        # `ApprovalStore.decide` has already voided the request out of `list_open()`
+        # (red team #3 H1; see `_process_terminal_decision`).
+        self._remember(mission.mission_id, "open_request", {"request_id": request_id, "gate": gate})
         self._event(mission.mission_id, telemetry.APPROVAL_REQUESTED, {"gate": gate, "request_id": request_id})
         inbox_url = self._inbox_base_url
         self._notifier.decision_requested(packet, inbox_url=inbox_url)
@@ -479,46 +482,77 @@ class Factory:
     def decide(self, request_id: str, approver: str, roles, decision: str, content_hash: str) -> ApprovalRequest:
         """The single entry point the inbox and GitHub review webhooks call (build spec §3 step 3).
 
-        This only records the decision (`ApprovalStore.decide`, a fast, local
-        state update) and enqueues the request for the worker to finish
-        processing (`process_approvals`) -- it never itself consumes the
-        approval or runs the follow-up action (admission, merge, deploy,
-        re-discovery), all of which can call an agent or a remote service.
-        Recording the decision synchronously (rather than that too) is what
-        makes a second concurrent `decide()` see a consistent quorum count.
+        This ONLY records the decision in the approval store (red team #3 H1) --
+        no queueing, no side effect, not even a cheap FSM transition. `process_approvals`
+        (worker-driven, on every Factory instance sharing this store) is what acts on
+        it, by scanning the store rather than draining an in-process queue: that's
+        what lets a decision recorded by a `serve` process be carried out by a
+        separate `worker` process, and vice versa.
         """
         request = self._store.approvals.decide(request_id, approver=approver, roles=roles, decision=decision,
                                                content_hash=content_hash, now=self._clock.now())
         for mission_id in request.mission_ids:
             self._event(mission_id, telemetry.APPROVAL_DECIDED,
                        {"request_id": request_id, "decision": decision, "approver": approver})
-        with self._approval_lock:
-            self._approval_queue.append((request_id, decision))
         return request
 
     def process_approvals(self) -> None:
-        """Finish processing every queued decision: revise/cancel bookkeeping (which
-        may re-run discovery) or, on quorum, consume-and-act. Called by the worker
-        loop, never inline from `decide()` (build spec §3 B7 "decide" red-team fix).
+        """Scan the shared approval store for work and act on it (red team #3 H1).
+
+        Quorum-met requests are still `list_open()` (approve never voids), so a
+        plain scan finds them. `revise`/`cancel` VOID the request immediately
+        (`ApprovalStore.decide`), so it drops out of `list_open()` before any
+        instance's `process_approvals` gets a chance to act on it -- that side
+        effect is instead driven by the mission side: every AWAITING_* mission's
+        current request id is durably recorded (`_request_approval`'s "open_request"
+        cache event), so this looks each one up directly by id (works regardless of
+        status) and reacts to its LAST decision, exactly once (a durable
+        "processed_decision" marker prevents reprocessing after every scan).
         """
-        with self._approval_lock:
-            queued, self._approval_queue = self._approval_queue, []
-        for request_id, decision in queued:
-            try:
-                request = self._store.approvals.get(request_id)
-            except (KeyError, NotFound):
-                continue
-            try:
-                if decision == "revise":
-                    self._on_revise(request)
-                elif decision == "cancel":
-                    self._on_cancel(request)
-                elif decision == "approve" and request.status == "open" and request.quorum_met():
+        for request in self._store.approvals.list_open():
+            if request.quorum_met():
+                try:
                     self._on_quorum(request)
-            except ApprovalError as exc:
-                logger.info("processing %s (%s) did not apply: %s", request_id, decision, exc)
-            except Exception:  # noqa: BLE001 -- one bad request must not wedge the worker loop
-                logger.exception("processing approval %s (%s) failed", request_id, decision)
+                except ApprovalError as exc:
+                    # A concurrent consume, an expiry, or a stale state/content/policy
+                    # hash: never the follow-up action's own fault, so nothing to
+                    # escalate to HX for -- just log it and let the scan continue.
+                    logger.info("%s: consuming quorum-met request failed: %s", request.request_id, exc)
+                except Exception:  # noqa: BLE001 -- one bad request must not wedge the scan
+                    logger.exception("%s: processing a quorum-met request failed", request.request_id)
+        for state in AWAITING_STATES:
+            for mission in self._store.list_missions(state=state):
+                self._process_terminal_decision(mission)
+
+    def _process_terminal_decision(self, mission: MissionRecord) -> None:
+        marker = self._recall(mission.mission_id, "open_request")
+        if not marker:
+            return
+        try:
+            request = self._store.approvals.get(marker["request_id"])
+        except (KeyError, NotFound):
+            return
+        if not request.decisions:
+            return
+        last = request.decisions[-1]
+        if last.decision == "approve":
+            return  # handled by the quorum-met scan (or quorum not met yet)
+        already = self._recall(mission.mission_id, "processed_decision")
+        if already and already.get("request_id") == request.request_id and already.get("at") == last.at.isoformat():
+            return
+        try:
+            if last.decision == "revise":
+                self._on_revise(request)
+            elif last.decision == "cancel":
+                self._on_cancel(request)
+            elif last.decision == "defer":
+                self._on_defer(request)
+        except ApprovalError as exc:
+            logger.info("processing %s (%s) did not apply: %s", request.request_id, last.decision, exc)
+        except Exception:  # noqa: BLE001 -- one bad request must not wedge the worker loop
+            logger.exception("processing decision %s (%s) failed", request.request_id, last.decision)
+        self._remember(mission.mission_id, "processed_decision",
+                       {"request_id": request.request_id, "at": last.at.isoformat()})
 
     def _mission(self, mission_id: str) -> MissionRecord:
         return self._store.get_mission(mission_id)
@@ -534,10 +568,18 @@ class Factory:
                     repo, number = self._issue_ref(mission.work_item_id)
                     work_item = replace(self._github.get_issue(repo, number), product=product.name)
                 self._run_discovery(mission, product, work_item)
-            elif request.gate == "HM":
-                self._transition(mission, "changes_requested")
-            elif request.gate == "H2":
-                self._transition(mission, "changes_requested")
+            elif request.gate in ("HM", "H2"):
+                # "Changes requested" must not just re-integrate the identical diff
+                # (red team #3 item 10): a real repair task forces the implementer to
+                # actually run again. Neither ApprovalStore.Decision nor GitHub's
+                # PullRequestReview carries free-text review comments today, so the
+                # task objective can only say who asked and at which gate -- see the
+                # final report's "Requests to orchestrator" for plumbing the actual
+                # comment text through.
+                mission = self._transition(mission, "changes_requested")
+                product = self._product(mission)
+                self._create_repair_task(mission, product,
+                                         reason=f"changes requested at {request.gate}")
             elif request.gate == "HX":
                 logger.info("%s: HX revise recorded; awaiting a fresh decision", mission_id)
 
@@ -551,6 +593,21 @@ class Factory:
                 self._transition(mission, "declined")
             else:
                 logger.info("%s: %s cancel recorded (no dedicated transition)", mission_id, request.gate)
+
+    def _on_defer(self, request: ApprovalRequest) -> None:
+        """defer -> HELD (red team #3 item 10); HX specifically -> BLOCKED, the FSM's
+        own "deferred" event. H1/HM have no dedicated defer transition in the FSM
+        (only H2 and HX do) -- for those the request simply stays open for a later
+        decision or a timeout; deferring isn't a distinct state for them."""
+        for mission_id in request.mission_ids:
+            mission = self._mission(mission_id)
+            if request.gate == "H2" and mission.state == "AWAITING_H2":
+                self._transition(mission, "defer")
+            elif request.gate == "HX" and mission.state == "AWAITING_HX":
+                self._transition(mission, "deferred")
+            else:
+                logger.info("%s: %s defer recorded (no dedicated transition for this gate)",
+                           mission_id, request.gate)
 
     def _on_quorum(self, request: ApprovalRequest) -> None:
         mission = self._mission(request.mission_ids[0])
@@ -1250,37 +1307,70 @@ class Factory:
         mission = self._transition(mission, "outside_authority")
         self._request_hx(mission, product, reason="production regression: rolled back, needs a human decision")
 
-    # ── webhook queue: fast enqueue (HTTP handler) / drain + dispatch (worker) ──
+    # ── durable webhook inbox (red team #3 H1) ──────────────────────────────────
     LABELS_THAT_START_A_MISSION = ("factory:patch", "factory:feature")
 
-    def enqueue_webhook(self, kind: str, event) -> None:
-        """Fast, non-blocking: called from `app.py`'s webhook handler."""
-        with self._webhook_lock:
-            self._webhook_queue.append((kind, event))
+    def enqueue_webhook(self, delivery_id: str, event: str, payload: dict) -> bool:
+        """Fast, non-blocking, and durable (`store.enqueue_webhook`): called from
+        `app.py`'s webhook handler after signature verification. `delivery_id` is
+        GitHub's own `X-GitHub-Delivery` header (so a GitHub redelivery is a no-op,
+        fixing red team #2's M4); `event` is the raw `X-GitHub-Event` header value
+        (e.g. "issues", "pull_request_review"); `payload` is the raw, already-verified
+        JSON body. Parsing into a typed event happens in `dispatch_webhooks`, not
+        here, so what's queued is plain JSON any store can persist.
 
-    def drain_webhooks(self) -> list:
-        with self._webhook_lock:
-            queued, self._webhook_queue = self._webhook_queue, []
-        return queued
+        NOTE for app.py: this REPLACES the previous `enqueue_webhook(kind, event)`
+        signature, which took B7's own kind string and an already-parsed
+        `WebhookEvent` dataclass. Call it with the GitHub delivery id, the raw
+        event-type header, and `payload` (a dict), not a parsed object.
+        """
+        return self._store.enqueue_webhook(delivery_id, event, payload)
 
     def dispatch_webhooks(self) -> None:
-        """Process every queued webhook event. Called by the worker loop."""
-        for kind, event in self.drain_webhooks():
+        """Claim durable webhook deliveries and process each one (red team #3 H1).
+
+        A delivery that raises is NOT acked -- its lease simply expires and
+        `claim_webhooks` hands it out again later (crash safety). A poison message
+        (the same delivery failing `MAX_WEBHOOK_ATTEMPTS` times) is recorded as an
+        event and acked anyway, so it can't wedge the queue forever.
+        """
+        from ..github import webhooks as gh_webhooks
+
+        for delivery in self._store.claim_webhooks(limit=50, lease_seconds=300):
+            delivery_id = delivery["delivery_id"]
             try:
-                if kind == "issue_labeled":
-                    self.on_issue_labeled(event)
-                elif kind == "pull_request_review":
-                    self.on_pull_request_review(event)
-                elif kind == "check_suite_completed":
-                    self.on_check_suite_completed(event)
-                elif kind == "push_to_default":
-                    self.on_push_to_default(event)
-                elif kind == "push_to_branch":
-                    self.on_push_to_branch(event)
-                else:
-                    logger.debug("ignoring queued webhook kind %r", kind)
-            except Exception:  # noqa: BLE001 -- one bad event must not wedge the worker loop
-                logger.exception("webhook dispatch failed for kind=%s", kind)
+                parsed = gh_webhooks.parse_event(delivery["event"], delivery["payload"])
+                if parsed is not None:
+                    self._dispatch_parsed_webhook(parsed)
+            except Exception:  # noqa: BLE001 -- one bad delivery must not wedge the queue
+                logger.exception("webhook dispatch failed for delivery %s (event=%s)",
+                                delivery_id, delivery["event"])
+                attempts = self._webhook_attempts.get(delivery_id, 0) + 1
+                self._webhook_attempts[delivery_id] = attempts
+                if attempts < MAX_WEBHOOK_ATTEMPTS:
+                    continue  # leave it un-acked; the lease expiry will retry it
+                logger.error("webhook delivery %s failed %d times; treating as a poison message",
+                            delivery_id, attempts)
+                self._event("_webhooks", "webhook_poisoned",
+                           {"delivery_id": delivery_id, "event": delivery["event"]})
+            self._webhook_attempts.pop(delivery_id, None)
+            self._store.ack_webhook(delivery_id)
+
+    def _dispatch_parsed_webhook(self, event) -> None:
+        from ..github import webhooks as gh_webhooks
+
+        if isinstance(event, gh_webhooks.IssueLabeled):
+            self.on_issue_labeled(event)
+        elif isinstance(event, gh_webhooks.PullRequestReview):
+            self.on_pull_request_review(event)
+        elif isinstance(event, gh_webhooks.CheckSuiteCompleted):
+            self.on_check_suite_completed(event)
+        elif isinstance(event, gh_webhooks.PushToDefault):
+            self.on_push_to_default(event)
+        elif isinstance(event, gh_webhooks.PushToBranch):
+            self.on_push_to_branch(event)
+        else:
+            logger.debug("ignoring parsed webhook event of type %s", type(event).__name__)
 
     # ── webhooks (build spec §3 step 13, App §3) ────────────────────────────────
     def on_issue_labeled(self, event) -> MissionRecord | None:
@@ -1295,9 +1385,12 @@ class Factory:
                              labels=(event.label,), author=event.author)
         return self.start_mission(work_item)
 
+    _REVIEW_STATE_TO_DECISION = {"APPROVED": "approve", "CHANGES_REQUESTED": "revise"}
+
     def on_pull_request_review(self, event) -> None:
-        if event.state != "APPROVED":
-            return
+        decision = self._REVIEW_STATE_TO_DECISION.get(event.state)
+        if decision is None:
+            return  # COMMENTED, DISMISSED, ...: not a decision either way
         mission = None
         for candidate in self._store.list_missions(state="AWAITING_HM"):
             if candidate.repo == event.repo and candidate.pr_number == event.number:
@@ -1322,7 +1415,7 @@ class Factory:
             if req.gate == "HM":
                 roles = product.roles_for(event.reviewer) or ()
                 try:
-                    self.decide(req.request_id, event.reviewer, roles, "approve", req.content_hash)
+                    self.decide(req.request_id, event.reviewer, roles, decision, req.content_hash)
                 except ApprovalError as exc:
                     logger.info("%s: PR review from %s did not apply: %s", mission.mission_id, event.reviewer, exc)
                     continue

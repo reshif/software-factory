@@ -6,7 +6,64 @@ see `factory-controller/README.md` for the fix each one guards.
 from factory.controller.approvals import IneligibleApprover
 from factory.demo import fixtures
 from factory.demo.harness import new_context
-from factory.demo.scenarios import _architect, _implementer, _intake, task
+from factory.demo.scenarios import _architect, _implementer, _intake, _reviewer, task
+from factory.github.webhooks import parse_event
+from factory.wiring import build_factory
+
+
+# ── item 2 (H1): durable queues -- two Factory instances share one store ────────
+def test_two_factory_instances_share_one_store_for_webhooks_and_decisions():
+    """Simulates a `serve` process and a `worker` process: one instance only
+    enqueues/records, a SEPARATE instance (sharing the same store) claims and
+    acts. Neither the webhook inbox nor the approval-decision handling may be an
+    in-process queue, or this could never work (red team #3 H1)."""
+    ctx = new_context()
+    try:
+        serve = ctx.factory
+        worker = build_factory(ctx.settings, clock=ctx.clock, adapters=ctx.adapters)
+
+        runtime = ctx.adapters["runtime"]
+        runtime.set_script("intake", _intake("patch", "AC3"))
+        runtime.set_script("implementer", _implementer({"app/greet.py": fixtures.GREET_APP,
+                                                        "tests/test_greet.py": fixtures.GREET_TEST_PASS}))
+        runtime.set_script("reviewer", _reviewer("pass"))
+
+        payload = {"action": "labeled",
+                  "issue": {"number": 101, "title": "A patch labeled on 'serve', processed by 'worker'",
+                            "body": "please fix", "user": {"login": "@dev"}},
+                  "label": {"name": "factory:patch"},
+                  "repository": {"full_name": ctx.repo}}
+        assert parse_event("issues", payload) is not None
+
+        # "serve" only enqueues -- durably, in the shared store.
+        assert serve.enqueue_webhook("delivery-1", "issues", payload) is True
+        assert serve.enqueue_webhook("delivery-1", "issues", payload) is False, "a duplicate delivery must be a no-op"
+        assert serve.store.find_mission_by_work_item(f"{ctx.repo}#101") is None, \
+            "enqueue_webhook must never itself run the mission"
+
+        # "worker" claims and actually processes it.
+        worker.dispatch_webhooks()
+        mission = serve.store.find_mission_by_work_item(f"{ctx.repo}#101")
+        assert mission is not None and mission.state == "ACTIVE", "a covered patch is admitted straight through"
+
+        # Drive it to AWAITING_HM using either instance (both see the same store).
+        serve.run_ready_tasks(mission.mission_id)
+        mission = serve.store.get_mission(mission.mission_id)
+        assert mission.state == "AWAITING_HM"
+        request = next(r for r in serve.store.approvals.list_open(mission.mission_id) if r.gate == "HM")
+
+        # "serve" only records the decision...
+        approver = ctx.product.approvers_for("HM")[0]
+        roles = ctx.product.roles_for(approver)
+        serve.decide(request.request_id, approver, roles, "approve", request.content_hash)
+        assert serve.store.get_mission(mission.mission_id).state == "AWAITING_HM", \
+            "decide() alone must not advance the mission, on either instance"
+
+        # ...and "worker" (a DIFFERENT Factory instance) is what actually merges it.
+        worker.process_approvals()
+        assert serve.store.get_mission(mission.mission_id).state == "MERGED"
+    finally:
+        ctx.cleanup()
 
 
 # ── item 3 (H2): approvers are per gate AND per product, never a global union ────

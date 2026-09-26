@@ -1,0 +1,130 @@
+# Reference production deployment (build spec §3 B7). One controller (serve),
+# one worker, Postgres, the LLM gateway (B3's deploy/litellm/) and the egress
+# allowlist proxy (B3's deploy/egress-proxy/). `factory-sandbox:latest`
+# (deploy/sandbox/Dockerfile) is built separately and used by `DockerSandbox`
+# at runtime via the mounted docker socket -- it is not a compose service.
+#
+# Run from the repo root:
+#   docker compose -f factory-controller/deploy/docker-compose.yml --env-file factory-controller/deploy/.env up
+#
+# Secrets and settings come only from `.env` (see `.env.example`, which
+# documents every `FACTORY_*` variable) -- nothing is baked into the image or
+# this file.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: factory
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factory -d factory"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [factory-internal]
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    restart: unless-stopped
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+      LITELLM_MASTER_KEY: ${FACTORY_LLM_GATEWAY_MASTER_KEY:?set FACTORY_LLM_GATEWAY_MASTER_KEY in .env}
+      LITELLM_DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:?}@postgres:5432/factory
+    command: ["--config", "/etc/litellm/config.yaml", "--port", "4000"]
+    volumes:
+      - ./litellm/config.yaml:/etc/litellm/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [factory-internal, factory-egress]
+
+  egress-proxy:
+    image: vimagick/tinyproxy
+    restart: unless-stopped
+    volumes:
+      - ./egress-proxy/tinyproxy.conf:/etc/tinyproxy/tinyproxy.conf:ro
+      - ./egress-proxy/filter.allowlist:/etc/tinyproxy/filter.allowlist:ro
+    networks: [factory-egress, default]  # `default`: its own route out to the allowed hosts
+
+  controller:
+    build:
+      context: ../..
+      dockerfile: factory-controller/deploy/controller.Dockerfile
+    restart: unless-stopped
+    command: ["factory", "serve", "--host", "0.0.0.0", "--port", "8080"]
+    env_file: [.env]
+    environment:
+      FACTORY_DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:?}@postgres:5432/factory
+      FACTORY_LLM_GATEWAY_URL: http://litellm:4000
+      FACTORY_EGRESS_PROXY_URL: http://egress-proxy:8888
+    ports:
+      - "8080:8080"
+    volumes:
+      - kit-data:/var/lib/factory/kit:ro
+      - products-data:/var/lib/factory/products:ro
+      - sandbox-images:/var/lib/factory/sandboxes
+      - repo-mirrors:/var/lib/factory/repos
+      - evidence-data:/var/lib/factory/evidence
+      # DockerSandbox shells out to `docker run` for each task; giving it the
+      # host socket is the standard (if blunt) way to run containers from a
+      # container. Prefer a locked-down Docker-in-Docker or a sandboxing
+      # service (e.g. gVisor/Firecracker executor) over this in a real
+      # deployment -- see README "Requests to orchestrator".
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_started
+    networks: [factory-internal]
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: factory-controller/deploy/controller.Dockerfile
+    restart: unless-stopped
+    command: ["factory", "worker", "--interval", "5"]
+    env_file: [.env]
+    environment:
+      FACTORY_DATABASE_URL: postgresql://factory:${POSTGRES_PASSWORD:?}@postgres:5432/factory
+      FACTORY_LLM_GATEWAY_URL: http://litellm:4000
+      FACTORY_EGRESS_PROXY_URL: http://egress-proxy:8888
+    volumes:
+      - kit-data:/var/lib/factory/kit:ro
+      - products-data:/var/lib/factory/products:ro
+      - sandbox-images:/var/lib/factory/sandboxes
+      - repo-mirrors:/var/lib/factory/repos
+      - evidence-data:/var/lib/factory/evidence
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_started
+    networks: [factory-internal]
+
+networks:
+  # controller, worker, postgres and litellm talk to each other here. Sandbox
+  # containers (started dynamically by DockerSandbox) are never attached to
+  # this network -- they get `none`, or `factory-egress` when a task legitimately
+  # needs package-mirror access (final draft §13.1 #2).
+  factory-internal:
+  # The ONLY network a network=True sandbox container joins. Its sole route out
+  # is through egress-proxy's allowlist (deploy/egress-proxy/filter.allowlist).
+  factory-egress:
+
+volumes:
+  postgres-data:
+  # Populate kit-data/products-data from factory-kit/ and your product repos'
+  # factory.yaml + mandates/ before starting (e.g. a one-shot init container or
+  # `docker cp`); the kit gate (final draft §13.3) governs how they change.
+  kit-data:
+  products-data:
+  sandbox-images:
+  repo-mirrors:
+  evidence-data:

@@ -1,29 +1,37 @@
 """Container-per-task sandbox (final draft §12.2 M8, §13.1 #2).
 
-Every task gets its own throwaway container. `exec` defaults to
+Every task gets its own throwaway, named container. `exec` defaults to
 `--network none`: code execution is treated as arbitrary code, so it runs
 with no network and no credentials. When a task legitimately needs egress
 (installing dependencies), the controller passes `network=True` and the
 container instead joins the `factory-egress` docker network, whose proxy
 (deploy/egress-proxy/) allows only the LLM gateway and a package mirror.
 Nothing under this module ever mounts credentials into the container.
+
+Every container is named and started with `--init`; if the host-side
+`docker run` call itself times out, the container is force-removed by that
+name (`docker rm -f`) rather than left running — `--rm`/`docker run`'s own
+timeout kills only the *client* process, not the container the daemon is
+still running (code review Q-H3). Resource limits (`--pids-limit`,
+`--memory`, `--cpus`) and the in-container UID/GID all have safe defaults
+but are constructor arguments so a deployment can tune them.
+
+`create`/`capture_diff`/`destroy` come from `CheckoutSandbox` (`sandbox/base.py`).
 """
 from __future__ import annotations
 
 import logging
-import os
-import shutil
 import subprocess
 import time
 import uuid
 
-from ..models import Diff, ExecResult, SandboxHandle
-from . import gitutils
+from ..models import ExecResult, SandboxHandle
+from .base import CheckoutSandbox
 
 logger = logging.getLogger(__name__)
 
 
-class DockerSandbox:
+class DockerSandbox(CheckoutSandbox):
     """`SandboxPort` backed by `docker run` with network off by default."""
 
     def __init__(
@@ -35,37 +43,37 @@ class DockerSandbox:
         egress_network: str = "factory-egress",
         egress_proxy_url: str | None = None,
         docker_bin: str = "docker",
+        uid: int = 1000,
+        gid: int = 1000,
+        pids_limit: int = 256,
+        memory: str = "512m",
+        cpus: str = "2.0",
     ):
+        super().__init__(repos_root=repos_root, sandbox_root=sandbox_root)
         self._image = image
-        self._repos_root = repos_root
-        self._sandbox_root = sandbox_root
         self._egress_network = egress_network
         self._egress_proxy_url = egress_proxy_url
         self._docker_bin = docker_bin
-        os.makedirs(sandbox_root, exist_ok=True)
+        self._uid = uid
+        self._gid = gid
+        self._pids_limit = pids_limit
+        self._memory = memory
+        self._cpus = cpus
 
-    def _mirror_path(self, repo: str) -> str:
-        return os.path.join(self._repos_root, repo.replace("/", "__"))
-
-    def create(self, repo: str, base_commit: str) -> SandboxHandle:
-        """A clean checkout of `base_commit`, cloned from the local mirror in `repos_root`."""
-        mirror = self._mirror_path(repo)
-        if not os.path.isdir(mirror):
-            raise FileNotFoundError(
-                f"no local mirror for {repo!r} at {mirror!r}; the github module clones it into repos_root"
-            )
-        sandbox_id = uuid.uuid4().hex
-        workdir = os.path.join(self._sandbox_root, sandbox_id)
-        subprocess.run(["git", "clone", "--quiet", mirror, workdir], check=True, capture_output=True, text=True)
-        subprocess.run(["git", "-C", workdir, "checkout", "--quiet", base_commit], check=True, capture_output=True, text=True)
-        return SandboxHandle(sandbox_id=sandbox_id, workdir=workdir, base_commit=base_commit)
+    def _container_name(self, handle: SandboxHandle) -> str:
+        return f"factory-sbx-{handle.sandbox_id[:16]}-{uuid.uuid4().hex[:8]}"
 
     def exec(self, handle: SandboxHandle, cmd: list[str], *, network: bool = False, timeout_s: int = 900) -> ExecResult:
+        name = self._container_name(handle)
         docker_cmd = [
-            self._docker_bin, "run", "--rm",
-            "--user", "1000:1000",
+            self._docker_bin, "run", "--rm", "--init",
+            "--name", name,
+            "--user", f"{self._uid}:{self._gid}",
             "--read-only",
             "--tmpfs", "/tmp:rw,size=256m",
+            "--pids-limit", str(self._pids_limit),
+            "--memory", self._memory,
+            "--cpus", self._cpus,
             "-v", f"{handle.workdir}:/work",
             "-w", "/work",
         ]
@@ -87,13 +95,16 @@ class DockerSandbox:
             return ExecResult(exit_code=proc.returncode, stdout=proc.stdout, stderr=proc.stderr,
                                duration_s=time.monotonic() - start)
         except subprocess.TimeoutExpired as exc:
+            self._force_remove(name)
             stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
             stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
             return ExecResult(exit_code=124, stdout=stdout, stderr=stderr + f"\ntimed out after {timeout_s}s",
                                duration_s=time.monotonic() - start)
 
-    def capture_diff(self, handle: SandboxHandle) -> Diff:
-        return gitutils.build_diff(handle.workdir, handle.base_commit)
-
-    def destroy(self, handle: SandboxHandle) -> None:
-        shutil.rmtree(handle.workdir, ignore_errors=True)
+    def _force_remove(self, name: str) -> None:
+        """`docker run`'s own timeout only kills our client process; the daemon keeps the
+        container running until something explicitly removes it (code review Q-H3)."""
+        try:
+            subprocess.run([self._docker_bin, "rm", "-f", name], capture_output=True, text=True, timeout=30)
+        except Exception:
+            logger.warning("failed to force-remove timed-out container %s", name, exc_info=True)

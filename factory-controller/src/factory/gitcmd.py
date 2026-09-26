@@ -1,0 +1,106 @@
+"""Single hardened git runner, shared by every module that shells out to git.
+
+An agent-writable checkout is untrusted input. Git's own configuration can
+execute arbitrary commands from inside a repository the caller doesn't fully
+control — `core.fsmonitor`, `core.hooksPath`, `core.pager`, `.gitattributes`
+filter/diff drivers, `ext::` remote helpers — so every invocation here:
+
+  - ignores the ambient environment's git config entirely
+    (`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` -> `/dev/null`,
+    `GIT_CONFIG_NOSYSTEM=1`), so a stray `~/.gitconfig` on the host can't
+    inject anything either;
+  - hardens the invocation itself even when the caller also points
+    `--git-dir` outside the untrusted working tree (`core.fsmonitor=false`,
+    `core.hooksPath=/dev/null`, `core.pager=cat`, `protocol.ext.allow=never`,
+    `core.quotePath=false` so `-z` output and plain paths are never
+    C-style quoted — see `sandbox/gitutils.py` for why that quoting matters);
+  - enforces a timeout instead of hanging forever; and
+  - never leaks a credential: `token`, if given, is redacted out of every
+    exception message this module raises.
+
+`sandbox/` uses this with an explicit `git_dir` OUTSIDE the mounted/executed
+workdir (see `sandbox/base.py`) and no `token` at all — sandboxes get no
+credentials. `token` exists so the github module (B2) can adopt this runner
+for its own authenticated clone/push operations instead of shelling out on
+its own; it is passed to git as an `http.extraHeader`, which does mean the
+token is visible in this **host** process's own argv (e.g. to `ps`) for the
+duration of the call — acceptable for a trusted controller host, but callers
+that need to avoid even that should use a git credential helper instead.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import subprocess
+
+logger = logging.getLogger(__name__)
+
+_HARDENED_FLAGS = (
+    "-c", "core.fsmonitor=false",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.pager=cat",
+    "-c", "protocol.ext.allow=never",
+    "-c", "core.quotePath=false",
+)
+
+_ISOLATED_ENV = {
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
+
+
+class GitError(Exception):
+    """A git invocation failed, timed out, or was refused. Never carries a raw token."""
+
+
+def _redact(text: str, token: str | None) -> str:
+    if token:
+        text = text.replace(token, "***REDACTED***")
+    return text
+
+
+def run_git(
+    args: list[str],
+    cwd: str | None = None,
+    *,
+    git_dir: str | None = None,
+    work_tree: str | None = None,
+    token: str | None = None,
+    timeout: float = 60.0,
+) -> str:
+    """Run a hardened `git` invocation and return stdout.
+
+    `git_dir`/`work_tree`, when given, are passed as explicit `--git-dir`/
+    `--work-tree` flags rather than relying on git to discover a repository
+    from `cwd` — the whole point when `cwd`/`work_tree` is untrusted content.
+
+    Raises `GitError` on a non-zero exit or a timeout; the message includes
+    stderr, with `token` redacted if one was given.
+    """
+    prefix: list[str] = []
+    if git_dir is not None:
+        prefix.append(f"--git-dir={git_dir}")
+    if work_tree is not None:
+        prefix.append(f"--work-tree={work_tree}")
+    cmd = ["git", *prefix, *_HARDENED_FLAGS]
+    if token:
+        cmd += ["-c", f"http.extraHeader=Authorization: Bearer {token}"]
+    cmd += args
+
+    env = dict(os.environ)
+    env.update(_ISOLATED_ENV)
+
+    logger.debug("running: %s", _redact(" ".join(cmd), token))
+    try:
+        proc = subprocess.run(
+            cmd, cwd=cwd, env=env, capture_output=True,
+            text=True, encoding="utf-8", errors="surrogateescape", timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stderr = exc.stderr or ""
+        raise GitError(_redact(f"git {' '.join(args)} timed out after {timeout}s: {stderr}", token)) from None
+
+    if proc.returncode != 0:
+        raise GitError(_redact(f"git {' '.join(args)} failed (exit {proc.returncode}): {proc.stderr}", token))
+    return proc.stdout

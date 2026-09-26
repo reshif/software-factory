@@ -29,6 +29,15 @@ def test_issues_round_trip(policy):
     assert gh.labels("acme/demo", 1) == {"b", "c"}
 
 
+def test_set_head_seeds_a_branch_without_touching_internals(policy):
+    gh = FakeGitHub(floor=policy.floor)
+    gh.set_head("acme/demo", "main", "seed-sha-123")
+    assert gh.head_commit("acme/demo", "main") == "seed-sha-123"
+    # overwriting an existing head works too
+    gh.set_head("acme/demo", "main", "seed-sha-456")
+    assert gh.head_commit("acme/demo", "main") == "seed-sha-456"
+
+
 def test_head_commit_is_stable_and_repo_scoped(policy):
     gh = FakeGitHub(floor=policy.floor)
     first = gh.head_commit("acme/demo", "main")

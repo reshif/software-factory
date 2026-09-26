@@ -3,7 +3,8 @@ import hmac
 import json
 
 from factory.github.webhooks import (CheckSuiteCompleted, IssueCommentCreated, IssueLabeled,
-                                      PullRequestReview, PushToDefault, verify_signature, parse_event)
+                                      PullRequestReview, PushToBranch, PushToDefault, verify_signature,
+                                      parse_event)
 
 SECRET = "s3cr3t"
 
@@ -91,9 +92,67 @@ def test_push_to_default_branch():
                                    pusher="factory-push-bot")
 
 
-def test_push_to_non_default_branch_ignored():
+def test_push_to_non_default_branch_becomes_push_to_branch():
     payload = {
         "ref": "refs/heads/feature/x",
+        "after": "cafef00d",
+        "pusher": {"name": "someone"},
+        "repository": {"full_name": "acme/demo", "default_branch": "main"},
+    }
+    event = parse_event("push", payload)
+    assert event == PushToBranch(repo="acme/demo", branch="feature/x", sha="cafef00d",
+                                 pusher="someone", pusher_is_bot=False)
+
+
+def test_push_to_branch_by_bot_sender_type():
+    payload = {
+        "ref": "refs/heads/factory/mis-1",
+        "after": "cafef00d",
+        "pusher": {"name": "factory-push-bot"},
+        "sender": {"login": "factory-push-bot", "type": "Bot"},
+        "repository": {"full_name": "acme/demo", "default_branch": "main"},
+    }
+    event = parse_event("push", payload)
+    assert event.pusher_is_bot is True
+
+
+def test_push_to_branch_by_bot_login_suffix():
+    payload = {
+        "ref": "refs/heads/factory/mis-1",
+        "after": "cafef00d",
+        "pusher": {"name": "dependabot"},
+        "sender": {"login": "dependabot[bot]", "type": "User"},  # GitHub sometimes still says User
+        "repository": {"full_name": "acme/demo", "default_branch": "main"},
+    }
+    event = parse_event("push", payload)
+    assert event.pusher_is_bot is True
+
+
+def test_push_to_branch_by_human_is_not_a_bot():
+    payload = {
+        "ref": "refs/heads/factory/mis-1",
+        "after": "cafef00d",
+        "pusher": {"name": "alice"},
+        "sender": {"login": "alice", "type": "User"},
+        "repository": {"full_name": "acme/demo", "default_branch": "main"},
+    }
+    event = parse_event("push", payload)
+    assert event.pusher_is_bot is False
+
+
+def test_push_with_no_sender_defaults_to_not_a_bot():
+    payload = {
+        "ref": "refs/heads/feature/x",
+        "after": "cafef00d",
+        "repository": {"full_name": "acme/demo", "default_branch": "main"},
+    }
+    event = parse_event("push", payload)
+    assert event.pusher_is_bot is False
+
+
+def test_push_to_tag_ref_ignored():
+    payload = {
+        "ref": "refs/tags/v1.0.0",
         "after": "cafef00d",
         "repository": {"full_name": "acme/demo", "default_branch": "main"},
     }

@@ -64,6 +64,11 @@ class FakeGitHub:
     def add_review(self, repo: str, number: int, *, login: str, state: str, commit_id: str) -> None:
         self._reviews[(repo, number)].append({"login": login, "state": state, "commit_id": commit_id})
 
+    def set_head(self, repo: str, branch: str, sha: str) -> None:
+        """Seeds a branch's head sha directly (e.g. to seed `main` for a demo/test's
+        starting commit), so callers never need to reach into `_branches`."""
+        self._branches[(repo, branch)] = sha
+
     def comments(self, repo: str, number: int) -> list[str]:
         return list(self._issues[(repo, number)].comments)
 

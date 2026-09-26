@@ -18,7 +18,7 @@ PG_URL = os.environ.get("FACTORY_TEST_DATABASE_URL")
 # Tables truncated between Postgres-backed tests; schema_migrations is excluded
 # on purpose so migrations are applied once per session, not replayed.
 _TABLES = ("approval_decisions", "approvals", "intents", "events", "packets", "evidence", "tasks",
-          "missions")
+          "missions", "webhook_inbox", "used_keys")
 
 
 def _reset_postgres(dsn: str) -> None:

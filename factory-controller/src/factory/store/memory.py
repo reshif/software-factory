@@ -6,6 +6,7 @@ are exactly the ones `PostgresStateStore` must reproduce.
 """
 import threading
 from dataclasses import replace
+from datetime import timedelta
 
 from ..clock import SystemClock
 from ..controller.approvals import ApprovalStore
@@ -35,6 +36,9 @@ class MemoryStateStore:
         self._evidence_order: list[tuple[str, str]] = []
         self._packets: dict[str, DecisionPacket] = {}
         self._events: dict[str, list[dict]] = {}
+        self._webhooks: dict[str, dict] = {}
+        self._webhook_order: list[str] = []
+        self._used_keys: set[str] = set()
 
     # ── missions ──────────────────────────────────────────────────────
     def create_mission(self, mission: MissionRecord) -> MissionRecord:
@@ -109,6 +113,62 @@ class MemoryStateStore:
     def list_tasks(self, mission_id: str) -> list[TaskRecord]:
         with self._lock:
             return [replace(t) for t in self._tasks.values() if t.mission_id == mission_id]
+
+    # ── webhook inbox & once-only keys (red team #3 H1/H2/M4) ──────────
+    def enqueue_webhook(self, delivery_id: str, event: str, payload: dict) -> bool:
+        with self._lock:
+            if delivery_id in self._webhooks:
+                return False
+            self._webhooks[delivery_id] = {
+                "event": event, "payload": payload, "received_at": self._clock.now(),
+                "claimed_until": None, "acked_at": None,
+            }
+            self._webhook_order.append(delivery_id)
+            return True
+
+    def claim_webhooks(self, *, limit: int = 50, lease_seconds: int = 300) -> list[dict]:
+        with self._lock:
+            now = self._clock.now()
+            lease_until = now + timedelta(seconds=lease_seconds)
+            claimed = []
+            # `_webhook_order` is oldest-first by construction (append-only).
+            for delivery_id in self._webhook_order:
+                if len(claimed) >= limit:
+                    break
+                row = self._webhooks[delivery_id]
+                if row["acked_at"] is not None:
+                    continue
+                if row["claimed_until"] is not None and row["claimed_until"] >= now:
+                    continue
+                row["claimed_until"] = lease_until
+                claimed.append({"delivery_id": delivery_id, "event": row["event"], "payload": row["payload"]})
+            return claimed
+
+    def ack_webhook(self, delivery_id: str) -> None:
+        with self._lock:
+            row = self._webhooks.get(delivery_id)
+            if row is None:
+                raise NotFound(delivery_id)
+            row["acked_at"] = self._clock.now()
+
+    def next_fencing_token(self) -> int:
+        """Shares `ApprovalStore`'s own counter and lock (not a separate one), so tokens
+        from `approvals.consume` and from here are drawn from one globally monotonic
+        sequence -- exactly the guarantee `PostgresStateStore` gets for free from
+        `approval_fencing_seq`. `ApprovalStore` doesn't expose this as a public method
+        (it's out of this module's edit scope this wave); reusing its lock and counter
+        directly is the only way to share the counter without duplicating it.
+        """
+        with self.approvals._lock:
+            self.approvals._fencing += 1
+            return self.approvals._fencing
+
+    def use_once(self, key: str) -> bool:
+        with self._lock:
+            if key in self._used_keys:
+                return False
+            self._used_keys.add(key)
+            return True
 
     # ── evidence & packets ───────────────────────────────────────────
     def save_evidence(self, bundle: EvidenceBundle) -> None:

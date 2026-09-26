@@ -118,7 +118,13 @@ def test_destroy_removes_the_workdir(repo_mirror):
     assert not os.path.exists(handle.workdir)
 
 
-def test_local_sandbox_warns_it_is_not_a_security_boundary(repo_mirror, caplog):
+def test_local_sandbox_warns_it_is_not_a_security_boundary(repo_mirror, caplog, monkeypatch):
+    # The warning fires once per PROCESS, not once per instance (`factory demo
+    # --scenario all` builds a fresh LocalSandbox per scenario; before this it
+    # printed the same warning ~12 times in one run). Reset the module-level
+    # latch so this test observes a fresh process's first instantiation
+    # regardless of what an earlier test in this same pytest run already did.
+    monkeypatch.setattr("factory.sandbox.local._warned_not_a_security_boundary", False)
     with caplog.at_level("WARNING"):
         LocalSandbox(repos_root=repo_mirror["repos_root"], sandbox_root=repo_mirror["sandbox_root"])
     assert any("not a security boundary" in message.lower() for message in caplog.messages)

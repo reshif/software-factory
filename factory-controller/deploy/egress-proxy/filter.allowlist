@@ -1,0 +1,15 @@
+# One allowed FQDN per line, matched by tinyproxy's `FilterType fqdn` (substring
+# match against the request host). Everything else is refused
+# (`FilterDefaultDeny Yes` in tinyproxy.conf). Keep this list to exactly two
+# kinds of destination (final draft §12.2 M8): the LLM gateway, and a package
+# mirror for dependency installs. Add your real hostnames before deploying.
+
+# The LLM gateway (LiteLLM proxy). Replace with its real internal hostname.
+litellm.internal
+
+# Package mirrors used by sandboxed builds and tests. Trim this to whatever
+# your products actually need — every extra entry widens the blast radius of
+# a compromised sandbox.
+pypi.org
+files.pythonhosted.org
+registry.npmjs.org

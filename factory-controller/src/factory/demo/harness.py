@@ -46,7 +46,8 @@ def _init_mirror(product_dir: Path) -> str:
     return _git(product_dir, "rev-parse", "HEAD").strip()
 
 
-def _patch_factory_yaml(product_dir: Path, *, risk_profile: str | None = None) -> None:
+def _patch_factory_yaml(product_dir: Path, *, risk_profile: str | None = None,
+                        autonomy_level: str | None = None) -> None:
     """Extend the demo's OWN COPY of `factory.yaml` to require `review_agent` and
     `holdout_blackbox` too, so the demo exercises the full HM/H2 verification
     layers the final draft describes (§9.2). This never touches the checked-in
@@ -55,6 +56,8 @@ def _patch_factory_yaml(product_dir: Path, *, risk_profile: str | None = None) -
     `risk_profile`, when given, overrides the template's `standard` profile --
     used by `tests/pipeline` to exercise the `experimental`-only "auto" HM gate
     (final draft §6.2), which the standard-profile demo scenarios never reach.
+    `autonomy_level` similarly overrides `L3`, e.g. to reach L5's "standing" H2
+    relaxation for AC1-3 (autonomy-levels.yaml), which no L3 demo scenario reaches.
     """
     path = product_dir / "factory.yaml"
     doc = yaml.safe_load(path.read_text())
@@ -65,6 +68,8 @@ def _patch_factory_yaml(product_dir: Path, *, risk_profile: str | None = None) -
     doc["verification"]["required"] = required
     if risk_profile:
         doc["risk_profile"] = risk_profile
+    if autonomy_level:
+        doc["autonomy_level"] = autonomy_level
     path.write_text(yaml.safe_dump(doc, sort_keys=False))
 
 
@@ -153,13 +158,14 @@ class DemoContext:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
 
-def new_context(*, holdout_result: tuple = (2, 2), clock=None, risk_profile: str | None = None) -> DemoContext:
+def new_context(*, holdout_result: tuple = (2, 2), clock=None, risk_profile: str | None = None,
+                autonomy_level: str | None = None) -> DemoContext:
     tmp = Path(tempfile.mkdtemp(prefix="factory-demo-"))
     kit_dir = default_kit_dir()
     products_dir = tmp / "products"
     product_dir = products_dir / "org__backend-service"
     shutil.copytree(kit_dir / "templates" / "backend-service", product_dir)
-    _patch_factory_yaml(product_dir, risk_profile=risk_profile)
+    _patch_factory_yaml(product_dir, risk_profile=risk_profile, autonomy_level=autonomy_level)
     base_commit = _init_mirror(product_dir)
 
     settings = Settings(

@@ -6,9 +6,108 @@ see `factory-controller/README.md` for the fix each one guards.
 from factory.controller.approvals import IneligibleApprover
 from factory.demo import fixtures
 from factory.demo.harness import new_context
-from factory.demo.scenarios import _architect, _implementer, _intake, _reviewer, task
+from factory.demo.scenarios import (_architect, _implementer, _intake, _reviewer,
+                                    advance_h2_to_observing, advance_post_merge_ok, advance_to_merged,
+                                    run_feature_to_merged, task)
 from factory.github.webhooks import parse_event
 from factory.wiring import build_factory
+
+
+def _run_standing_patch_to_observing(ctx, *, title: str, files: dict):
+    """A covered (standing-mandate) patch, all the way through to a standing (no
+    human H2) production deploy -- needs L5 autonomy (autonomy-levels.yaml's only
+    "h2: standing" relaxation for AC1-3), which no L3 demo scenario reaches."""
+    # FakeGitHub's "main" head only ever moves in-memory (a merge sha with no
+    # matching commit in the real git mirror LocalSandbox checks out from); reset
+    # it to the ORIGINAL real commit before every mission in a multi-mission test
+    # so the next sandbox.create() has something real to check out.
+    ctx.adapters["github"].set_head(ctx.repo, "main", ctx.base_commit)
+    runtime = ctx.adapters["runtime"]
+    runtime.set_script("intake", _intake("patch", "AC3"))
+    runtime.set_script("implementer", _implementer(files))
+    runtime.set_script("reviewer", _reviewer("pass"))
+    item = ctx.add_work_item(title=title, body="...", labels=("factory:patch",))
+    mission = ctx.start(item)
+    assert mission.state == "ACTIVE", mission.state  # standing mandate: no H1
+    ctx.factory.run_ready_tasks(mission.mission_id)
+    advance_to_merged(ctx, mission.mission_id)
+    advance_post_merge_ok(ctx, mission.mission_id)
+    return mission.mission_id
+
+
+# ── item 1 (C1/H3): deploy fencing tokens are real, never a constant ────────────
+def test_standing_h2_second_release_actually_deployed():
+    """Two consecutive standing (auto-H2) releases to production. A constant
+    fencing token would make the SECOND one collide with the first's already-used
+    token at the target's own fencing check (red team #3 C1)."""
+    ctx = new_context(risk_profile="experimental", autonomy_level="L5")
+    try:
+        first_id = _run_standing_patch_to_observing(ctx, title="The first standing release for the test",
+                                                    files={"app/first.py": "VALUE = 1\n"})
+        assert ctx.mission(first_id).state == "OBSERVING", ctx.mission(first_id).state
+        ctx.clock.advance(hours=25)
+        ctx.factory.advance_observation(ctx.mission(first_id))
+        assert ctx.mission(first_id).state == "DELIVERED"
+        first_artifact = ctx.adapters["deploy"].receipts[-1].artifact
+
+        second_id = _run_standing_patch_to_observing(ctx, title="The second standing release for the test",
+                                                     files={"app/second.py": "VALUE = 2\n"})
+        assert ctx.mission(second_id).state == "OBSERVING", ctx.mission(second_id).state
+        ctx.clock.advance(hours=25)
+        ctx.factory.advance_observation(ctx.mission(second_id))
+        assert ctx.mission(second_id).state == "DELIVERED", \
+            "a constant fencing token would make this deploy collide with the first release's"
+        second_artifact = ctx.adapters["deploy"].receipts[-1].artifact
+        assert second_artifact != first_artifact
+    finally:
+        ctx.cleanup()
+
+
+def test_second_release_can_reach_staging():
+    """Same concern, one layer earlier: two releases' STAGING deploys must both
+    succeed (a constant staging fencing token would break the second one too)."""
+    ctx = new_context(risk_profile="experimental", autonomy_level="L5")
+    try:
+        for i, contents in enumerate(({"app/a.py": "A = 1\n"}, {"app/b.py": "B = 2\n"}), start=1):
+            mission_id = _run_standing_patch_to_observing(ctx, title=f"Standing release number {i} for the test", files=contents)
+            assert ctx.mission(mission_id).state == "OBSERVING", (i, ctx.mission(mission_id).state)
+        staging_receipts = [r for r in ctx.adapters["deploy"].receipts if r.environment == "staging"]
+        assert len(staging_receipts) == 2
+    finally:
+        ctx.cleanup()
+
+
+def test_deploy_fencing_rejection_never_marks_the_mission_delivered():
+    """If the target's fencing check rejects the H2-approval-consumed token
+    (StaleApproval) -- e.g. because a differently-sequenced release already
+    pushed the environment's fencing state further ahead -- the orchestrator must
+    NEVER assume the deploy happened. It escalates to AWAITING_HX instead of
+    letting the mission drift toward OBSERVING/DELIVERED for a release that may
+    never have actually reached production (red team #3 C1: "the older mission
+    is not marked delivered without deploying")."""
+    ctx = new_context()
+    try:
+        mission_id = run_feature_to_merged(
+            ctx, title="A release whose deploy token will be stale",
+            implementer_script=_implementer({"app/greet.py": fixtures.GREET_APP,
+                                             "tests/test_greet.py": fixtures.GREET_TEST_PASS}),
+            task_objective="Add a greet() helper with a passing unit test.")
+        advance_post_merge_ok(ctx, mission_id)
+        assert ctx.mission(mission_id).state == "AWAITING_H2"
+
+        # Some other, unrelated deploy already pushed production's fencing state
+        # far ahead of whatever token THIS mission's H2 consume will draw next.
+        ctx.adapters["deploy"].deploy("sha256:unrelated", environment="production",
+                                      operation_id="unrelated-op", fencing_token=999_999)
+
+        ctx.decide(mission_id, "H2", "approve")  # consumes a real (but now-stale) token
+        state = ctx.mission(mission_id).state
+        assert state == "AWAITING_HX", f"expected AWAITING_HX on a fencing rejection, got {state}"
+        events = [e["kind"] for e in ctx.events(mission_id)]
+        assert "deploy_failed" in events
+        assert "delivered" not in events
+    finally:
+        ctx.cleanup()
 
 
 # ── item 2 (H1): durable queues -- two Factory instances share one store ────────

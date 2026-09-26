@@ -1202,10 +1202,16 @@ class Factory:
                                 action=lambda: self._deploy.build(mission.repo, merge_sha), probe=lambda: None)
         mission = self._store.update_mission(mission.mission_id, expected_version=mission.state_version,
                                              artifact=artifact)
+        # A fresh, globally monotonic token every time (red team #3 C1/H3): a
+        # constant would make every release after the first one to any given
+        # environment a replay as far as the target's own fencing check is
+        # concerned, since a token can never be reused once seen.
         staging_op = f"deploy_staging:{mission.mission_id}:{artifact}"
+        staging_token = self._store.next_fencing_token()
         receipt = execute_once(self._store.intents, staging_op,
                                action=lambda: self._deploy.deploy(artifact, environment=STAGING_ENVIRONMENT,
-                                                                 operation_id=staging_op, fencing_token=1),
+                                                                 operation_id=staging_op,
+                                                                 fencing_token=staging_token),
                                probe=lambda: None)
         self._event(mission.mission_id, telemetry.DEPLOYED, {"environment": STAGING_ENVIRONMENT, "artifact": artifact})
         staging_url = self._deploy.url(STAGING_ENVIRONMENT)
@@ -1254,11 +1260,37 @@ class Factory:
         product = self._product(mission)
         self._deploy_to_prod(mission, product, fencing_token=fencing_token)
 
+    def _deploy_failed_escalate(self, mission: MissionRecord, *, reason: str) -> None:
+        """A production deploy that failed (or whose success can't be confirmed)
+        can't use the generic `_boundary` (ACTIVE-only): DEPLOYING's own FSM path is
+        `deploy_failed` -> RECOVERING -> `outside_authority` -> AWAITING_HX (no
+        automated diagnosis in v1, matching `advance_observation`'s regression
+        handling)."""
+        mission = self._mission(mission.mission_id)
+        if mission.state == "DEPLOYING":
+            mission = self._transition(mission, "deploy_failed")
+        if mission.state == "RECOVERING":
+            mission = self._transition(mission, "outside_authority")
+        product = self._product(mission)
+        self._request_hx(mission, product, reason=reason)
+
+    def _safe_healthy(self, environment: str) -> bool | None:
+        try:
+            return self._deploy.healthy(environment)
+        except Exception:  # noqa: BLE001 -- this is only for a log/evidence message
+            return None
+
     # ── 10: deploy (final draft §7 "Deploy controller consumes approval") ──────
-    def _deploy_to_prod(self, mission: MissionRecord, product: Product, fencing_token: int = 1) -> None:
+    def _deploy_to_prod(self, mission: MissionRecord, product: Product, fencing_token: int | None = None) -> None:
         if mission.state == "AWAITING_H2":
             mission = self._transition(mission, "approval_consumed")
-        # else: already DEPLOYING, having just come from RELEASE_READY via "h2_standing".
+        # else: already DEPLOYING, having just come from RELEASE_READY via "h2_standing"
+        # -- there's no approval to consume a token from, so mint a fresh one from the
+        # SAME globally monotonic sequence (red team #3 C1/H3): a constant here would
+        # make every standing release after the first one to any environment collide
+        # with the previous release's already-used token.
+        if fencing_token is None:
+            fencing_token = self._store.next_fencing_token()
         # Keyed by artifact (red-team #2 item 1): a later release of the SAME mission
         # (after a repair) deploys a NEW artifact and must not replay an old receipt.
         op_id = f"deploy_prod:{mission.mission_id}:{mission.artifact}"
@@ -1269,17 +1301,27 @@ class Factory:
 
         try:
             receipt = execute_once(self._store.intents, op_id, action=deploy, probe=lambda: None)
-        except StaleApproval:
-            # The target's own fencing check rejected a retry using an already-used
-            # token: that specifically means the deploy (or a newer one) already
-            # happened, so this is a crash-recovery retry finding its own prior
-            # success, not a failure (red-team #2 item 1).
-            logger.info("%s: deploy_prod retry hit the fencing check; treating as already applied",
-                       mission.mission_id)
+        except StaleApproval as exc:
+            # The target's own fencing check rejected this token: NEVER assume the
+            # deploy happened anyway (red team #3 C1). The port has no way to ask a
+            # target "which artifact is live right now", so the only check available
+            # is `healthy` -- which says nothing about WHICH artifact is healthy, so
+            # it can't positively confirm this one landed either. Treat it as not
+            # applied and escalate with the failure as evidence, rather than letting
+            # the mission drift toward DELIVERED for a release that may never have
+            # actually reached production.
+            healthy = self._safe_healthy(PROD_ENVIRONMENT)
+            self._event(mission.mission_id, telemetry.DEPLOY_FAILED,
+                       {"environment": PROD_ENVIRONMENT, "artifact": mission.artifact,
+                        "reason": f"fencing rejected token {fencing_token}: {exc}"})
+            self._deploy_failed_escalate(mission, reason=f"production deploy fencing rejected (target healthy={healthy}); "
+                                          f"the release may not have been applied: {exc}")
+            return
         except Exception as exc:  # noqa: BLE001
             self._event(mission.mission_id, telemetry.DEPLOY_FAILED,
                        {"environment": PROD_ENVIRONMENT, "artifact": mission.artifact, "reason": str(exc)})
-            raise
+            self._deploy_failed_escalate(mission, reason=f"production deploy failed: {exc}")
+            return
         self._event(mission.mission_id, telemetry.DEPLOYED, {"environment": PROD_ENVIRONMENT, "artifact": mission.artifact})
         self._flags.set_rollout(mission.flag, 100)
         self._transition(self._mission(mission.mission_id), "deployed")

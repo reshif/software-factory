@@ -21,7 +21,6 @@ TRANSITIONS: dict[tuple[str, str], str] = {
     ("AWAITING_H1", "timeout"): "HELD",
     ("ADMITTED", "capacity_ok"): "ACTIVE",
     ("ACTIVE", "tasks_done"): "INTEGRATING",
-    ("ACTIVE", "boundary"): "AWAITING_HX",
     ("ACTIVE", "coverage_exceeded"): "DISCOVERING",
     ("INTEGRATING", "hm_auto"): "MERGED",
     ("INTEGRATING", "hm_required"): "AWAITING_HM",
@@ -59,6 +58,12 @@ TRANSITIONS: dict[tuple[str, str], str] = {
 GLOBAL_EVENTS = {
     "mandate_expired": ("AWAITING_HX", WORK_STATES),
     "budget_exhausted": ("AWAITING_HX", WORK_STATES),
+    # "boundary": an agent/approval follow-up action failed, or discovery itself
+    # failed (invalid architect output, a runtime error) -- there is no safe
+    # automated next step, so escalate to a human from ANY in-progress state,
+    # not just ACTIVE (red team #3 items 8/L5 and 13: never leave a mission
+    # stuck in ADMITTED/DISCOVERING/etc. with no way forward).
+    "boundary": ("AWAITING_HX", WORK_STATES | {"DISCOVERING"}),
     "kill_switch": ("HELD", None),   # None = every non-terminal state except HELD
 }
 

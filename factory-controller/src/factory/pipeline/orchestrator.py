@@ -39,7 +39,6 @@ import logging
 import os
 import shlex
 import shutil
-import threading
 import uuid
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -88,6 +87,9 @@ STAGING_ENVIRONMENT = "staging"
 # item 5): nothing the controller writes here may ever appear in a captured diff.
 CONTROLLER_TMP_DIRNAME = ".factory-controller-tmp"
 PR_SUMMARY_MAX_CHARS = 2000
+MAX_PACKET_DIFF_CHARS = 200_000
+MAX_WEBHOOK_ATTEMPTS = 5
+AWAITING_STATES = ("AWAITING_H1", "AWAITING_HM", "AWAITING_H2", "AWAITING_HX")
 
 
 class MissionNotFound(NotFound):
@@ -106,7 +108,8 @@ class Factory:
                 holdout: HoldoutRunner, deploy: DeployTarget, flags: FlagProvider,
                 products: ProductRegistry, policy: Policy, clock: Clock, kit_dir: str | Path,
                 inbox_base_url: str, evidence_dir: str, repos_root: str, mirror: RepoMirror,
-                gateway_url: str | None = None, max_parallel_tasks: int = MAX_PARALLEL_TASKS_DEFAULT):
+                gateway_url: str | None = None, max_parallel_tasks: int = MAX_PARALLEL_TASKS_DEFAULT,
+                state_encryption_key: str | None = None):
         self._store = store
         self._github = github
         self._runtime = runtime
@@ -126,6 +129,16 @@ class Factory:
         self._mirror = mirror
         self._gateway_url = gateway_url
         self._max_parallel_tasks = max_parallel_tasks
+        # Never store a raw gateway/discovery key in an event (red team #3 item
+        # 6/M3): every key cached via `_remember_key` is Fernet-encrypted first.
+        # `local` mode (and any caller that doesn't pass one) gets an ephemeral,
+        # process-lifetime key -- there's nothing durable worth protecting past
+        # this process's own in-memory fakes, and no operator to hand a real one
+        # to; `production` mode's `Settings.validate` requires a real one, wired
+        # through from `settings.state_encryption_key`.
+        from cryptography.fernet import Fernet
+        key_material = state_encryption_key.encode() if state_encryption_key else Fernet.generate_key()
+        self._fernet = Fernet(key_material)
 
         # Process-local caches. Everything durable (mission/task state, approvals,
         # intents, evidence) lives in `store`; these only hold values that are
@@ -136,18 +149,15 @@ class Factory:
         self._task_diffs: dict[str, Diff] = {}
         self._work_items: dict[str, WorkItem] = {}
 
-        # Webhook events are enqueued fast (by the HTTP handler, on the event loop)
-        # and drained by the worker loop (a plain background thread), so a webhook
-        # request never blocks on an agent run or a GitHub call. This queue is
-        # process-local -- an accepted v1 limitation, see README "v1 scope notes".
-        self._webhook_lock = threading.Lock()
-        self._webhook_queue: list[tuple[str, object]] = []
-
-        # Same pattern for approval decisions: `decide()` records the decision and
-        # enqueues fast; `process_approvals` (worker-driven) does the consume and
-        # the actual follow-up action, which may run an agent or call GitHub/deploy.
-        self._approval_lock = threading.Lock()
-        self._approval_queue: list[tuple[str, str]] = []
+        # Webhook deliveries and approval decisions are durable (`store.enqueue_webhook`/
+        # `claim_webhooks`/`ack_webhook`; `store.approvals`), not in-process queues
+        # (red team #3 H1): any Factory instance sharing this store -- a `serve`
+        # process and a `worker` process, say -- converges on the same outcome
+        # regardless of which instance recorded the webhook or the decision.
+        # This is the only process-local, best-effort bookkeeping left: a retry
+        # counter for the webhook poison-message guard (resets on restart, which
+        # just means a few extra retries, never fewer than the guard requires).
+        self._webhook_attempts: dict[str, int] = {}
 
     # ── public accessors for the worker loop (`worker.py`) and the inbox/app ───
     @property
@@ -187,13 +197,35 @@ class Factory:
                 return event.get("payload", event)
         return None
 
+    def _remember_key(self, mission_id: str, kind: str, key: str) -> None:
+        """Like `_remember`, but for an LLM gateway budget key specifically: the
+        raw key never touches `store.append_event` (and so never `list_events`),
+        only its Fernet ciphertext (red team #3 item 6/M3)."""
+        token = self._fernet.encrypt(key.encode()).decode()
+        self._remember(mission_id, kind, {"key": token})
+
+    def _recall_key(self, mission_id: str, kind: str) -> str | None:
+        cached = self._recall(mission_id, kind)
+        if not cached:
+            return None
+        try:
+            return self._fernet.decrypt(cached["key"].encode()).decode()
+        except Exception:  # noqa: BLE001 -- a key from a previous encryption key: treat as absent
+            logger.warning("%s: could not decrypt cached %s (rotated state_encryption_key?)", mission_id, kind)
+            return None
+
     def _gateway_key(self, mission: MissionRecord) -> str:
+        """The mission's current gateway key -- minted fresh if there isn't one on
+        record, or if the last-known one was explicitly revoked (red team #3 item
+        5/M2: a mission that paused in HELD/BLOCKED and has since resumed must
+        never let an agent run reuse the key that was revoked when it paused)."""
         key = self._gateway_keys.get(mission.mission_id)
         if key is None:
-            cached = self._recall(mission.mission_id, "gateway_key")
-            key = cached["key"] if cached else None
-        if key is None:
-            raise RuntimeError(f"{mission.mission_id}: no gateway key on record")
+            key = self._recall_key(mission.mission_id, "gateway_key")
+        revoked = self._recall_key(mission.mission_id, "gateway_key_revoked")
+        if key is None or (revoked and revoked == key):
+            key = self._budget.create_key(mission.mission_id, mission.budget_usd or DISCOVERY_BUDGET_USD)
+            self._remember_key(mission.mission_id, "gateway_key", key)
         self._gateway_keys[mission.mission_id] = key
         return key
 
@@ -204,21 +236,41 @@ class Factory:
         discovery happens before the mission has its real admission budget.
         Revoked once discovery is no longer needed (`_revoke_discovery_key`).
         """
-        cached = self._recall(mission.mission_id, "discovery_key")
+        cached = self._recall_key(mission.mission_id, "discovery_key")
         if cached:
-            return cached["key"]
+            return cached
         key = self._budget.create_key(f"{mission.mission_id}-discovery", DISCOVERY_BUDGET_USD)
-        self._remember(mission.mission_id, "discovery_key", {"key": key})
+        self._remember_key(mission.mission_id, "discovery_key", key)
         return key
 
     def _revoke_discovery_key(self, mission_id: str) -> None:
-        cached = self._recall(mission_id, "discovery_key")
+        cached = self._recall_key(mission_id, "discovery_key")
         if not cached:
             return
         try:
-            self._budget.revoke(cached["key"])
+            self._budget.revoke(cached)
         except Exception:  # noqa: BLE001 -- best-effort cleanup, never blocks the caller
             logger.warning("%s: could not revoke the discovery budget key", mission_id, exc_info=True)
+
+    # States where nothing should ever be able to spend against this mission's
+    # budget key again: it's either finished (DELIVERED) or paused indefinitely
+    # (CANCELED/ARCHIVED/HELD/BLOCKED) -- red team #3 item 5/M2.
+    _KEY_REVOKING_STATES = frozenset({"CANCELED", "ARCHIVED", "HELD", "BLOCKED", "DELIVERED"})
+
+    def _revoke_mission_keys(self, mission_id: str) -> None:
+        self._revoke_discovery_key(mission_id)
+        key = self._gateway_keys.pop(mission_id, None)
+        if key is None:
+            key = self._recall_key(mission_id, "gateway_key")
+        if key is None:
+            return
+        try:
+            self._budget.revoke(key)
+        except Exception:  # noqa: BLE001 -- best-effort cleanup, never blocks the transition
+            logger.warning("%s: could not revoke the gateway key", mission_id, exc_info=True)
+        # Marks this specific key as dead, so `_gateway_key` mints a fresh one
+        # instead of reusing it if the mission later resumes.
+        self._remember_key(mission_id, "gateway_key_revoked", key)
 
     def _event(self, mission_id: str, kind: str, payload: dict) -> None:
         self._store.append_event(mission_id, kind, payload)
@@ -235,6 +287,8 @@ class Factory:
             raise
         self._event(mission.mission_id, "mission_transition", {"from": mission.state, "event": event,
                                                                 "to": new_state})
+        if new_state in self._KEY_REVOKING_STATES:
+            self._revoke_mission_keys(mission.mission_id)
         return updated
 
     def _model_for(self, product: Product, role: str) -> str:
@@ -249,15 +303,43 @@ class Factory:
             max_turns=max_turns, budget_usd=budget_usd, allowed_tools=(), contract=contract,
             gateway_key=gateway_key, gateway_url=self._gateway_url, system_prompt=agent_prompt.system_prompt)
         result = self._runtime.run(request, on_tool_approval=on_tool_approval)
-        if mission_id and result.usage_usd:
-            self._event(mission_id, telemetry.COST_SPENT, {"usd": result.usage_usd})
-            add_spend = getattr(self._budget, "add_spend", None)
-            if gateway_key and add_spend:
-                try:
-                    add_spend(gateway_key, result.usage_usd)
-                except Exception as exc:  # noqa: BLE001 -- surfaced by the caller's budget check
-                    logger.info("%s: gateway reports budget exceeded: %s", mission_id, exc)
+        self._record_agent_spend(mission_id, gateway_key, result.usage_usd)
         return result
+
+    def _record_agent_spend(self, mission_id: str | None, gateway_key: str | None, usage_usd: float) -> None:
+        """`mission.spent_usd` accumulates real gateway spend from every agent run,
+        including `resume` calls (red team #3 item 12) -- packets report the
+        mission's actual cost, not a permanently-zero default."""
+        if not mission_id or not usage_usd:
+            return
+        self._event(mission_id, telemetry.COST_SPENT, {"usd": usage_usd})
+        try:
+            mission = self._mission(mission_id)
+            self._store.update_mission(mission_id, expected_version=mission.state_version,
+                                       spent_usd=mission.spent_usd + usage_usd)
+        except (ConcurrentUpdate, NotFound):
+            logger.warning("%s: could not record $%.4f of agent spend (concurrent update)", mission_id, usage_usd)
+        add_spend = getattr(self._budget, "add_spend", None)
+        if gateway_key and add_spend:
+            try:
+                add_spend(gateway_key, usage_usd)
+            except Exception as exc:  # noqa: BLE001 -- surfaced by the caller's budget check
+                logger.info("%s: gateway reports budget exceeded: %s", mission_id, exc)
+                self._budget_exhausted(mission_id, reason=f"LLM gateway budget exhausted: {exc}")
+
+    def _budget_exhausted(self, mission_id: str, *, reason: str) -> None:
+        """Fire the FSM's global `budget_exhausted` event (red team #3 item 11):
+        WORK_STATES -> AWAITING_HX. Best-effort -- a mission already paused,
+        awaiting a human, or terminal has nothing to escalate."""
+        try:
+            mission = self._mission(mission_id)
+            if mission.state not in mission_fsm.WORK_STATES:
+                return
+            mission = self._transition(mission, "budget_exhausted")
+            product = self._product(mission)
+            self._request_hx(mission, product, reason=reason)
+        except Exception:  # noqa: BLE001 -- never let this crash the agent-run path
+            logger.exception("%s: could not escalate the budget-exhausted mission to HX", mission_id)
 
     def _ensure_mirror(self, repo: str) -> None:
         """Sync `repo`'s local mirror before every `SandboxPort.create` (`RepoMirror.sync`,
@@ -388,8 +470,12 @@ class Factory:
                                      on_tool_approval=guard)
             output = parse_agent_output("architect", result.output_text, kit_dir=self._kit_dir)
         except (AgentOutputError, Exception) as exc:  # noqa: BLE001 -- fail closed, never advance
-            logger.warning("%s: architect output invalid (%s); mission stays in DISCOVERING", mission.mission_id, exc)
+            logger.warning("%s: architect output invalid (%s); escalating to HX", mission.mission_id, exc)
             self._notifier.info(f"{mission.mission_id}: discovery failed ({exc}); needs manual attention")
+            # Never leave the mission stuck in DISCOVERING (red team #3 item 13):
+            # an invalid architect output or a runtime error during discovery is
+            # exactly the "no safe automated next step" case `_boundary` handles.
+            self._boundary(self._mission(mission.mission_id), reason=f"discovery failed: {exc}")
             return
         finally:
             if handle is not None:
@@ -422,23 +508,56 @@ class Factory:
         request_id = packets.new_request_id(gate)
         timeout, _ = mission_fsm.TIMEOUTS[f"AWAITING_{gate}"]
         expires = self._clock.now() + timeout
+        # Every request gets ITS OWN eligible approver -> roles map, from exactly
+        # this product's factory.yaml for exactly this gate (red team #3 H2). This is
+        # never a global union across products: `check_decision` rejects anyone not
+        # in it and uses these roles regardless of what a caller claims.
+        eligible = product.eligible_for(gate)
         request = ApprovalRequest(
             request_id=request_id, gate=gate, mission_ids=(mission.mission_id, *extra_mission_ids),
             operation_id=f"{gate}:{mission.mission_id}", artifact=mission.artifact, content_hash=content_hash,
             policy_version=mission.policy_version, state_version=mission.state_version, required=required,
             risk_profile=product.risk_profile, requester=self._requester(mission),
-            expires=expires, editors=frozenset(mission.editors))
+            expires=expires, editors=frozenset(mission.editors), eligible=eligible)
         self._store.approvals.add(request)
+        if not raw_diff and evidence is not None:
+            raw_diff = self._packet_diff(evidence)
         packet = packets.build_packet(request_id=request_id, gate=gate, mission=mission, title=title,
                                       recommendation=recommendation, summary=summary, required=str(required),
                                       expires=expires, content_hash=content_hash, raw_diff=raw_diff,
                                       alternatives=alternatives, evidence=evidence, recovery_plan=recovery_plan,
                                       cost_usd=cost_usd, untrusted_inputs=untrusted_inputs,
-                                      extra_mission_ids=extra_mission_ids)
+                                      extra_mission_ids=extra_mission_ids,
+                                      # Forward-compatible hook for the notifier to scope its roster to THIS
+                                      # request's eligible approvers only (red team #3 H2) -- `Notifier`/
+                                      # `SlackNotifier` (inbox module) don't read this yet; see the final
+                                      # report's "Requests to orchestrator" for routing this to that owner.
+                                      links={"eligible_approvers": sorted(eligible)})
         self._store.save_packet(packet)
+        # Durable pointer from mission -> its current request, so `process_approvals`
+        # can find and react to a revise/cancel/defer decision even after
+        # `ApprovalStore.decide` has already voided the request out of `list_open()`
+        # (red team #3 H1; see `_process_terminal_decision`).
+        self._remember(mission.mission_id, "open_request", {"request_id": request_id, "gate": gate})
         self._event(mission.mission_id, telemetry.APPROVAL_REQUESTED, {"gate": gate, "request_id": request_id})
         inbox_url = self._inbox_base_url
         self._notifier.decision_requested(packet, inbox_url=inbox_url)
+
+    def _packet_diff(self, evidence: EvidenceBundle | None) -> str:
+        """The raw diff for an HM/H2 packet (final draft §10 "the raw diff and a
+        preview"), read from `evidence.diff_ref` and capped so a huge diff can't
+        blow up the packet page -- a note replaces the tail past the cap."""
+        if evidence is None or not evidence.diff_ref:
+            return ""
+        try:
+            with open(evidence.diff_ref) as f:
+                text = f.read(MAX_PACKET_DIFF_CHARS + 1)
+        except OSError:
+            logger.warning("could not read diff_ref %r for a packet", evidence.diff_ref)
+            return ""
+        if len(text) > MAX_PACKET_DIFF_CHARS:
+            return text[:MAX_PACKET_DIFF_CHARS] + f"\n... [truncated; full diff at {evidence.diff_ref}]"
+        return text
 
     def _requester(self, mission: MissionRecord) -> str:
         cached = self._recall(mission.mission_id, "requester")
@@ -450,46 +569,77 @@ class Factory:
     def decide(self, request_id: str, approver: str, roles, decision: str, content_hash: str) -> ApprovalRequest:
         """The single entry point the inbox and GitHub review webhooks call (build spec §3 step 3).
 
-        This only records the decision (`ApprovalStore.decide`, a fast, local
-        state update) and enqueues the request for the worker to finish
-        processing (`process_approvals`) -- it never itself consumes the
-        approval or runs the follow-up action (admission, merge, deploy,
-        re-discovery), all of which can call an agent or a remote service.
-        Recording the decision synchronously (rather than that too) is what
-        makes a second concurrent `decide()` see a consistent quorum count.
+        This ONLY records the decision in the approval store (red team #3 H1) --
+        no queueing, no side effect, not even a cheap FSM transition. `process_approvals`
+        (worker-driven, on every Factory instance sharing this store) is what acts on
+        it, by scanning the store rather than draining an in-process queue: that's
+        what lets a decision recorded by a `serve` process be carried out by a
+        separate `worker` process, and vice versa.
         """
         request = self._store.approvals.decide(request_id, approver=approver, roles=roles, decision=decision,
                                                content_hash=content_hash, now=self._clock.now())
         for mission_id in request.mission_ids:
             self._event(mission_id, telemetry.APPROVAL_DECIDED,
                        {"request_id": request_id, "decision": decision, "approver": approver})
-        with self._approval_lock:
-            self._approval_queue.append((request_id, decision))
         return request
 
     def process_approvals(self) -> None:
-        """Finish processing every queued decision: revise/cancel bookkeeping (which
-        may re-run discovery) or, on quorum, consume-and-act. Called by the worker
-        loop, never inline from `decide()` (build spec §3 B7 "decide" red-team fix).
+        """Scan the shared approval store for work and act on it (red team #3 H1).
+
+        Quorum-met requests are still `list_open()` (approve never voids), so a
+        plain scan finds them. `revise`/`cancel` VOID the request immediately
+        (`ApprovalStore.decide`), so it drops out of `list_open()` before any
+        instance's `process_approvals` gets a chance to act on it -- that side
+        effect is instead driven by the mission side: every AWAITING_* mission's
+        current request id is durably recorded (`_request_approval`'s "open_request"
+        cache event), so this looks each one up directly by id (works regardless of
+        status) and reacts to its LAST decision, exactly once (a durable
+        "processed_decision" marker prevents reprocessing after every scan).
         """
-        with self._approval_lock:
-            queued, self._approval_queue = self._approval_queue, []
-        for request_id, decision in queued:
-            try:
-                request = self._store.approvals.get(request_id)
-            except (KeyError, NotFound):
-                continue
-            try:
-                if decision == "revise":
-                    self._on_revise(request)
-                elif decision == "cancel":
-                    self._on_cancel(request)
-                elif decision == "approve" and request.status == "open" and request.quorum_met():
+        for request in self._store.approvals.list_open():
+            if request.quorum_met():
+                try:
                     self._on_quorum(request)
-            except ApprovalError as exc:
-                logger.info("processing %s (%s) did not apply: %s", request_id, decision, exc)
-            except Exception:  # noqa: BLE001 -- one bad request must not wedge the worker loop
-                logger.exception("processing approval %s (%s) failed", request_id, decision)
+                except ApprovalError as exc:
+                    # A concurrent consume, an expiry, or a stale state/content/policy
+                    # hash: never the follow-up action's own fault, so nothing to
+                    # escalate to HX for -- just log it and let the scan continue.
+                    logger.info("%s: consuming quorum-met request failed: %s", request.request_id, exc)
+                except Exception:  # noqa: BLE001 -- one bad request must not wedge the scan
+                    logger.exception("%s: processing a quorum-met request failed", request.request_id)
+        for state in AWAITING_STATES:
+            for mission in self._store.list_missions(state=state):
+                self._process_terminal_decision(mission)
+
+    def _process_terminal_decision(self, mission: MissionRecord) -> None:
+        marker = self._recall(mission.mission_id, "open_request")
+        if not marker:
+            return
+        try:
+            request = self._store.approvals.get(marker["request_id"])
+        except (KeyError, NotFound):
+            return
+        if not request.decisions:
+            return
+        last = request.decisions[-1]
+        if last.decision == "approve":
+            return  # handled by the quorum-met scan (or quorum not met yet)
+        already = self._recall(mission.mission_id, "processed_decision")
+        if already and already.get("request_id") == request.request_id and already.get("at") == last.at.isoformat():
+            return
+        try:
+            if last.decision == "revise":
+                self._on_revise(request)
+            elif last.decision == "cancel":
+                self._on_cancel(request)
+            elif last.decision == "defer":
+                self._on_defer(request)
+        except ApprovalError as exc:
+            logger.info("processing %s (%s) did not apply: %s", request.request_id, last.decision, exc)
+        except Exception:  # noqa: BLE001 -- one bad request must not wedge the worker loop
+            logger.exception("processing decision %s (%s) failed", request.request_id, last.decision)
+        self._remember(mission.mission_id, "processed_decision",
+                       {"request_id": request.request_id, "at": last.at.isoformat()})
 
     def _mission(self, mission_id: str) -> MissionRecord:
         return self._store.get_mission(mission_id)
@@ -505,10 +655,18 @@ class Factory:
                     repo, number = self._issue_ref(mission.work_item_id)
                     work_item = replace(self._github.get_issue(repo, number), product=product.name)
                 self._run_discovery(mission, product, work_item)
-            elif request.gate == "HM":
-                self._transition(mission, "changes_requested")
-            elif request.gate == "H2":
-                self._transition(mission, "changes_requested")
+            elif request.gate in ("HM", "H2"):
+                # "Changes requested" must not just re-integrate the identical diff
+                # (red team #3 item 10): a real repair task forces the implementer to
+                # actually run again. Neither ApprovalStore.Decision nor GitHub's
+                # PullRequestReview carries free-text review comments today, so the
+                # task objective can only say who asked and at which gate -- see the
+                # final report's "Requests to orchestrator" for plumbing the actual
+                # comment text through.
+                mission = self._transition(mission, "changes_requested")
+                product = self._product(mission)
+                self._create_repair_task(mission, product,
+                                         reason=f"changes requested at {request.gate}")
             elif request.gate == "HX":
                 logger.info("%s: HX revise recorded; awaiting a fresh decision", mission_id)
 
@@ -522,6 +680,21 @@ class Factory:
                 self._transition(mission, "declined")
             else:
                 logger.info("%s: %s cancel recorded (no dedicated transition)", mission_id, request.gate)
+
+    def _on_defer(self, request: ApprovalRequest) -> None:
+        """defer -> HELD (red team #3 item 10); HX specifically -> BLOCKED, the FSM's
+        own "deferred" event. H1/HM have no dedicated defer transition in the FSM
+        (only H2 and HX do) -- for those the request simply stays open for a later
+        decision or a timeout; deferring isn't a distinct state for them."""
+        for mission_id in request.mission_ids:
+            mission = self._mission(mission_id)
+            if request.gate == "H2" and mission.state == "AWAITING_H2":
+                self._transition(mission, "defer")
+            elif request.gate == "HX" and mission.state == "AWAITING_HX":
+                self._transition(mission, "deferred")
+            else:
+                logger.info("%s: %s defer recorded (no dedicated transition for this gate)",
+                           mission_id, request.gate)
 
     def _on_quorum(self, request: ApprovalRequest) -> None:
         mission = self._mission(request.mission_ids[0])
@@ -601,22 +774,53 @@ class Factory:
         return total
 
     def release_admitted_missions(self) -> None:
-        """Fire `capacity_ok` for any ADMITTED mission once approval capacity frees
-        up. Called by the worker loop; a mission the budget was full for simply
-        stays in ADMITTED (the queue) until this releases it."""
+        """Fire `capacity_ok` for any ADMITTED mission once approval capacity AND
+        the product's monthly budget both allow it. Called by the worker loop; a
+        mission either was blocked for simply stays in ADMITTED (the queue)
+        until this releases it (red team #3 item 9)."""
         for mission in self._store.list_missions(state="ADMITTED"):
             product = self._product(mission)
-            committed = self._committed_minutes(product, excluding=mission.mission_id)
-            if can_admit(mission.lane, committed_minutes=committed,
-                        reviewer_hours_per_week=product.budgets["reviewer_hours_per_week"]):
+            if self._capacity_ok(mission, product):
                 self._transition(mission, "capacity_ok")
+
+    def _spent_this_month(self, product: Product) -> float:
+        """Sum of `cost_spent` events, across every mission of `product`, whose
+        timestamp falls in the current calendar month (red team #3 item 9's
+        `monthly_usd` cap uses spend, not a separate counter, so it never drifts
+        from what `_record_agent_spend` actually recorded)."""
+        now = self._clock.now()
+        total = 0.0
+        for mission in self._store.list_missions(product=product.name):
+            for event in self._store.list_events(mission.mission_id):
+                if event.get("kind") != telemetry.COST_SPENT:
+                    continue
+                at = event.get("at")
+                if at is not None and at.year == now.year and at.month == now.month:
+                    total += event.get("payload", {}).get("usd", 0.0)
+        return total
+
+    def _capacity_ok(self, mission: MissionRecord, product: Product) -> bool:
+        """Both halves of admission capacity (red team #3 item 9): reviewer
+        WIP (`approval_budget.can_admit`) AND the product's `monthly_usd` cost
+        cap. Either being full leaves the mission queued in ADMITTED."""
+        committed = self._committed_minutes(product, excluding=mission.mission_id)
+        if not can_admit(mission.lane, committed_minutes=committed,
+                        reviewer_hours_per_week=product.budgets["reviewer_hours_per_week"]):
+            return False
+        monthly_cap = product.budgets["monthly_usd"]
+        projected = self._spent_this_month(product) + (mission.budget_usd or 0.0)
+        if projected > monthly_cap:
+            logger.info("%s: staying ADMITTED, projected monthly spend $%.2f would exceed the $%.2f cap",
+                       mission.mission_id, projected, monthly_cap)
+            return False
+        return True
 
     def _admit(self, mission: MissionRecord, product: Product, *, tasks: list) -> None:
         lane = mission.lane
         budget_usd = product.budgets[f"{lane}_mission_usd"]
         key = self._budget.create_key(mission.mission_id, budget_usd)
         self._gateway_keys[mission.mission_id] = key
-        self._remember(mission.mission_id, "gateway_key", {"key": key})
+        self._remember_key(mission.mission_id, "gateway_key", key)
         self._revoke_discovery_key(mission.mission_id)
 
         for i, raw in enumerate(tasks, start=1):
@@ -629,7 +833,10 @@ class Factory:
             self._store.create_task(record)
         mission = self._store.update_mission(mission.mission_id, expected_version=mission.state_version,
                                              budget_usd=budget_usd)
-        self._transition(mission, "capacity_ok")
+        # Otherwise it stays ADMITTED (queued); `release_admitted_missions` (the
+        # worker's periodic tick) fires `capacity_ok` once capacity frees up.
+        if self._capacity_ok(mission, product):
+            self._transition(mission, "capacity_ok")
 
     # ── 5: tasks (final draft §7 step "Agents work in sandboxes", §9.1, §14.2) ──
     def run_ready_tasks(self, mission_id: str | None = None) -> None:
@@ -640,6 +847,7 @@ class Factory:
         the AND join-barrier semantics (§9.1) are the same as true concurrency
         would give.
         """
+        self._check_mandate_expiry()
         missions = ([self._mission(mission_id)] if mission_id
                    else self._store.list_missions(state="ACTIVE"))
         for mission in missions:
@@ -653,6 +861,29 @@ class Factory:
                     self._run_task(mission, task)
                     running += 1
             self._maybe_integrate(self._mission(mission.mission_id))
+
+    def _check_mandate_expiry(self) -> None:
+        """Fire `mandate_expired` (the FSM's global event, WORK_STATES ->
+        AWAITING_HX) for any in-progress mission whose standing mandate's expiry
+        date has passed since it was admitted (red team #3 item 11: this is the
+        MID-RUN check -- `check_request`/`check_diff` already guard admission and
+        each new diff, but a mandate can still lapse while a mission is sitting
+        in ADMITTED/ACTIVE/etc. waiting on something else)."""
+        today = self._clock.now().date()
+        for state in mission_fsm.WORK_STATES:
+            for mission in self._store.list_missions(state=state):
+                if not mission.mandate_id:
+                    continue
+                product = self._product(mission)
+                mandate = next((m for m in product.standing_mandates if m.mandate_id == mission.mandate_id), None)
+                if mandate is None or today <= mandate.expires:
+                    continue
+                try:
+                    mission = self._transition(mission, "mandate_expired")
+                    self._request_hx(mission, product,
+                                     reason=f"standing mandate {mandate.mandate_id} expired {mandate.expires}")
+                except (mission_fsm.InvalidTransition, ConcurrentUpdate) as exc:
+                    logger.warning("%s: mandate_expired did not apply: %s", mission.mission_id, exc)
 
     def _release_waiting(self, tasks: list) -> None:
         done_ids = {t.task_id.rsplit(":", 1)[-1] for t in tasks if t.state == "DONE"}
@@ -696,6 +927,7 @@ class Factory:
                                              on_tool_approval=guard, contract=contract)
                 else:
                     result = self._runtime.resume(session_id, prompt)
+                    self._record_agent_spend(mission.mission_id, gateway_key, result.usage_usd)
                 session_id = result.session_id or session_id
                 self._store.update_task(task.task_id, session_id=session_id)
 
@@ -806,24 +1038,100 @@ class Factory:
 
     def _on_hx_approved(self, mission: MissionRecord) -> None:
         new_budget = mission.budget_usd * 1.5 if mission.budget_usd else mission.budget_usd
-        mission = self._transition(mission, "approved", budget_usd=new_budget)
-        has_key = mission.mission_id in self._gateway_keys or self._recall(mission.mission_id, "gateway_key")
-        if new_budget and has_key:
+        # A BLOCKED mission (an earlier HX defer) only ever leaves BLOCKED through
+        # a fresh HX approval (`Factory.unblock`, red team #3 item 11); the FSM's
+        # dedicated event for that is "hx_approved", not "approved" (which is only
+        # valid from AWAITING_HX). Both land in ACTIVE either way.
+        event = "hx_approved" if mission.state == "BLOCKED" else "approved"
+        mission = self._transition(mission, event, budget_usd=new_budget)
+        old_key = self._gateway_keys.get(mission.mission_id)
+        if old_key is None:
+            old_key = self._recall_key(mission.mission_id, "gateway_key")
+        if new_budget and old_key:
             # The extension is meaningless if the LLM gateway still enforces the OLD
             # cap: revoke the old key and mint a new one for the raised budget
-            # (red-team #2 item 9), so every subsequent agent run in this mission
-            # actually gets to spend the extra 50%.
-            old_key = self._gateway_keys.get(mission.mission_id) or self._recall(mission.mission_id, "gateway_key")["key"]
+            # (red-team #2 item 9). The new key's OWN cap is `new_budget -
+            # spent(old_key)` (red team #3 item 4/M1), not `new_budget` again --
+            # otherwise total spend across both keys could reach
+            # `already_spent + new_budget`, exceeding the extended cap.
+            try:
+                already_spent = self._budget.spent(old_key)
+            except Exception:  # noqa: BLE001 -- if the gateway can't report spend, don't grant it twice
+                logger.warning("%s: could not read spend on the old gateway key; granting no headroom",
+                              mission.mission_id, exc_info=True)
+                already_spent = new_budget
+            remaining = max(new_budget - already_spent, 0.0)
             try:
                 self._budget.revoke(old_key)
             except Exception:  # noqa: BLE001 -- best-effort; a failed revoke must not block the new key
                 logger.warning("%s: could not revoke the old gateway key", mission.mission_id, exc_info=True)
-            new_key = self._budget.create_key(mission.mission_id, new_budget)
+            new_key = self._budget.create_key(mission.mission_id, remaining)
             self._gateway_keys[mission.mission_id] = new_key
-            self._remember(mission.mission_id, "gateway_key", {"key": new_key})
+            self._remember_key(mission.mission_id, "gateway_key", new_key)
         for task in self._store.list_tasks(mission.mission_id):
             if task.state == "FAILED":
                 self._store.update_task(task.task_id, state="READY", repair_attempts_used=0)
+
+    # ── operator entry points (red team #3 item 11) ─────────────────────────────
+    # `cli.py` (a separate builder) calls these three by these exact names.
+    def kill_switch(self) -> None:
+        """Pause every non-terminal, non-HELD mission (the FSM's global
+        `kill_switch` event, valid from any state but HELD/terminal). `_transition`'s
+        own centralized hook (item 5/M2) then revokes each mission's gateway and
+        discovery keys, so nothing can keep spending while the factory is halted."""
+        for mission in self._store.list_missions():
+            if mission.state == "HELD" or mission.state in mission_fsm.TERMINAL:
+                continue
+            try:
+                self._transition(mission, "kill_switch")
+            except (mission_fsm.InvalidTransition, ConcurrentUpdate) as exc:
+                logger.warning("%s: kill_switch did not apply: %s", mission.mission_id, exc)
+
+    def resume(self, mission_id: str) -> None:
+        """Resume a HELD mission. The FSM's dynamic `resume` event (`Mission.fire`)
+        returns it to the gate it was held from if that's still an open human
+        decision, or to AWAITING_HX otherwise (a kill switch or an expired hold
+        needs a human's go-ahead before work continues either way). Because
+        `_gateway_key` is self-healing (item 5/M2), the mission's next agent run
+        mints a fresh key rather than reusing the one revoked when it paused."""
+        mission = self._mission(mission_id)
+        if mission.state != "HELD":
+            raise ValueError(f"{mission_id} is {mission.state}, not HELD")
+        held_from = mission.held_from
+        mission = self._transition(mission, "resume")
+        if mission.state == "AWAITING_HX" and held_from not in mission_fsm.AWAITING:
+            # Landed in AWAITING_HX as the FSM's fallback (it was paused from a
+            # WORK_STATE, not from an existing AWAITING_* gate), so there is no
+            # approval request open for it yet -- open one. A resume back to an
+            # actual AWAITING_* gate keeps its original, still-open request as is.
+            product = self._product(mission)
+            self._request_hx(mission, product,
+                             reason=f"resumed from HELD (was {held_from or 'unknown'}); needs a human decision")
+
+    def unblock(self, mission_id: str) -> None:
+        """A BLOCKED mission (an earlier HX defer) resumes only through a fresh HX
+        approval (red team #3 item 11): if none is open yet, this opens one; once
+        an eligible approver approves it, the normal quorum-met scan in
+        `process_approvals` finds it and `_on_hx_approved` fires the FSM's
+        `hx_approved` event (BLOCKED -> ACTIVE)."""
+        mission = self._mission(mission_id)
+        if mission.state != "BLOCKED":
+            raise ValueError(f"{mission_id} is {mission.state}, not BLOCKED")
+        marker = self._recall(mission_id, "open_request")
+        if marker:
+            try:
+                existing = self._store.approvals.get(marker["request_id"])
+                # Only a request with NO decisions yet is still genuinely awaiting
+                # its first one -- `defer`/`revise` leave `status == "open"` (only
+                # `revise`/`cancel` void it) but are stale for consuming again:
+                # the mission moved on (e.g. AWAITING_HX -> BLOCKED) after it was
+                # created, so its `state_version` no longer matches.
+                if existing.status == "open" and not existing.decisions:
+                    return  # already awaiting a decision on the unblock request
+            except (KeyError, NotFound):
+                pass
+        product = self._product(mission)
+        self._request_hx(mission, product, reason="unblock requested")
 
     # ── 6: join + integrate (final draft §7 "Integration", §9.1) ────────────────
     def _maybe_integrate(self, mission: MissionRecord) -> None:
@@ -1077,13 +1385,21 @@ class Factory:
     # ── 8: post-merge (final draft §7 "Post-merge checks on main") ─────────────
     def _check_post_merge(self, mission: MissionRecord, product: Product, merge_sha: str) -> None:
         if not self._github_checks_green(mission, product, merge_sha):
-            self._event(mission.mission_id, telemetry.REVERTED, {"environment": PROD_ENVIRONMENT, "sha": merge_sha})
+            # This is a revert on `main` from a post-merge CI failure -- nothing
+            # was ever deployed to production. `environment="production"` here
+            # would make `compute_dora_metrics` count it as a production incident
+            # (its `incident_count` filters DEPLOY_FAILED/REVERTED by environment),
+            # inflating change_fail_rate for a release that never shipped (red
+            # team #3 item 14). A distinct environment value keeps the event for
+            # audit/timeline purposes without it being mistaken for one.
+            self._event(mission.mission_id, telemetry.REVERTED,
+                       {"environment": "main", "sha": merge_sha})
             mission = self._transition(mission, "post_merge_failure")
             revert_op = f"revert:{mission.mission_id}:{merge_sha}"
             revert_sha = execute_once(self._store.intents, revert_op,
                                       action=lambda: auto_revert(self._github, mission.repo, merge_sha),
                                       probe=lambda: None)
-            self._event(mission.mission_id, telemetry.RECOVERED, {"environment": PROD_ENVIRONMENT})
+            self._event(mission.mission_id, telemetry.RECOVERED, {"environment": "main"})
             mission = self._transition(mission, "repair")
             self._create_repair_task(mission, product, reason=f"post-merge checks failed on {merge_sha}, "
                                                               f"reverted as {revert_sha}")
@@ -1116,10 +1432,16 @@ class Factory:
                                 action=lambda: self._deploy.build(mission.repo, merge_sha), probe=lambda: None)
         mission = self._store.update_mission(mission.mission_id, expected_version=mission.state_version,
                                              artifact=artifact)
+        # A fresh, globally monotonic token every time (red team #3 C1/H3): a
+        # constant would make every release after the first one to any given
+        # environment a replay as far as the target's own fencing check is
+        # concerned, since a token can never be reused once seen.
         staging_op = f"deploy_staging:{mission.mission_id}:{artifact}"
+        staging_token = self._store.next_fencing_token()
         receipt = execute_once(self._store.intents, staging_op,
                                action=lambda: self._deploy.deploy(artifact, environment=STAGING_ENVIRONMENT,
-                                                                 operation_id=staging_op, fencing_token=1),
+                                                                 operation_id=staging_op,
+                                                                 fencing_token=staging_token),
                                probe=lambda: None)
         self._event(mission.mission_id, telemetry.DEPLOYED, {"environment": STAGING_ENVIRONMENT, "artifact": artifact})
         staging_url = self._deploy.url(STAGING_ENVIRONMENT)
@@ -1168,11 +1490,37 @@ class Factory:
         product = self._product(mission)
         self._deploy_to_prod(mission, product, fencing_token=fencing_token)
 
+    def _deploy_failed_escalate(self, mission: MissionRecord, *, reason: str) -> None:
+        """A production deploy that failed (or whose success can't be confirmed)
+        can't use the generic `_boundary` (ACTIVE-only): DEPLOYING's own FSM path is
+        `deploy_failed` -> RECOVERING -> `outside_authority` -> AWAITING_HX (no
+        automated diagnosis in v1, matching `advance_observation`'s regression
+        handling)."""
+        mission = self._mission(mission.mission_id)
+        if mission.state == "DEPLOYING":
+            mission = self._transition(mission, "deploy_failed")
+        if mission.state == "RECOVERING":
+            mission = self._transition(mission, "outside_authority")
+        product = self._product(mission)
+        self._request_hx(mission, product, reason=reason)
+
+    def _safe_healthy(self, environment: str) -> bool | None:
+        try:
+            return self._deploy.healthy(environment)
+        except Exception:  # noqa: BLE001 -- this is only for a log/evidence message
+            return None
+
     # ── 10: deploy (final draft §7 "Deploy controller consumes approval") ──────
-    def _deploy_to_prod(self, mission: MissionRecord, product: Product, fencing_token: int = 1) -> None:
+    def _deploy_to_prod(self, mission: MissionRecord, product: Product, fencing_token: int | None = None) -> None:
         if mission.state == "AWAITING_H2":
             mission = self._transition(mission, "approval_consumed")
-        # else: already DEPLOYING, having just come from RELEASE_READY via "h2_standing".
+        # else: already DEPLOYING, having just come from RELEASE_READY via "h2_standing"
+        # -- there's no approval to consume a token from, so mint a fresh one from the
+        # SAME globally monotonic sequence (red team #3 C1/H3): a constant here would
+        # make every standing release after the first one to any environment collide
+        # with the previous release's already-used token.
+        if fencing_token is None:
+            fencing_token = self._store.next_fencing_token()
         # Keyed by artifact (red-team #2 item 1): a later release of the SAME mission
         # (after a repair) deploys a NEW artifact and must not replay an old receipt.
         op_id = f"deploy_prod:{mission.mission_id}:{mission.artifact}"
@@ -1183,17 +1531,27 @@ class Factory:
 
         try:
             receipt = execute_once(self._store.intents, op_id, action=deploy, probe=lambda: None)
-        except StaleApproval:
-            # The target's own fencing check rejected a retry using an already-used
-            # token: that specifically means the deploy (or a newer one) already
-            # happened, so this is a crash-recovery retry finding its own prior
-            # success, not a failure (red-team #2 item 1).
-            logger.info("%s: deploy_prod retry hit the fencing check; treating as already applied",
-                       mission.mission_id)
+        except StaleApproval as exc:
+            # The target's own fencing check rejected this token: NEVER assume the
+            # deploy happened anyway (red team #3 C1). The port has no way to ask a
+            # target "which artifact is live right now", so the only check available
+            # is `healthy` -- which says nothing about WHICH artifact is healthy, so
+            # it can't positively confirm this one landed either. Treat it as not
+            # applied and escalate with the failure as evidence, rather than letting
+            # the mission drift toward DELIVERED for a release that may never have
+            # actually reached production.
+            healthy = self._safe_healthy(PROD_ENVIRONMENT)
+            self._event(mission.mission_id, telemetry.DEPLOY_FAILED,
+                       {"environment": PROD_ENVIRONMENT, "artifact": mission.artifact,
+                        "reason": f"fencing rejected token {fencing_token}: {exc}"})
+            self._deploy_failed_escalate(mission, reason=f"production deploy fencing rejected (target healthy={healthy}); "
+                                          f"the release may not have been applied: {exc}")
+            return
         except Exception as exc:  # noqa: BLE001
             self._event(mission.mission_id, telemetry.DEPLOY_FAILED,
                        {"environment": PROD_ENVIRONMENT, "artifact": mission.artifact, "reason": str(exc)})
-            raise
+            self._deploy_failed_escalate(mission, reason=f"production deploy failed: {exc}")
+            return
         self._event(mission.mission_id, telemetry.DEPLOYED, {"environment": PROD_ENVIRONMENT, "artifact": mission.artifact})
         self._flags.set_rollout(mission.flag, 100)
         self._transition(self._mission(mission.mission_id), "deployed")
@@ -1202,9 +1560,13 @@ class Factory:
     def advance_observation(self, mission: MissionRecord) -> None:
         product = self._product(mission)
         if self._deploy.healthy(PROD_ENVIRONMENT):
+            # `_transition` itself revokes the gateway/discovery keys on entering
+            # DELIVERED (red team #3 item 5/M2's centralized hook) -- an explicit
+            # revoke here would be redundant, and calling the (now self-healing)
+            # `_gateway_key` afterwards would just mint and immediately discard a
+            # brand-new key.
             mission = self._transition(mission, "window_healthy")
             self._event(mission.mission_id, telemetry.DELIVERED, {})
-            self._budget.revoke(self._gateway_key(mission))
             return
         self._event(mission.mission_id, telemetry.DEPLOY_FAILED,
                    {"environment": PROD_ENVIRONMENT, "artifact": mission.artifact, "reason": "regression detected"})
@@ -1221,37 +1583,74 @@ class Factory:
         mission = self._transition(mission, "outside_authority")
         self._request_hx(mission, product, reason="production regression: rolled back, needs a human decision")
 
-    # ── webhook queue: fast enqueue (HTTP handler) / drain + dispatch (worker) ──
+    # ── durable webhook inbox (red team #3 H1) ──────────────────────────────────
     LABELS_THAT_START_A_MISSION = ("factory:patch", "factory:feature")
 
-    def enqueue_webhook(self, kind: str, event) -> None:
-        """Fast, non-blocking: called from `app.py`'s webhook handler."""
-        with self._webhook_lock:
-            self._webhook_queue.append((kind, event))
-
-    def drain_webhooks(self) -> list:
-        with self._webhook_lock:
-            queued, self._webhook_queue = self._webhook_queue, []
-        return queued
+    def enqueue_webhook(self, delivery_id: str, kind: str, payload: dict) -> bool:
+        """Fast, non-blocking, and durable (`store.enqueue_webhook`): called from
+        `app.py`'s webhook handler after it has verified the signature AND parsed
+        the raw body into a typed event (`github.webhooks.parse_event`). `delivery_id`
+        is GitHub's own `X-GitHub-Delivery` header (so a GitHub redelivery is a
+        no-op, fixing red team #2's M4). `kind` is the parsed event's class name
+        (e.g. "IssueLabeled", "PullRequestReview" -- one of `github.webhooks`'
+        dataclasses), and `payload` is `dataclasses.asdict()` of that parsed event,
+        NOT the raw GitHub JSON body. `dispatch_webhooks` rebuilds the typed event
+        from `(kind, payload)` rather than re-parsing GitHub's JSON, so app.py's
+        parse -- including "ignore this event" decisions -- happens exactly once.
+        """
+        return self._store.enqueue_webhook(delivery_id, kind, payload)
 
     def dispatch_webhooks(self) -> None:
-        """Process every queued webhook event. Called by the worker loop."""
-        for kind, event in self.drain_webhooks():
+        """Claim durable webhook deliveries and process each one (red team #3 H1).
+
+        Each delivery's `event` field is the parsed event's class name (set by
+        `enqueue_webhook`'s `kind`) and `payload` is that event's field dict, so
+        the typed event is rebuilt with `EventClass(**payload)` -- no re-parsing
+        of raw GitHub JSON here.
+
+        A delivery that raises is NOT acked -- its lease simply expires and
+        `claim_webhooks` hands it out again later (crash safety). A poison message
+        (the same delivery failing `MAX_WEBHOOK_ATTEMPTS` times) is recorded as an
+        event and acked anyway, so it can't wedge the queue forever.
+        """
+        from ..github import webhooks as gh_webhooks
+
+        for delivery in self._store.claim_webhooks(limit=50, lease_seconds=300):
+            delivery_id = delivery["delivery_id"]
+            kind = delivery["event"]
             try:
-                if kind == "issue_labeled":
-                    self.on_issue_labeled(event)
-                elif kind == "pull_request_review":
-                    self.on_pull_request_review(event)
-                elif kind == "check_suite_completed":
-                    self.on_check_suite_completed(event)
-                elif kind == "push_to_default":
-                    self.on_push_to_default(event)
-                elif kind == "push_to_branch":
-                    self.on_push_to_branch(event)
-                else:
-                    logger.debug("ignoring queued webhook kind %r", kind)
-            except Exception:  # noqa: BLE001 -- one bad event must not wedge the worker loop
-                logger.exception("webhook dispatch failed for kind=%s", kind)
+                event_cls = getattr(gh_webhooks, kind, None)
+                if event_cls is None or not (isinstance(event_cls, type) and hasattr(event_cls, "__dataclass_fields__")):
+                    raise ValueError(f"unknown webhook event kind {kind!r}")
+                parsed = event_cls(**delivery["payload"])
+                self._dispatch_parsed_webhook(parsed)
+            except Exception:  # noqa: BLE001 -- one bad delivery must not wedge the queue
+                logger.exception("webhook dispatch failed for delivery %s (kind=%s)", delivery_id, kind)
+                attempts = self._webhook_attempts.get(delivery_id, 0) + 1
+                self._webhook_attempts[delivery_id] = attempts
+                if attempts < MAX_WEBHOOK_ATTEMPTS:
+                    continue  # leave it un-acked; the lease expiry will retry it
+                logger.error("webhook delivery %s failed %d times; treating as a poison message",
+                            delivery_id, attempts)
+                self._event("_webhooks", "webhook_poisoned", {"delivery_id": delivery_id, "kind": kind})
+            self._webhook_attempts.pop(delivery_id, None)
+            self._store.ack_webhook(delivery_id)
+
+    def _dispatch_parsed_webhook(self, event) -> None:
+        from ..github import webhooks as gh_webhooks
+
+        if isinstance(event, gh_webhooks.IssueLabeled):
+            self.on_issue_labeled(event)
+        elif isinstance(event, gh_webhooks.PullRequestReview):
+            self.on_pull_request_review(event)
+        elif isinstance(event, gh_webhooks.CheckSuiteCompleted):
+            self.on_check_suite_completed(event)
+        elif isinstance(event, gh_webhooks.PushToDefault):
+            self.on_push_to_default(event)
+        elif isinstance(event, gh_webhooks.PushToBranch):
+            self.on_push_to_branch(event)
+        else:
+            logger.debug("ignoring parsed webhook event of type %s", type(event).__name__)
 
     # ── webhooks (build spec §3 step 13, App §3) ────────────────────────────────
     def on_issue_labeled(self, event) -> MissionRecord | None:
@@ -1266,9 +1665,12 @@ class Factory:
                              labels=(event.label,), author=event.author)
         return self.start_mission(work_item)
 
+    _REVIEW_STATE_TO_DECISION = {"APPROVED": "approve", "CHANGES_REQUESTED": "revise"}
+
     def on_pull_request_review(self, event) -> None:
-        if event.state != "APPROVED":
-            return
+        decision = self._REVIEW_STATE_TO_DECISION.get(event.state)
+        if decision is None:
+            return  # COMMENTED, DISMISSED, ...: not a decision either way
         mission = None
         for candidate in self._store.list_missions(state="AWAITING_HM"):
             if candidate.repo == event.repo and candidate.pr_number == event.number:
@@ -1293,7 +1695,7 @@ class Factory:
             if req.gate == "HM":
                 roles = product.roles_for(event.reviewer) or ()
                 try:
-                    self.decide(req.request_id, event.reviewer, roles, "approve", req.content_hash)
+                    self.decide(req.request_id, event.reviewer, roles, decision, req.content_hash)
                 except ApprovalError as exc:
                     logger.info("%s: PR review from %s did not apply: %s", mission.mission_id, event.reviewer, exc)
                     continue
@@ -1316,8 +1718,15 @@ class Factory:
                     self._check_post_merge(mission, product, event.sha)
 
     def on_push_to_default(self, event) -> None:
+        """A human pushing straight to the default branch, outside the approval
+        flow. Only ACTIVE missions in this repo are "affected" (their agents are
+        working from a `base_commit` that this push just moved past, so the
+        eventual re-integration will be against a different main than they
+        started from) -- an ADMITTED/AWAITING_*/terminal/etc. mission has no live
+        branch this push touches, so it's not a human intervention IN it (red
+        team #3 item 14: this used to fire for every mission in the repo)."""
         if event.pusher and "[bot]" not in event.pusher:
-            for mission in self._store.list_missions():
+            for mission in self._store.list_missions(state="ACTIVE"):
                 if mission.repo == event.repo:
                     self._event(mission.mission_id, telemetry.HUMAN_INTERVENTION,
                                {"action": "push_to_default", "actor": event.pusher})

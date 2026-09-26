@@ -30,9 +30,6 @@ def signer():
 
 @pytest.fixture
 def store():
-    # B1's MemoryStateStore (factory.store.memory) is the real StateStore adapter now
-    # that it exists; it wraps the same reference ApprovalStore/IntentLog the inbox
-    # was already tested against, so nothing else here changes.
     return MemoryStateStore()
 
 
@@ -64,12 +61,12 @@ def client(app):
 
 def make_approval(store, now, *, request_id="REQ-1", gate="HM", required="1", requester="@po",
                   editors=(), artifact="sha256:artifact-1", state_version=3,
-                  expires_in=timedelta(hours=8)) -> ApprovalRequest:
+                  expires_in=timedelta(hours=8), eligible: dict | None = None) -> ApprovalRequest:
     request = ApprovalRequest(
         request_id=request_id, gate=gate, mission_ids=("MIS-1",), operation_id=f"merge:{artifact}",
         artifact=artifact, content_hash=CONTENT_HASH, policy_version="p-1", state_version=state_version,
         required=parse_requirement(required), risk_profile="standard", requester=requester,
-        editors=frozenset(editors), expires=now + expires_in,
+        editors=frozenset(editors), expires=now + expires_in, eligible=eligible,
     )
     return store.approvals.add(request)
 

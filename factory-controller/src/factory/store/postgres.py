@@ -19,6 +19,7 @@ import importlib.resources
 import json
 import logging
 from dataclasses import asdict, replace
+from datetime import timedelta
 from pathlib import Path
 
 import psycopg
@@ -278,6 +279,19 @@ def _row_to_packet(row: dict) -> DecisionPacket:
 
 
 # ── approvals ────────────────────────────────────────────────────────────────
+def _eligible_to_json(eligible: dict | None) -> Json | None:
+    """Role sets as sorted lists (JSON has no set/frozenset type)."""
+    if eligible is None:
+        return None
+    return Json({approver: sorted(roles) for approver, roles in eligible.items()})
+
+
+def _eligible_from_json(raw: dict | None) -> dict | None:
+    if raw is None:
+        return None
+    return {approver: frozenset(roles) for approver, roles in raw.items()}
+
+
 def _approval_params(req: ApprovalRequest) -> dict:
     return {
         "request_id": req.request_id, "gate": req.gate, "mission_ids": Json(list(req.mission_ids)),
@@ -286,7 +300,8 @@ def _approval_params(req: ApprovalRequest) -> dict:
         "required_kind": req.required.kind, "required_approvals": req.required.approvals,
         "required_security": req.required.security, "required_sampled": req.required.sampled,
         "risk_profile": req.risk_profile, "requester": req.requester, "expires": req.expires,
-        "editors": Json(sorted(req.editors)), "nonce": req.nonce, "status": req.status,
+        "editors": Json(sorted(req.editors)), "eligible": _eligible_to_json(req.eligible),
+        "nonce": req.nonce, "status": req.status,
         "consumed_by": req.consumed_by, "consumed_at": req.consumed_at, "fencing_token": req.fencing_token,
     }
 
@@ -299,7 +314,8 @@ def _row_to_approval(row: dict, decisions: list[Decision]) -> ApprovalRequest:
         required=Requirement(kind=row["required_kind"], approvals=row["required_approvals"],
                              security=row["required_security"], sampled=row["required_sampled"]),
         risk_profile=row["risk_profile"], requester=row["requester"], expires=row["expires"],
-        editors=frozenset(row["editors"] or ()), nonce=row["nonce"], decisions=decisions,
+        editors=frozenset(row["editors"] or ()), eligible=_eligible_from_json(row["eligible"]),
+        nonce=row["nonce"], decisions=decisions,
         status=row["status"], consumed_by=row["consumed_by"], consumed_at=row["consumed_at"],
         fencing_token=row["fencing_token"],
     )
@@ -344,13 +360,13 @@ class _PostgresApprovalStore:
                         "INSERT INTO approvals (request_id, gate, mission_ids, operation_id, artifact, "
                         "content_hash, policy_version, state_version, required_kind, required_approvals, "
                         "required_security, required_sampled, risk_profile, requester, expires, editors, "
-                        "nonce, status, consumed_by, consumed_at, fencing_token) "
+                        "eligible, nonce, status, consumed_by, consumed_at, fencing_token) "
                         "VALUES (%(request_id)s, %(gate)s, %(mission_ids)s, %(operation_id)s, "
                         "%(artifact)s, %(content_hash)s, %(policy_version)s, %(state_version)s, "
                         "%(required_kind)s, %(required_approvals)s, %(required_security)s, "
                         "%(required_sampled)s, %(risk_profile)s, %(requester)s, %(expires)s, "
-                        "%(editors)s, %(nonce)s, %(status)s, %(consumed_by)s, %(consumed_at)s, "
-                        "%(fencing_token)s)",
+                        "%(editors)s, %(eligible)s, %(nonce)s, %(status)s, %(consumed_by)s, "
+                        "%(consumed_at)s, %(fencing_token)s)",
                         _approval_params(request),
                     )
                 except psycopg.errors.UniqueViolation:
@@ -636,6 +652,62 @@ class PostgresStateStore:
                 cur.execute("SELECT * FROM tasks WHERE mission_id = %s ORDER BY id", (mission_id,))
                 rows = cur.fetchall()
         return [_row_to_task(r) for r in rows]
+
+    # ── webhook inbox & once-only keys (red team #3 H1/H2/M4) ──────────
+    def enqueue_webhook(self, delivery_id: str, event: str, payload: dict) -> bool:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO webhook_inbox (delivery_id, event, payload, received_at) "
+                    "VALUES (%s, %s, %s, %s) ON CONFLICT (delivery_id) DO NOTHING",
+                    (delivery_id, event, Json(payload), self._clock.now()),
+                )
+                return cur.rowcount == 1
+
+    def claim_webhooks(self, *, limit: int = 50, lease_seconds: int = 300) -> list[dict]:
+        now = self._clock.now()
+        claimed_until = now + timedelta(seconds=lease_seconds)
+        with self._connect() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "UPDATE webhook_inbox SET claimed_until = %s "
+                    "WHERE delivery_id IN ("
+                    "  SELECT delivery_id FROM webhook_inbox "
+                    "  WHERE acked_at IS NULL AND (claimed_until IS NULL OR claimed_until < %s) "
+                    "  ORDER BY received_at, id LIMIT %s "
+                    "  FOR UPDATE SKIP LOCKED"
+                    ") RETURNING delivery_id, event, payload",
+                    (claimed_until, now, limit),
+                )
+                rows = cur.fetchall()
+        return [{"delivery_id": r["delivery_id"], "event": r["event"], "payload": r["payload"]}
+                for r in rows]
+
+    def ack_webhook(self, delivery_id: str) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE webhook_inbox SET acked_at = %s WHERE delivery_id = %s",
+                    (self._clock.now(), delivery_id),
+                )
+                if cur.rowcount == 0:
+                    raise NotFound(delivery_id)
+
+    def next_fencing_token(self) -> int:
+        """Same sequence as `approvals.consume`, so every token is globally unique."""
+        with self._connect() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("SELECT nextval('approval_fencing_seq') AS token")
+                return cur.fetchone()["token"]
+
+    def use_once(self, key: str) -> bool:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO used_keys (key, used_at) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
+                    (key, self._clock.now()),
+                )
+                return cur.rowcount == 1
 
     # ── evidence & packets ───────────────────────────────────────────
     def save_evidence(self, bundle: EvidenceBundle) -> None:

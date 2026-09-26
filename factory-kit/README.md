@@ -51,6 +51,13 @@ policies, treat issue and web text as data), and ends its final message with
 the exact JSON shape from §4 (the coordinator has no §4 format of its own, so
 it emits task contracts matching `schemas/task-contract.schema.json` instead).
 
+No agent's `tools:` frontmatter grants `Bash` (or anything else outside
+`Read`/`Glob`/`Grep`/`Edit`/`Write`): `factory.pipeline.tool_guard.ToolGuard`
+denies it outright regardless. Only the controller ever runs a command, via
+its own sandboxed exec; the implementer and QA prompts get failing checks'
+trimmed output back in their next turn's prompt instead of running anything
+themselves (final draft §13.1 #2).
+
 The five skills are shared procedures the agents load: writing EARS acceptance
 criteria, planning a task graph, implementing test-first with a bounded repair
 loop, assembling a decision packet, and writing a recovery plan.
@@ -67,6 +74,15 @@ A product enables the plugin from `.claude/settings.json` via
 `directory` marketplace) and `enabledPlugins: {"factory-core@factory-kit":
 true}`. In a deployed topology where `factory-kit` is its own repo, that
 marketplace source becomes a `github` source instead.
+
+## Using the kit
+
+Build the sandbox image that `DockerSandbox` runs every check and diff
+capture in (final draft §12.2 M8, §13.1 #2) from the repo root:
+
+```bash
+docker build -t factory-sandbox:latest -f factory-controller/deploy/sandbox/Dockerfile .
+```
 
 ## Guidance (`guidance/`)
 
@@ -88,11 +104,24 @@ with its own stdlib `unittest` tests, runnable with no dependencies:
 cd factory-kit/templates/backend-service && python -m unittest discover -s tests -t .
 ```
 
+`backend-service/CODEOWNERS` lists `@po @tl` for every path, matching its
+`factory.yaml`'s `approvers.hm: codeowners` — keep the two in sync in any
+product built from this template (final draft §6.2, §11).
+
 `holdouts-repo/` is the paired black-box scenario repo (§13.1 #4): its
 `runner/run_blackbox.py` is stdlib-only (scenario files use a small,
 hand-parsed YAML subset — see `runner/miniyaml.py` — so the runner never
 needs PyYAML), and it writes `holdout-result.json` with **only** a pass/fail
 count, matching `schemas/evidence-bundle.schema.json`'s `holdout` field.
+
+The holdout runner's own token (`WorkflowHoldoutRunner`, a read-only identity
+separate from the push and merge bots — final draft §11, §13.1 #4) needs
+**Actions: write** on the holdouts repo to call `workflow_dispatch` on
+`.github/workflows/holdout.yml`, which also grants the read access needed to
+poll the run and download its `holdout-result` artifact (GitHub only exposes
+one combined `Actions` permission; `write` is the level that includes both
+capabilities). It needs no other permission on that repo — in particular, no
+`contents` access, since it never reads the holdout scenarios themselves.
 
 ## Change control (kit gate, §13.3)
 
@@ -103,6 +132,14 @@ count, matching `schemas/evidence-bundle.schema.json`'s `holdout` field.
 | Any change at all | The controller tests must pass (`cd factory-controller && uv run pytest`) |
 
 Agents can never edit this directory. It is AC8 in `floor.yaml`.
+
+**Deferred to Phase 3:** the two mechanisms that would make the kit gate
+self-enforcing rather than a documented process humans are trusted to follow
+— an `evals/` regression suite that kit PRs must pass (§13.3: "the eval suite
+can't be modified in the same PR that it judges"), and a `CODEOWNERS` entry
+on `policies/**` in this repo so GitHub itself requires the two-human,
+security-included review the table above already asks for. Today, both rows
+above are enforced by review discipline, not tooling.
 
 Section references (§) point to [docs/software-factory-final-draft.md](../docs/software-factory-final-draft.md).
 Tests for everything in this README live in

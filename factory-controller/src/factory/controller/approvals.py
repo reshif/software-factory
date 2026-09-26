@@ -181,6 +181,15 @@ class ApprovalStore:
         self._requests: dict[str, ApprovalRequest] = {}
         self._fencing = 0
 
+    def _next_token_locked(self) -> int:
+        self._fencing += 1
+        return self._fencing
+
+    def next_fencing_token(self) -> int:
+        """A token from the same monotonic counter consume() draws from (deploys with no approval)."""
+        with self._lock:
+            return self._next_token_locked()
+
     def add(self, request: ApprovalRequest) -> ApprovalRequest:
         with self._lock:
             if request.request_id in self._requests:
@@ -223,12 +232,12 @@ class ApprovalStore:
             req = self._get(request_id)
             check_consumable(req, now=now, state_version=state_version, content_hash=content_hash,
                             policy_version=policy_version)
-            self._fencing += 1
+            token = self._next_token_locked()
             req.status = "consumed"
             req.consumed_by = executor
             req.consumed_at = now
-            req.fencing_token = self._fencing
-            return self._fencing
+            req.fencing_token = token
+            return token
 
     def invalidate_for_artifact(self, artifact: str, reason: str) -> list[str]:
         """Rollback: every unconsumed approval for this artifact becomes invalid."""

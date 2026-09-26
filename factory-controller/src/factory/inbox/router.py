@@ -20,11 +20,28 @@ Security notes (final draft §13.1 #6, #8):
     (final draft §6.3/§13.1 #8, separation of duties). A general inbox token
     (`request_id=None`, meant for browsing the list page) can view a packet but
     can never record a decision through it.
-  - Each token's `jti` may record exactly one decision: the router checks the
-    store's event log before calling `decide` and records the `jti` after a
-    successful call, so replaying the same token string is rejected even though
-    the approval store is already idempotent/self-voiding for duplicate decisions
-    (see the module docstring in `signing.py`).
+  - Each token's `jti` may record exactly one decision. This is enforced with
+    `store.use_once(f"inbox-jti:{jti}")` — a single atomic, store-backed
+    check-and-set — called *before* `decide`, not a separate check-then-act
+    (read the store, decide, then write back) that two concurrent requests could
+    both pass. A token is burned the first time it's submitted whether or not the
+    decision it carried actually went through (e.g. a stale `content_hash`), which
+    is deliberate: a spent bearer token is never reusable, full stop. This is on
+    top of, not instead of, the approval store's own protections (`req.eligible`,
+    quorum, revise/cancel voiding, idempotent duplicate approvals).
+  - `ApprovalRequest.eligible` (approver -> roles, from product config) — not the
+    roles a token merely *claims* — is what the approval store actually checks
+    (`factory.controller.approvals.check_decision`); an approver missing from it
+    gets `IneligibleApprover` -> 403. The inbox list page also hides requests an
+    approver isn't eligible for, so it never advertises decisions they can't make.
+  - Tokens ride in the GET query string for `/inbox` and `/inbox/{request_id}`
+    (there's no other way to hand a bearer credential to a plain `<a href>` link),
+    which means a request logger that records full URLs — including a reverse
+    proxy or the ASGI server's own access log — will capture live tokens. The
+    decision POST never has this problem (the token is a form field, never a URL).
+    Whatever serves this router in production **must** disable URL-logging access
+    logs (e.g. uvicorn's `access_log=False`) or scrub the `token` query parameter
+    at the logging layer; see `README.md` next to this module.
 """
 from __future__ import annotations
 
@@ -51,11 +68,13 @@ DecideCallable = Callable[[str, str, RolesArg, str, str], object]
 
 DECISIONS = ("approve", "revise", "defer", "cancel")
 
-_DECISION_TOKEN_CONSUMED = "inbox_decision_token_consumed"
-
 
 class ReplayedDecisionToken(Exception):
     """The same signed token was already used once to record a decision."""
+
+
+def _use_once_key(jti: str) -> str:
+    return f"inbox-jti:{jti}"
 
 
 # ApprovalError subclasses -> HTTP status. These are flat siblings of ApprovalError
@@ -117,26 +136,16 @@ def build_inbox_router(store: StateStore, decide: DecideCallable, signer: TokenS
                                 detail="a general inbox token can't be used to record a decision")
         return payload
 
-    def _check_not_replayed(request_id: str, approver: str, jti: str) -> None:
-        """Reject a token whose `jti` already recorded a decision for this request.
+    def _spend_once(jti: str) -> None:
+        """Atomically burn `jti` before doing anything else. Raises on replay.
 
-        This is on top of, not instead of, the approval store's own protections: a
-        duplicate "approve" from the same approver is already a no-op there, and a
-        "revise"/"cancel" already voids the round so a second `decide()` call fails.
-        Relying on that alone would still let the *same token string* be resubmitted
-        right up until someone changes their mind — this makes the token itself
-        single-use for the write path, using the store's event log as durable memory
-        of which tokens have already been spent.
+        `store.use_once` is a single atomic store operation (a unique-key insert in
+        Postgres, a lock-guarded set in memory) — there is no window between
+        checking and recording where two concurrent requests for the same token
+        could both get through, unlike a separate "scan the log, then append" pair.
         """
-        for event in store.list_events(request_id):
-            used = event.get("payload", {})
-            if event.get("kind") == _DECISION_TOKEN_CONSUMED and used.get("jti") == jti \
-                    and used.get("approver") == approver:
-                raise ReplayedDecisionToken(f"token {jti} for {approver} on {request_id} was already used")
-
-    def _mark_consumed(request_id: str, approver: str, jti: str, decision: str) -> None:
-        store.append_event(request_id, _DECISION_TOKEN_CONSUMED,
-                           {"approver": approver, "jti": jti, "decision": decision})
+        if not store.use_once(_use_once_key(jti)):
+            raise ReplayedDecisionToken(f"token {jti} was already used to record a decision")
 
     def _load_packet(request_id: str) -> DecisionPacket:
         try:
@@ -150,6 +159,10 @@ def build_inbox_router(store: StateStore, decide: DecideCallable, signer: TokenS
         open_requests = store.approvals.list_open()
         if payload.request_id is not None:
             open_requests = [r for r in open_requests if r.request_id == payload.request_id]
+        # Don't advertise a request this approver isn't eligible to decide on.
+        # `eligible=None` means the bare rules apply (any approver may be shown);
+        # otherwise it's the product-config approver list (see check_decision).
+        open_requests = [r for r in open_requests if r.eligible is None or payload.approver in r.eligible]
         packets = []
         for req in open_requests:
             try:
@@ -171,7 +184,7 @@ def build_inbox_router(store: StateStore, decide: DecideCallable, signer: TokenS
         if decision not in DECISIONS:
             raise HTTPException(status_code=400, detail=f"unknown decision {decision!r}")
         try:
-            _check_not_replayed(request_id, payload.approver, payload.jti)
+            _spend_once(payload.jti)
         except ReplayedDecisionToken as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         try:
@@ -180,7 +193,6 @@ def build_inbox_router(store: StateStore, decide: DecideCallable, signer: TokenS
             raise HTTPException(status_code=_status_for(exc), detail=str(exc)) from exc
         except (KeyError, NotFound) as exc:
             raise HTTPException(status_code=404, detail="no such approval request") from exc
-        _mark_consumed(request_id, payload.approver, payload.jti, decision)
         logger.info("approval %s: %s recorded %s", request_id, payload.approver, decision)
         return HTMLResponse(_render_ack(request_id, payload.approver, decision))
 

@@ -96,6 +96,16 @@ class GitHubPort(Protocol):
     def revert_commit(self, repo: str, sha: str, *, branch: str = "main") -> str: ...
 
 
+@runtime_checkable
+class RepoMirror(Protocol):
+    """Keeps a local bare mirror of a product repo that sandboxes clone from (M8).
+
+    Fetch-only, read identity. Never used to push: pushing is the push bot's job.
+    """
+    def sync(self, repo: str) -> str:
+        """Create or update the mirror for `owner/name`; return its local path."""
+
+
 # ── Agents (M7), sandboxes (M8), budgets (M6) ────────────────────────────────────────
 @runtime_checkable
 class AgentRuntime(Protocol):

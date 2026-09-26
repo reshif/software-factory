@@ -34,7 +34,19 @@ class Settings:
     egress_proxy_url: str | None = None     # only LLM gateway + package mirror allowed
     repos_root: str = "/tmp/factory-repos"  # local clones used to build sandboxes
 
-    deploy_command: str | None = None       # optional shell hook for DeployTarget in production
+    # CommandDeployTarget hooks (production). Each runs with FACTORY_DEPLOY_* env vars (artifact,
+    # environment, operation id) and a minimal env; see release/deploy.py.
+    deploy_build_cmd: str | None = None     # prints the immutable artifact digest (sha256:...)
+    deploy_cmd: str | None = None           # deploys FACTORY_DEPLOY_ARTIFACT to FACTORY_DEPLOY_ENVIRONMENT
+    deploy_health_cmd: str | None = None    # exit 0 = healthy
+    deploy_rollback_cmd: str | None = None
+    deploy_url_cmd: str | None = None       # prints the environment's base URL
+    deploy_state_dir: str = "/tmp/factory-deploy-state"   # fencing high-water marks
+
+    # Holdout runner: its OWN read-only identity for the separate holdouts repo (§13.1 #4).
+    holdout_token: str | None = None
+    holdout_workflow: str = "holdout.yml"
+
     evidence_dir: str = "/tmp/factory-evidence"
 
     @classmethod

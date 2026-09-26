@@ -288,6 +288,17 @@
       "items": {
         "type": "string"
       }
+    },
+    "slack_ids": {
+      "description": "Approver handle -> Slack user id. Approval links are DMed only to these ids (never posted in a channel).",
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^@"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[UW][A-Z0-9]+$"
+      }
     }
   },
   "$defs": {

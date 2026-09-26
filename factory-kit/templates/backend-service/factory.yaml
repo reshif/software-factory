@@ -1,0 +1,30 @@
+# Golden-path product profile for the tiny stdlib sample service.
+# Spec: docs/software-factory-final-draft.md §12.1, §12.4
+schema_version: 1
+product: backend-service
+risk_profile: standard
+autonomy_level: L3
+kit: { version: "factory-kit@0.1.0", policy_version: "p-2026.10.1" }
+runtime: claude
+models:
+  triage: claude-haiku-4-5-20251001
+  build: claude-sonnet-5
+  planning: claude-opus-5-5
+owners: { factory: "@factory-owner", product: "@po", tech_lead: "@tl", backup: "@backup" }
+approvers: { h1: ["@po", "@tl"], hm: codeowners, h2: ["@tl"], hx: ["@po", "@tl"] }
+lanes: [patch, feature]
+budgets:
+  patch_task_usd: 2
+  feature_task_usd: 12
+  patch_mission_usd: 10
+  feature_mission_usd: 120
+  monthly_usd: 500
+  reviewer_hours_per_week: 5
+repair_attempts: { patch: 2, feature: 3 }
+infra_retries: 3
+verification:
+  required: [lint, unit]
+  mutation: "off"
+holdout_repo: "org/backend-service-holdouts"
+observation_window: 24h
+standing_mandates: [SM-patch]

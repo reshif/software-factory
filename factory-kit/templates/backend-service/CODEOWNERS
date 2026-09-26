@@ -1,0 +1,3 @@
+# Drives the HM merge gate: factory.yaml sets approvers.hm to "codeowners"
+# (final draft §6.2, §11). Keep this file and factory.yaml's owners in sync.
+* @po @tl

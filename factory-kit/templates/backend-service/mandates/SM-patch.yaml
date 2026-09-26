@@ -1,0 +1,20 @@
+# Standing mandate for backend-service's patch lane.
+# Mirrors factory-kit/examples/standing-mandate.yaml. Spec: final draft §6.1, §12.1
+schema_version: 1
+mandate_id: SM-patch
+kind: standing
+product: backend-service
+coverage:
+  labels_any: ["factory:patch"]
+  action_classes: [AC1, AC2, AC3]
+  paths: ["app/**", "tests/**", "specs/**", "README.md", "CLAUDE.md", "AGENTS.md"]
+  exclude_paths_from: "factory.yaml#protected_paths"
+  max_diff_lines: 150
+budget: { per_mission_usd: 10, monthly_usd: 200 }
+merge_policy: per_gate_table
+release_policy: per_gate_table
+kit_version: "factory-kit@0.1.0"
+policy_version: "p-2026.10.1"
+expires: "2027-03-31"
+approved_by: ["@po", "@tl"]
+content_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"

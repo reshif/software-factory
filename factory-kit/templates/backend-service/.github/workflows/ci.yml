@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    # Production: pin this to the org's factory-kit repo and released kit
+    # version, e.g.:
+    #   uses: ORG/factory-kit/.github/workflows/ci-pr.yml@factory-kit@0.1.0
+    # (GitHub requires a reusable workflow to live under .github/workflows in
+    # the calling repo; the reference implementation in this monorepo is at
+    # factory-kit/workflows/ci-pr.yml -- see that file's header.)
+    uses: ORG/factory-kit/.github/workflows/ci-pr.yml@main
+    with:
+      test_command: "python -m unittest discover -s tests -t ."

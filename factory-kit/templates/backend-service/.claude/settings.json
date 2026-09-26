@@ -1,0 +1,10 @@
+{
+  "extraKnownMarketplaces": {
+    "factory-kit": {
+      "source": { "source": "directory", "path": "../../plugins" }
+    }
+  },
+  "enabledPlugins": {
+    "factory-core@factory-kit": true
+  }
+}

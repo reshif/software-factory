@@ -152,16 +152,8 @@ class MemoryStateStore:
             row["acked_at"] = self._clock.now()
 
     def next_fencing_token(self) -> int:
-        """Shares `ApprovalStore`'s own counter and lock (not a separate one), so tokens
-        from `approvals.consume` and from here are drawn from one globally monotonic
-        sequence -- exactly the guarantee `PostgresStateStore` gets for free from
-        `approval_fencing_seq`. `ApprovalStore` doesn't expose this as a public method
-        (it's out of this module's edit scope this wave); reusing its lock and counter
-        directly is the only way to share the counter without duplicating it.
-        """
-        with self.approvals._lock:
-            self.approvals._fencing += 1
-            return self.approvals._fencing
+        """Drawn from the same counter as `approvals.consume`, like Postgres's shared sequence."""
+        return self.approvals.next_fencing_token()
 
     def use_once(self, key: str) -> bool:
         with self._lock:

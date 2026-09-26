@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 from datetime import timedelta
 
 import pytest
@@ -19,35 +18,6 @@ CONTENT_HASH = "sha256:packet-content"
 SIGNING_SECRET = "test-signing-secret"
 
 
-class _MemoryStoreWithUseOnce:
-    """`MemoryStateStore`, plus the `use_once` the `StateStore` port now declares.
-
-    B1 is adding `use_once` (an atomic check-and-set: True the first time a key is
-    seen, False ever after) to `MemoryStateStore`/`PostgresStateStore` in parallel;
-    it isn't there yet. The inbox router is written straight against the port
-    (`store.use_once(...)`), so this test-only shim supplies a correct, thread-safe
-    implementation of just that one method and delegates everything else to a real
-    `MemoryStateStore`. Once B1 lands `use_once` on `MemoryStateStore` itself, this
-    class can be deleted and `store` can go back to being a bare `MemoryStateStore()`
-    — nothing in `factory.inbox` would need to change.
-    """
-
-    def __init__(self) -> None:
-        self._inner = MemoryStateStore()
-        self._lock = threading.Lock()
-        self._used_once: set[str] = set()
-
-    def use_once(self, key: str) -> bool:
-        with self._lock:
-            if key in self._used_once:
-                return False
-            self._used_once.add(key)
-            return True
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
-
-
 @pytest.fixture
 def clock(now):
     return FakeClock(now)
@@ -60,7 +30,7 @@ def signer():
 
 @pytest.fixture
 def store():
-    return _MemoryStoreWithUseOnce()
+    return MemoryStateStore()
 
 
 @pytest.fixture

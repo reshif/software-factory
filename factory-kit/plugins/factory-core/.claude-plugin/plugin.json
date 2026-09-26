@@ -1,0 +1,5 @@
+{
+  "name": "factory-core",
+  "version": "0.1.0",
+  "description": "Factory pipeline agents, skills and defense-in-depth hooks: intake, architect, coordinator, implementer, qa and reviewer. Implements the security floor (docs/software-factory-final-draft.md §13) and the agent roles in §11."
+}

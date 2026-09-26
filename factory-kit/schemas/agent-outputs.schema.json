@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.local/schemas/agent-outputs.schema.json",
+  "title": "Agent output formats (final draft §4)",
+  "description": "Every factory agent ends its final turn with one fenced ```json block. The pipeline parses the LAST such block; invalid or missing output means the step failed (fail closed). The live shape on the wire is exactly one of $defs.intake|architect|implementer|qa|reviewer with NO envelope around it -- validate an agent's raw output against the matching $defs entry directly. The root object below is a separate, optional versioned envelope for archiving an agent output (e.g. alongside evidence/provenance) with its role and the pinned schema_version; it is never what an agent's transcript itself contains.",
+  "type": "object",
+  "required": ["schema_version", "role", "output"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "role": { "enum": ["intake", "architect", "implementer", "qa", "reviewer"] },
+    "output": {
+      "description": "The bare §4 payload for `role`. See $defs for the per-role shape."
+    }
+  },
+  "allOf": [
+    { "if": { "properties": { "role": { "const": "intake" } } },
+      "then": { "properties": { "output": { "$ref": "#/$defs/intake" } } } },
+    { "if": { "properties": { "role": { "const": "architect" } } },
+      "then": { "properties": { "output": { "$ref": "#/$defs/architect" } } } },
+    { "if": { "properties": { "role": { "const": "implementer" } } },
+      "then": { "properties": { "output": { "$ref": "#/$defs/implementer" } } } },
+    { "if": { "properties": { "role": { "const": "qa" } } },
+      "then": { "properties": { "output": { "$ref": "#/$defs/qa" } } } },
+    { "if": { "properties": { "role": { "const": "reviewer" } } },
+      "then": { "properties": { "output": { "$ref": "#/$defs/reviewer" } } } }
+  ],
+  "$defs": {
+    "intake": {
+      "type": "object",
+      "title": "intake output",
+      "required": ["lane", "suggested_class", "summary", "risk_notes"],
+      "additionalProperties": false,
+      "properties": {
+        "lane": { "enum": ["patch", "feature"] },
+        "suggested_class": { "enum": ["AC1", "AC2", "AC3", "AC4", "AC5", "AC6", "AC7"] },
+        "summary": { "type": "string", "minLength": 1 },
+        "risk_notes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "architect": {
+      "type": "object",
+      "title": "architect output",
+      "required": ["summary", "recommendation", "acceptance_criteria", "tasks", "alternatives",
+                   "risks", "recovery_plan", "estimate_usd"],
+      "additionalProperties": false,
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "recommendation": {
+          "type": "string",
+          "pattern": "^(APPROVE|REVISE|DECLINE):\\s*.+"
+        },
+        "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["task_id", "objective", "owned_paths", "action_class",
+                         "acceptance_checks", "depends_on"],
+            "additionalProperties": false,
+            "properties": {
+              "task_id": { "type": "string", "minLength": 1 },
+              "objective": { "type": "string", "minLength": 1 },
+              "owned_paths": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+              "action_class": { "enum": ["AC1", "AC2", "AC3", "AC4", "AC5", "AC6", "AC7"] },
+              "acceptance_checks": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+              "depends_on": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "alternatives": { "type": "array", "items": { "type": "string" } },
+        "risks": { "type": "array", "items": { "type": "string" } },
+        "recovery_plan": { "type": "string", "minLength": 1 },
+        "estimate_usd": { "type": "number", "minimum": 0 }
+      }
+    },
+    "implementer": {
+      "type": "object",
+      "title": "implementer output",
+      "required": ["status", "summary", "tests_added", "commands_run", "blocker"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["done", "blocked"] },
+        "summary": { "type": "string", "minLength": 1 },
+        "tests_added": { "type": "array", "items": { "type": "string" } },
+        "commands_run": { "type": "array", "items": { "type": "string" } },
+        "blocker": { "type": ["string", "null"] }
+      }
+    },
+    "qa": {
+      "type": "object",
+      "title": "qa output",
+      "required": ["status", "scenarios"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["pass", "fail"] },
+        "scenarios": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "result", "detail"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "result": { "enum": ["pass", "fail"] },
+              "detail": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "reviewer": {
+      "type": "object",
+      "title": "reviewer output",
+      "required": ["verdict", "findings"],
+      "additionalProperties": false,
+      "properties": {
+        "verdict": { "enum": ["pass", "fail"] },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["severity", "path", "line", "message"],
+            "additionalProperties": false,
+            "properties": {
+              "severity": { "enum": ["blocking", "major", "minor"] },
+              "path": { "type": "string" },
+              "line": { "type": "integer", "minimum": 0 },
+              "message": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

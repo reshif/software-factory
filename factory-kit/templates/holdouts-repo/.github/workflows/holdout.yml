@@ -1,0 +1,35 @@
+name: holdout
+
+# Controller-triggered black-box run against a staging digest (final draft
+# §9.2, §13.1 #4). No agent identity can trigger or read this workflow's
+# scenarios -- only the controller's read-only holdout identity.
+
+on:
+  workflow_dispatch:
+    inputs:
+      staging_url:
+        description: "Staging URL to run scenarios against."
+        required: true
+        type: string
+      artifact:
+        description: "Artifact/digest under test (provenance only; the run itself is black-box)."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  run-holdouts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run black-box scenarios
+        run: python runner/run_blackbox.py --staging-url "${{ inputs.staging_url }}" --scenarios-dir scenarios --out holdout-result.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: holdout-result
+          path: holdout-result.json

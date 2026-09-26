@@ -1,0 +1,60 @@
+name: deploy (reusable)
+
+# Reusable deploy workflow, environment-scoped with an OIDC credential example
+# (final draft §13.1 #1, #7; §13.2).
+#
+# Callers (from a product repo, invoked only by the release/deploy controller
+# -- never by a PR workflow):
+#   uses: <org>/factory-kit/.github/workflows/deploy.yml@<pinned kit_version>
+# (see ci-pr.yml's header for why the reference copy lives at
+# factory-kit/workflows/deploy.yml in this monorepo.)
+#
+# Prod credentials exist only here, obtained via OIDC (`id-token: write`) --
+# never a long-lived secret, and never present in ci-pr.yml. The `environment:`
+# gates the job behind GitHub's environment protection rules (required
+# reviewers, environment-scoped secrets), so only an approved H2 release can
+# reach this job.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "GitHub environment to deploy to (staging, production, ...)."
+        type: string
+        required: true
+      artifact_digest:
+        description: "The content-addressed build digest to promote (never rebuilt per environment)."
+        type: string
+        required: true
+      aws_role_to_assume:
+        description: "OIDC role ARN for this environment. Example only -- swap for the real cloud/target."
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write   # OIDC: exchange for a short-lived cloud credential, no stored secret
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assume cloud role via OIDC (example)
+        if: ${{ inputs.aws_role_to_assume != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws_role_to_assume }}
+          aws-region: us-east-1
+          # No aws-access-key-id / aws-secret-access-key: OIDC issues a
+          # short-lived token scoped to this job and this environment only.
+
+      - name: Promote the built digest (never rebuild per environment)
+        run: |
+          echo "Deploying digest ${{ inputs.artifact_digest }} to ${{ inputs.environment }}"
+          # The actual command is supplied by release.deploy.CommandDeployTarget
+          # (factory-controller) via its configured build/deploy/health/rollback
+          # commands -- this step is illustrative only.

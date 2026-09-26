@@ -1,0 +1,3 @@
+# Only the PO and security own this repo -- agents never get access to it
+# (final draft §13.1 #4: holdouts are black-box, run by a separate identity).
+* @po @sec

@@ -1,0 +1,58 @@
+name: ci-pr (reusable)
+
+# Reusable CI workflow for factory product repos (final draft §9.2, §13.2).
+#
+# Callers (from a product repo's own .github/workflows/ci.yml):
+#   uses: <org>/factory-kit/.github/workflows/ci-pr.yml@<pinned kit_version>
+#
+# GitHub only lets a repo call a reusable workflow that lives under that
+# repo's `.github/workflows/`. This monorepo keeps the reference
+# implementation at `factory-kit/workflows/ci-pr.yml` (final draft §12.4); a
+# deployed `factory-kit` repo re-exports the same content from its own
+# `.github/workflows/ci-pr.yml` so product repos can `uses:` it across repos.
+#
+# Security floor (§13.2):
+#   - triggered by `pull_request`, never `pull_request_target`
+#   - never checks out anything beyond the PR's own merge ref under elevated
+#     permissions
+#   - carries NO secrets: static checks and the test suite only need the diff
+#   - `permissions: contents: read` -- no writes, no PR-approval permission,
+#     no `workflows` permission
+
+on:
+  pull_request:
+  workflow_call:
+    inputs:
+      python_version:
+        description: "Python version to run checks with."
+        type: string
+        default: "3.12"
+      lint_command:
+        description: "Lint/format check command. Default is a no-op for repos without one configured yet."
+        type: string
+        default: "true"
+      test_command:
+        description: "Test command. Required by callers; this workflow does not guess it."
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the PR head (pull_request event; never pull_request_target)
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version || '3.12' }}
+
+      - name: Lint
+        run: ${{ inputs.lint_command || 'true' }}
+
+      - name: Test
+        run: ${{ inputs.test_command }}

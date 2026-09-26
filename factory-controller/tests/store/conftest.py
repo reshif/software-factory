@@ -9,6 +9,7 @@ import os
 import psycopg
 import pytest
 
+from factory.clock import FakeClock
 from factory.store import MemoryStateStore, PostgresStateStore
 from factory.store.postgres import apply_migrations
 
@@ -51,3 +52,28 @@ def postgres_only_store():
         pytest.skip("FACTORY_TEST_DATABASE_URL not set")
     _reset_postgres(PG_URL)
     return PostgresStateStore(PG_URL)
+
+
+@pytest.fixture(params=["memory", pytest.param("postgres", marks=pytest.mark.postgres)])
+def clocked_store(request):
+    """A fresh `(store, clock)` pair backed by a controllable `FakeClock`.
+
+    For asserting exact `created_at`/`updated_at` values (`Q-M1`): a `FakeClock`
+    never advances on its own, so `clock.now()` still equals whatever the store
+    used at the moment it was called, until the test itself calls `clock.advance`.
+    """
+    clock = FakeClock()
+    if request.param == "memory":
+        return MemoryStateStore(clock=clock), clock
+    if not PG_URL:
+        pytest.skip("FACTORY_TEST_DATABASE_URL not set")
+    _reset_postgres(PG_URL)
+    return PostgresStateStore(PG_URL, clock=clock), clock
+
+
+@pytest.fixture
+def pg_dsn():
+    """The raw Postgres DSN, for tests that need to open their own connections."""
+    if not PG_URL:
+        pytest.skip("FACTORY_TEST_DATABASE_URL not set")
+    return PG_URL

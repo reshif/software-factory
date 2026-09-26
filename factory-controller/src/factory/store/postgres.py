@@ -1,10 +1,12 @@
 """Postgres-backed StateStore (final draft §10, §12.1, §12.2).
 
 Approvals and intents must behave exactly like the in-memory reference
-implementations in `factory.controller` (`ApprovalStore`, `IntentLog`):
-this module mirrors their control flow and error types line for line, and
-the same contract tests (`tests/store/test_contract.py`) run against both
-backends to keep them in sync.
+implementations in `factory.controller` (`ApprovalStore`, `IntentLog`): the
+approval rules themselves (`check_decision`, `check_consumable`) are pure
+functions shared by both (`C1`), so this module only has to load a row,
+lock it, call the rule, and persist the result. The contract tests under
+`tests/store/` run the same test functions against both backends to keep
+them in sync.
 
 Every public method opens its own short-lived connection/transaction. This
 keeps CAS updates and the atomic approval-consume simple: `SELECT ... FOR
@@ -13,59 +15,96 @@ UPDATE` locks the row for the lifetime of that one transaction, and the
 """
 from __future__ import annotations
 
+import importlib.resources
 import json
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
-from ..controller.approvals import (AlreadyConsumed, ApprovalError, ApprovalRequest, Decision, Expired,
-                                    IneligibleApprover, QuorumNotMet, StaleApproval, _require_open)
+from ..clock import SystemClock
+from ..controller.approvals import ApprovalError, ApprovalRequest, Decision, check_consumable, check_decision
 from ..controller.intents import Intent
 from ..models import (CheckResult, DecisionPacket, DeployReceipt, EvidenceBundle, ExecResult,
                      MissionRecord, RuntimeResult, SandboxHandle, TaskRecord)
 from ..policy import Requirement
-from ..ports import ConcurrentUpdate, NotFound
+from ..ports import Clock, ConcurrentUpdate, NotFound
+from .validation import MISSION_IMMUTABLE, TASK_IMMUTABLE, validate_update_fields
 
 logger = logging.getLogger(__name__)
 
+_MIGRATIONS_PACKAGE = "factory.store.migrations"
+# An arbitrary, stable key namespacing this lock; only used to serialize
+# `apply_migrations` runs, never anything else, so no collision risk.
+_MIGRATION_LOCK_KEY = 0x0FAC7051
+
 
 # ── migrations ──────────────────────────────────────────────────────────────
-def default_migrations_dir() -> Path:
-    # src/factory/store/postgres.py -> factory-controller/migrations
-    return Path(__file__).resolve().parents[3] / "migrations"
+def _load_migration_files(migrations_dir: Path | str | None = None) -> list[tuple[str, str]]:
+    """Return `[(filename, sql), ...]` in filename order.
+
+    Reads from `migrations_dir` if given (tests only); otherwise from the
+    `factory.store.migrations` package via `importlib.resources`, so the SQL
+    ships inside the installed package instead of depending on a checkout
+    layout (`Q-H5`).
+    """
+    if migrations_dir is not None:
+        paths = sorted(Path(migrations_dir).glob("*.sql"))
+        return [(p.name, p.read_text()) for p in paths]
+    package = importlib.resources.files(_MIGRATIONS_PACKAGE)
+    entries = sorted((p for p in package.iterdir() if p.name.endswith(".sql")), key=lambda p: p.name)
+    return [(p.name, p.read_text()) for p in entries]
 
 
 def apply_migrations(conn: psycopg.Connection, migrations_dir: Path | str | None = None) -> list[str]:
-    """Apply every `*.sql` file in `migrations_dir`, in filename order, at most once.
+    """Apply every migration file, in filename order, at most once.
 
     Idempotent: already-applied files (tracked in `schema_migrations`) are
-    skipped, and each file's own SQL uses `IF NOT EXISTS` / `ON CONFLICT`
-    so re-running the same file is also harmless.
-    """
-    directory = Path(migrations_dir) if migrations_dir else default_migrations_dir()
-    with conn.cursor() as cur:
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS schema_migrations ("
-            "  filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())")
-        cur.execute("SELECT filename FROM schema_migrations")
-        applied = {row[0] for row in cur.fetchall()}
-    conn.commit()
+    skipped, and each file's own SQL uses `IF NOT EXISTS` / `ON CONFLICT` so
+    re-running the same file is also harmless. Raises `RuntimeError` if no
+    `*.sql` files are found at all — an empty migration set almost always
+    means the package wasn't installed correctly, not that there's nothing
+    to do.
 
-    newly_applied = []
-    for path in sorted(directory.glob("*.sql")):
-        if path.name in applied:
-            continue
+    A Postgres advisory lock serializes concurrent callers (e.g. two
+    controller instances starting at once), so they can't race each other
+    inserting the same row into `schema_migrations`.
+    """
+    files = _load_migration_files(migrations_dir)
+    if not files:
+        raise RuntimeError(
+            f"no migration files found in {migrations_dir or _MIGRATIONS_PACKAGE!r}; "
+            "the store package looks broken or incompletely installed")
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_lock(%s)", (_MIGRATION_LOCK_KEY,))
+    try:
         with conn.cursor() as cur:
-            cur.execute(path.read_text())
-            cur.execute("INSERT INTO schema_migrations (filename) VALUES (%s)", (path.name,))
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS schema_migrations ("
+                "  filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())")
+            cur.execute("SELECT filename FROM schema_migrations")
+            applied = {row[0] for row in cur.fetchall()}
         conn.commit()
-        newly_applied.append(path.name)
-        logger.info("applied migration %s", path.name)
-    return newly_applied
+
+        newly_applied = []
+        for name, sql in files:
+            if name in applied:
+                continue
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                cur.execute("INSERT INTO schema_migrations (filename) VALUES (%s)", (name,))
+            conn.commit()
+            newly_applied.append(name)
+            logger.info("applied migration %s", name)
+        return newly_applied
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_unlock(%s)", (_MIGRATION_LOCK_KEY,))
+        conn.commit()
 
 
 # ── receipts (opaque application objects, e.g. a DeployReceipt or a plain str) ──
@@ -326,7 +365,7 @@ class _PostgresApprovalStore:
                 cur.execute("SELECT * FROM approvals WHERE request_id = %s", (request_id,))
                 row = cur.fetchone()
                 if row is None:
-                    raise KeyError(request_id)
+                    raise NotFound(request_id)
                 decisions = _load_decisions(cur, request_id)
         return _row_to_approval(row, decisions)
 
@@ -350,65 +389,41 @@ class _PostgresApprovalStore:
 
     def decide(self, request_id: str, *, approver: str, roles, decision: str, content_hash: str,
               now) -> ApprovalRequest:
-        """Mirrors `ApprovalStore.decide` exactly; see its docstring for the rules."""
-        if decision not in ("approve", "revise", "defer", "cancel"):
-            raise ValueError(f"unknown decision {decision!r}")
-        roles = frozenset(roles)
+        """Loads, locks, calls `check_decision` (the one place the rule lives) and persists."""
         with self._store._connect() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute("SELECT * FROM approvals WHERE request_id = %s FOR UPDATE", (request_id,))
                 row = cur.fetchone()
                 if row is None:
-                    raise KeyError(request_id)
+                    raise NotFound(request_id)
                 req = _row_to_approval(row, _load_decisions(cur, request_id))
-                _require_open(req)
-                if now >= req.expires:
-                    raise Expired(f"{request_id} expired at {req.expires.isoformat()}")
-                if content_hash != req.content_hash:
-                    raise StaleApproval(f"{request_id}: decision is for different content")
-                if decision in ("revise", "cancel"):
-                    _insert_decision(cur, request_id, approver, roles, decision, now)
-                    cur.execute("UPDATE approvals SET status = 'void' WHERE request_id = %s", (request_id,))
-                    req.decisions.append(Decision(approver, roles, decision, now))
-                    req.status = "void"
-                    return req
-                if decision == "defer":
-                    _insert_decision(cur, request_id, approver, roles, decision, now)
-                    req.decisions.append(Decision(approver, roles, decision, now))
-                    return req
-                if req.gate == "HM" and approver in req.editors:
-                    raise IneligibleApprover(f"{approver} edited this change and can't approve its merge")
-                if req.risk_profile == "regulated" and approver == req.requester:
-                    raise IneligibleApprover(f"{approver} requested this and can't approve it (regulated)")
-                if any(d.approver == approver for d in req.approvers()):
+                d = check_decision(req, approver=approver, roles=roles, decision=decision,
+                                   content_hash=content_hash, now=now)
+                if d is None:
                     return req  # idempotent duplicate
-                _insert_decision(cur, request_id, approver, roles, "approve", now)
-                req.decisions.append(Decision(approver, roles, "approve", now))
+                _insert_decision(cur, request_id, d.approver, d.roles, d.decision, d.at)
+                req.decisions.append(d)
+                if d.decision in ("revise", "cancel"):
+                    cur.execute("UPDATE approvals SET status = 'void' WHERE request_id = %s", (request_id,))
+                    req.status = "void"
                 return req
 
     def consume(self, request_id: str, *, executor: str, now, state_version: int, content_hash: str,
                policy_version: str) -> int:
-        """Mirrors `ApprovalStore.consume`, but the fencing token is a Postgres sequence value."""
+        """Loads, locks, calls `check_consumable` (the one place the rule lives) and persists.
+
+        The fencing token comes from a Postgres sequence instead of an in-memory
+        counter, so it stays globally monotonic across controller restarts.
+        """
         with self._store._connect() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute("SELECT * FROM approvals WHERE request_id = %s FOR UPDATE", (request_id,))
                 row = cur.fetchone()
                 if row is None:
-                    raise KeyError(request_id)
-                if row["status"] == "consumed":
-                    raise AlreadyConsumed(
-                        f"{request_id} was consumed by {row['consumed_by']} at {row['consumed_at']}")
+                    raise NotFound(request_id)
                 req = _row_to_approval(row, _load_decisions(cur, request_id))
-                _require_open(req)
-                if not req.quorum_met():
-                    raise QuorumNotMet(
-                        f"{request_id}: {len(req.approvers())}/{req.needed} approvals"
-                        + (" (security required)" if req.required.security else ""))
-                if now >= req.expires:
-                    raise Expired(f"{request_id}: operation must start before {req.expires.isoformat()}")
-                if (state_version, content_hash, policy_version) != (
-                        req.state_version, req.content_hash, req.policy_version):
-                    raise StaleApproval(f"{request_id}: state, content or policy changed since the request")
+                check_consumable(req, now=now, state_version=state_version, content_hash=content_hash,
+                                policy_version=policy_version)
                 cur.execute("SELECT nextval('approval_fencing_seq') AS token")
                 token = cur.fetchone()["token"]
                 cur.execute(
@@ -480,8 +495,9 @@ class _PostgresIntentLog:
 class PostgresStateStore:
     """`StateStore` (ports.StateStore) backed by Postgres, via psycopg 3."""
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, clock: Clock | None = None) -> None:
         self._dsn = dsn
+        self._clock = clock or SystemClock()
         self.approvals = _PostgresApprovalStore(self)
         self.intents = _PostgresIntentLog(self)
 
@@ -490,6 +506,8 @@ class PostgresStateStore:
 
     # ── missions ──────────────────────────────────────────────────────
     def create_mission(self, mission: MissionRecord) -> MissionRecord:
+        now = self._clock.now()
+        mission = replace(mission, created_at=now, updated_at=now)
         with self._connect() as conn:
             with conn.cursor() as cur:
                 try:
@@ -521,10 +539,12 @@ class PostgresStateStore:
         return _row_to_mission(row)
 
     def update_mission(self, mission_id: str, *, expected_version: int, **changes) -> MissionRecord:
+        validate_update_fields(MissionRecord, changes, immutable=MISSION_IMMUTABLE)
         params = dict(changes)
         if "editors" in params:
             params["editors"] = Json(list(params["editors"]))
-        set_clause = "".join(f"{col} = %({col})s, " for col in params) + "state_version = state_version + 1"
+        params["updated_at"] = self._clock.now()
+        set_clause = ", ".join(f"{col} = %({col})s" for col in params) + ", state_version = state_version + 1"
         params["mission_id"] = mission_id
         params["expected_version"] = expected_version
         with self._connect() as conn:
@@ -565,6 +585,7 @@ class PostgresStateStore:
 
     # ── tasks ─────────────────────────────────────────────────────────
     def create_task(self, task: TaskRecord) -> TaskRecord:
+        task = replace(task, updated_at=self._clock.now())
         with self._connect() as conn:
             with conn.cursor() as cur:
                 try:
@@ -591,13 +612,13 @@ class PostgresStateStore:
         return _row_to_task(row)
 
     def update_task(self, task_id: str, **changes) -> TaskRecord:
-        if not changes:
-            return self.get_task(task_id)
+        validate_update_fields(TaskRecord, changes, immutable=TASK_IMMUTABLE)
         params = dict(changes)
         if "depends_on" in params:
             params["depends_on"] = Json(list(params["depends_on"]))
         if "contract" in params:
             params["contract"] = Json(params["contract"])
+        params["updated_at"] = self._clock.now()
         set_clause = ", ".join(f"{col} = %({col})s" for col in params)
         params["task_id"] = task_id
         with self._connect() as conn:
@@ -694,8 +715,8 @@ class PostgresStateStore:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO events (mission_id, kind, payload) VALUES (%s, %s, %s)",
-                    (mission_id, kind, Json(payload)),
+                    "INSERT INTO events (mission_id, kind, payload, created_at) VALUES (%s, %s, %s, %s)",
+                    (mission_id, kind, Json(payload), self._clock.now()),
                 )
 
     def list_events(self, mission_id: str) -> list[dict]:

@@ -6,18 +6,26 @@ are exactly the ones `PostgresStateStore` must reproduce.
 """
 import threading
 from dataclasses import replace
-from datetime import datetime, timezone
 
+from ..clock import SystemClock
 from ..controller.approvals import ApprovalStore
 from ..controller.intents import IntentLog
 from ..models import DecisionPacket, EvidenceBundle, MissionRecord, TaskRecord
-from ..ports import ConcurrentUpdate, NotFound
+from ..ports import Clock, ConcurrentUpdate, NotFound
+from .validation import MISSION_IMMUTABLE, TASK_IMMUTABLE, validate_update_fields
 
 
 class MemoryStateStore:
-    """Plain-Python `StateStore` (ports.StateStore). Not shared across processes."""
+    """Plain-Python `StateStore` (ports.StateStore). Not shared across processes.
 
-    def __init__(self) -> None:
+    Missions and tasks are returned as copies (`dataclasses.replace`), both
+    going in and coming out, so a caller can never mutate stored state by
+    holding onto (and editing) a record it got from `create_*`/`get_*`/`list_*`
+    (`Q-M1`).
+    """
+
+    def __init__(self, clock: Clock | None = None) -> None:
+        self._clock = clock or SystemClock()
         self.approvals = ApprovalStore()
         self.intents = IntentLog()
         self._lock = threading.Lock()
@@ -33,18 +41,21 @@ class MemoryStateStore:
         with self._lock:
             if mission.mission_id in self._missions:
                 raise ValueError(f"duplicate mission id {mission.mission_id}")
-            self._missions[mission.mission_id] = mission
-            return mission
+            now = self._clock.now()
+            stored = replace(mission, created_at=now, updated_at=now)
+            self._missions[mission.mission_id] = stored
+            return replace(stored)
 
     def get_mission(self, mission_id: str) -> MissionRecord:
         with self._lock:
             try:
-                return self._missions[mission_id]
+                return replace(self._missions[mission_id])
             except KeyError:
                 raise NotFound(mission_id) from None
 
     def update_mission(self, mission_id: str, *, expected_version: int, **changes) -> MissionRecord:
         """CAS update: raises ConcurrentUpdate if state_version != expected_version."""
+        validate_update_fields(MissionRecord, changes, immutable=MISSION_IMMUTABLE)
         with self._lock:
             current = self._missions.get(mission_id)
             if current is None:
@@ -52,20 +63,21 @@ class MemoryStateStore:
             if current.state_version != expected_version:
                 raise ConcurrentUpdate(
                     f"{mission_id}: expected version {expected_version}, found {current.state_version}")
-            updated = replace(current, state_version=current.state_version + 1, **changes)
+            updated = replace(current, state_version=current.state_version + 1,
+                              updated_at=self._clock.now(), **changes)
             self._missions[mission_id] = updated
-            return updated
+            return replace(updated)
 
     def list_missions(self, *, state: str | None = None, product: str | None = None) -> list[MissionRecord]:
         with self._lock:
-            return [m for m in self._missions.values()
+            return [replace(m) for m in self._missions.values()
                     if (state is None or m.state == state) and (product is None or m.product == product)]
 
     def find_mission_by_work_item(self, work_item_id: str) -> MissionRecord | None:
         with self._lock:
             for mission in self._missions.values():
                 if mission.work_item_id == work_item_id:
-                    return mission
+                    return replace(mission)
             return None
 
     # ── tasks ─────────────────────────────────────────────────────────
@@ -73,28 +85,30 @@ class MemoryStateStore:
         with self._lock:
             if task.task_id in self._tasks:
                 raise ValueError(f"duplicate task id {task.task_id}")
-            self._tasks[task.task_id] = task
-            return task
+            stored = replace(task, updated_at=self._clock.now())
+            self._tasks[task.task_id] = stored
+            return replace(stored)
 
     def get_task(self, task_id: str) -> TaskRecord:
         with self._lock:
             try:
-                return self._tasks[task_id]
+                return replace(self._tasks[task_id])
             except KeyError:
                 raise NotFound(task_id) from None
 
     def update_task(self, task_id: str, **changes) -> TaskRecord:
+        validate_update_fields(TaskRecord, changes, immutable=TASK_IMMUTABLE)
         with self._lock:
             current = self._tasks.get(task_id)
             if current is None:
                 raise NotFound(task_id)
-            updated = replace(current, **changes)
+            updated = replace(current, updated_at=self._clock.now(), **changes)
             self._tasks[task_id] = updated
-            return updated
+            return replace(updated)
 
     def list_tasks(self, mission_id: str) -> list[TaskRecord]:
         with self._lock:
-            return [t for t in self._tasks.values() if t.mission_id == mission_id]
+            return [replace(t) for t in self._tasks.values() if t.mission_id == mission_id]
 
     # ── evidence & packets ───────────────────────────────────────────
     def save_evidence(self, bundle: EvidenceBundle) -> None:
@@ -128,7 +142,7 @@ class MemoryStateStore:
     def append_event(self, mission_id: str, kind: str, payload: dict) -> None:
         with self._lock:
             self._events.setdefault(mission_id, []).append(
-                {"kind": kind, "payload": payload, "at": datetime.now(timezone.utc)})
+                {"kind": kind, "payload": payload, "at": self._clock.now()})
 
     def list_events(self, mission_id: str) -> list[dict]:
         with self._lock:

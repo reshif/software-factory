@@ -33,7 +33,7 @@ def test_get_missing_mission_raises_not_found(store):
 
 def test_create_duplicate_mission_raises(store):
     store.create_mission(make_mission())
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         store.create_mission(make_mission())
 
 
@@ -61,6 +61,36 @@ def test_update_mission_editors_round_trips(store):
     store.create_mission(make_mission())
     updated = store.update_mission("MIS-1", expected_version=0, editors=("@dev1", "@dev2"))
     assert set(updated.editors) == {"@dev1", "@dev2"}
+
+
+def test_update_mission_rejects_unknown_field(store):
+    store.create_mission(make_mission())
+    with pytest.raises(TypeError):
+        store.update_mission("MIS-1", expected_version=0, not_a_real_field="x")
+
+
+@pytest.mark.parametrize("field", ["mission_id", "state_version", "created_at", "updated_at"])
+def test_update_mission_rejects_immutable_field(store, field):
+    store.create_mission(make_mission())
+    with pytest.raises(TypeError):
+        store.update_mission("MIS-1", expected_version=0, **{field: "anything"})
+
+
+def test_get_mission_returns_a_copy_not_shared_state(store):
+    """Q-M1: mutating a record handed back by the store must never corrupt what it holds."""
+    store.create_mission(make_mission())
+    got = store.get_mission("MIS-1")
+    got.state = "MUTATED"
+    assert store.get_mission("MIS-1").state == "NEW"
+
+
+def test_create_mission_does_not_alias_the_callers_object(store):
+    """Q-M1: mutating the caller's own object after create_mission must not reach the store."""
+    mission = make_mission()
+    created = store.create_mission(mission)
+    mission.state = "MUTATED"
+    created.state = "ALSO_MUTATED"
+    assert store.get_mission("MIS-1").state == "NEW"
 
 
 def test_list_missions_filters_by_state_and_product(store):
@@ -98,9 +128,39 @@ def test_get_missing_task_raises_not_found(store):
         store.get_task("no-such-task")
 
 
+def test_create_duplicate_task_raises(store):
+    store.create_mission(make_mission())
+    store.create_task(TaskRecord(task_id="T-1", mission_id="MIS-1", contract={}))
+    with pytest.raises(ValueError):
+        store.create_task(TaskRecord(task_id="T-1", mission_id="MIS-1", contract={}))
+
+
 def test_update_missing_task_raises_not_found(store):
     with pytest.raises(NotFound):
         store.update_task("no-such-task", state="RUNNING")
+
+
+def test_update_task_rejects_unknown_field(store):
+    store.create_mission(make_mission())
+    store.create_task(TaskRecord(task_id="T-1", mission_id="MIS-1", contract={}))
+    with pytest.raises(TypeError):
+        store.update_task("T-1", not_a_real_field="x")
+
+
+@pytest.mark.parametrize("field", ["task_id", "updated_at"])
+def test_update_task_rejects_immutable_field(store, field):
+    store.create_mission(make_mission())
+    store.create_task(TaskRecord(task_id="T-1", mission_id="MIS-1", contract={}))
+    with pytest.raises(TypeError):
+        store.update_task("T-1", **{field: "anything"})
+
+
+def test_get_task_returns_a_copy_not_shared_state(store):
+    store.create_mission(make_mission())
+    store.create_task(TaskRecord(task_id="T-1", mission_id="MIS-1", contract={}))
+    got = store.get_task("T-1")
+    got.state = "MUTATED"
+    assert store.get_task("T-1").state == "WAITING_DEPS"
 
 
 def test_list_tasks_filters_by_mission(store):
@@ -209,3 +269,46 @@ def test_list_events_filters_by_mission(store):
 
 def test_list_events_for_unknown_mission_is_empty(store):
     assert store.list_events("no-such-mission") == []
+
+
+def test_append_event_uses_the_injected_clock(clocked_store):
+    store, clock = clocked_store
+    store.create_mission(make_mission())
+    store.append_event("MIS-1", "mission_created", {})
+    [event] = store.list_events("MIS-1")
+    assert event["at"] == clock.now()
+
+
+# ── Clock injection (Q-M1: both backends set created_at/updated_at themselves) ──
+def test_create_mission_sets_created_and_updated_at_from_the_clock(clocked_store):
+    store, clock = clocked_store
+    created = store.create_mission(make_mission())
+    assert created.created_at == clock.now()
+    assert created.updated_at == clock.now()
+
+
+def test_update_mission_bumps_updated_at_but_not_created_at(clocked_store):
+    store, clock = clocked_store
+    created = store.create_mission(make_mission())
+    clock.advance(hours=1)
+    updated = store.update_mission("MIS-1", expected_version=0, state="ACTIVE")
+    assert updated.created_at == created.created_at
+    assert updated.updated_at == clock.now()
+    assert updated.updated_at > created.updated_at
+
+
+def test_create_task_sets_updated_at_from_the_clock(clocked_store):
+    store, clock = clocked_store
+    store.create_mission(make_mission())
+    created = store.create_task(TaskRecord(task_id="T-1", mission_id="MIS-1", contract={}))
+    assert created.updated_at == clock.now()
+
+
+def test_update_task_bumps_updated_at(clocked_store):
+    store, clock = clocked_store
+    store.create_mission(make_mission())
+    created = store.create_task(TaskRecord(task_id="T-1", mission_id="MIS-1", contract={}))
+    clock.advance(minutes=5)
+    updated = store.update_task("T-1", state="RUNNING")
+    assert updated.updated_at == clock.now()
+    assert updated.updated_at > created.updated_at

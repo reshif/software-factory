@@ -45,7 +45,7 @@ Full behavior is defined in `docs/software-factory-final-draft.md`
 - reviewer_hours_per_week: 5
 
 **Required verification** (fail closed — only an actual `success` conclusion
-passes, final draft §9.2): lint, unit. Mutation testing:
+passes, final draft §9.2): lint, unit, review_agent, holdout_blackbox. Mutation testing:
 `off`.
 
 ## Rules (final draft §13 — non-negotiable, apply to every agent)

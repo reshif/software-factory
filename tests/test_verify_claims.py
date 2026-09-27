@@ -262,7 +262,12 @@ class RedactionTests(unittest.TestCase):
             ("t=glpat-" + "xYz12AbC3dEf4GhI5jKl", "t=[REDACTED:gitlab_token]"),
             ("SG." + "aB3" * 8 + "." + "cD4-" * 10, "[REDACTED:sendgrid_key]"),
             (
-                "Authorization: Bot " + "MTk4NjIyNDgzNDcxOTI1MjQ4" + "." + "Cl2FMQ" + "." + "ZnCjm1XVW7vRze4b7Cq4se7kKWs",
+                "Authorization: Bot "
+                + "MTk4NjIyNDgzNDcxOTI1MjQ4"
+                + "."
+                + "Cl2FMQ"
+                + "."
+                + "ZnCjm1XVW7vRze4b7Cq4se7kKWs",
                 "Authorization: Bot [REDACTED:authorization]",
             ),
             ('{"auth": "dXNlcjpwYXNzd29yZA=="}', '{"auth": "[REDACTED:auth_value]"}'),

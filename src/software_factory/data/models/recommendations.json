@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "kind": "recommendations",
+  "entries": [
+    {
+      "key": "openai-astra",
+      "provider": "openai",
+      "profiles": [
+        "codex",
+        "copilot"
+      ],
+      "model_ids": [
+        "gpt-6-astra",
+        "GPT-6 Astra"
+      ],
+      "strengths": "Complex work requiring broad reasoning, planning and judgment.",
+      "sources": [
+        "https://learn.chatgpt.com/docs/models",
+        "https://docs.github.com/en/copilot/reference/ai-models/model-comparison"
+      ],
+      "checked_at": "2026-09-26T00:00:00Z"
+    },
+    {
+      "key": "openai-sol",
+      "provider": "openai",
+      "profiles": [
+        "codex",
+        "copilot"
+      ],
+      "model_ids": [
+        "gpt-6-sol",
+        "GPT-6 Sol"
+      ],
+      "strengths": "Coding and agentic workflows with multistep validation.",
+      "sources": [
+        "https://learn.chatgpt.com/docs/models",
+        "https://docs.github.com/en/copilot/reference/ai-models/model-comparison"
+      ],
+      "checked_at": "2026-09-26T00:00:00Z"
+    },
+    {
+      "key": "openai-luna",
+      "provider": "openai",
+      "profiles": [
+        "codex",
+        "copilot"
+      ],
+      "model_ids": [
+        "gpt-6-luna",
+        "GPT-6 Luna"
+      ],
+      "strengths": "Focused, repeatable coding and supporting tasks.",
+      "sources": [
+        "https://learn.chatgpt.com/docs/models",
+        "https://docs.github.com/en/copilot/reference/ai-models/model-comparison"
+      ],
+      "checked_at": "2026-09-26T00:00:00Z"
+    },
+    {
+      "key": "anthropic-opus",
+      "provider": "anthropic",
+      "profiles": [
+        "claude",
+        "copilot"
+      ],
+      "model_ids": [
+        "claude-opus-5-5",
+        "Claude Opus 5.5"
+      ],
+      "strengths": "Complex agentic coding and long-running work.",
+      "sources": [
+        "https://platform.claude.com/docs/en/about-claude/models/choosing-a-model",
+        "https://docs.github.com/en/copilot/reference/ai-models/model-comparison"
+      ],
+      "checked_at": "2026-09-26T00:00:00Z",
+      "minimum_client_versions": {
+        "claude-code-native": "2.1.280"
+      }
+    },
+    {
+      "key": "anthropic-sonnet",
+      "provider": "anthropic",
+      "profiles": [
+        "claude",
+        "copilot"
+      ],
+      "model_ids": [
+        "claude-sonnet-5",
+        "Claude Sonnet 5"
+      ],
+      "strengths": "Everyday coding and agent tasks balancing capability and speed.",
+      "sources": [
+        "https://platform.claude.com/docs/en/about-claude/models/choosing-a-model",
+        "https://docs.github.com/en/copilot/reference/ai-models/model-comparison"
+      ],
+      "checked_at": "2026-09-26T00:00:00Z"
+    },
+    {
+      "key": "anthropic-haiku",
+      "provider": "anthropic",
+      "profiles": [
+        "claude",
+        "copilot"
+      ],
+      "model_ids": [
+        "claude-haiku-4-5",
+        "Claude Haiku 4.5"
+      ],
+      "strengths": "Low-latency, narrowly scoped supporting work.",
+      "sources": [
+        "https://platform.claude.com/docs/en/about-claude/models/choosing-a-model",
+        "https://docs.github.com/en/copilot/reference/ai-models/model-comparison"
+      ],
+      "checked_at": "2026-09-26T00:00:00Z"
+    },
+    {
+      "key": "anthropic-fable",
+      "provider": "anthropic",
+      "profiles": [
+        "claude",
+        "copilot"
+      ],
+      "model_ids": [
+        "claude-fable-5-1",
+        "Claude Fable 5.1"
+      ],
+      "strengths": "Demanding reasoning and long-horizon agentic work; consider when the task warrants escalation.",
+      "sources": [
+        "https://platform.claude.com/docs/en/about-claude/models/choosing-a-model",
+        "https://docs.github.com/en/copilot/reference/ai-models/model-comparison"
+      ],
+      "checked_at": "2026-09-26T00:00:00Z"
+    }
+  ]
+}

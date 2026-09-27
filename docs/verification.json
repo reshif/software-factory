@@ -1,0 +1,296 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-09-27T12:33:21.745017+00:00",
+  "version": "0.2.6",
+  "boundary": "Validated and globally installed private local Python/uv package; no publication, remote CI, PR, merge or deployment claim",
+  "source_identity": {
+    "format": "sha256-of-sorted-compact-json-file-sha256-map",
+    "sha256": "e67186b8baafa9b91c01df025db333eca9b9ade669e91a8ae1a39cdc797e9992",
+    "files": {
+      "AGENTS.md": "ab126f929792ed46a48e2ad5e1f9e0c66f6071701b31aa9238703de0ddc7ed21",
+      "README.md": "a0c0c8b4af7484854f6ac87bd1b2cde0da32046deab2cbd335796ef14252ac9f",
+      "docs/implementation.md": "5fdf1e618bf17446fcc5700212f8d47bcbd49e1888e981233e369f42f937590f",
+      "docs/release-process.md": "49d9fb99ce8448bf2ba543e2ee7e119c16582026d7e7cef9153fe2d952fec46b",
+      "pyproject.toml": "d8208ec3c17627a97ba6d96f89a2046d2d9778eb68808939fc01a2705f3c61df",
+      "scripts/release_smoke.py": "0027789a053701151b9d34ae59ebf59c584a236ddb27d816d28ddc9382481aae",
+      "src/software_factory/__init__.py": "3b3e476f01ccc84f3b9e6c15f34019ce99093dffb0060ede0ee26bfc15d99215",
+      "src/software_factory/__main__.py": "3129adff95e0f38b87ab34cddfc27082c7892bcaec267ff5d40f160fdf55b44a",
+      "src/software_factory/calibration.py": "48186365639d3b5e08a34383103b1194a0905df55bbfae96ceb23518877297b6",
+      "src/software_factory/checks.py": "141275e97645767c18461ccd7384a75a5c415562d0cb7078765fd938a1bb18ed",
+      "src/software_factory/cli.py": "7f53e8b78987f8767eb2a2febd202a4526a0f4c0e4c8a6d9660fed8958e3d277",
+      "src/software_factory/core.py": "aa6c5c30bb1f51ab4f6a20894447ac5acb7752a30451e0f000354d711121ea37",
+      "src/software_factory/data/CONSTITUTION.md": "a390c46c67dede90573750f98ba3cb9b3fdde3cd167a8da8347e21d9086a4e78",
+      "src/software_factory/data/docs/architecture.md": "f79b9a5ada45db6c25e50208b09c6bb4660d0b5fd57c7694756ff49e0b21f7a6",
+      "src/software_factory/data/docs/jev-architecture.md": "5bbd68a4938fd9f17861ab5ff74d1319980fcb8b33c1d6195073103dd43a754c",
+      "src/software_factory/data/docs/jev-routing.md": "e04583311cda2b5399e65df6c6f66c922a36b0165b87d7ab4fc31bf79fc2f08c",
+      "src/software_factory/data/docs/runbooks/adopt-existing-repo.md": "1ef923d64f0489082a58c4ed4d071e5309398e47a387bc6ed4685ec6d786ea00",
+      "src/software_factory/data/docs/runbooks/delivery-and-recovery.md": "80f3b502e4765d954c542a9f7c5e55c761c71d3932538299af6bb7342d01fb45",
+      "src/software_factory/data/docs/runbooks/factory-maintenance.md": "3ac4d6b40234d78fdfa9fb7d19caf4a3493ca98e75e30b0316f45a65569a4bb5",
+      "src/software_factory/data/docs/runbooks/factory-setup.md": "74cac8ee290a4563eead38633165f8677e79f53dedaa49148df61c1c2fddeb59",
+      "src/software_factory/data/docs/runbooks/github-setup.md": "d8d76c3a9f083a2e77d90660a11d1147c539c7771c031a1a4020fec176acf8ab",
+      "src/software_factory/data/docs/runbooks/model-selection.md": "f493adaca2e0fde158c8bf6df9a6ca996162465847d57728a1e2eeda86e7f9f8",
+      "src/software_factory/data/docs/runbooks/prompts.md": "46897d2af9cef6f29a7f74a6f44fbb3f939b398770255645e6728f4af655f08c",
+      "src/software_factory/data/docs/runbooks/resume-and-switch.md": "4df08d2cd64d05df5817149f0bf0d4a9a2785cc77c25aeb2486a485dc31208f5",
+      "src/software_factory/data/docs/runbooks/runtime-contract.md": "e96fbea48a50dc779549b5ee82fccfca7eb712827cc43b89db183e78e72eab66",
+      "src/software_factory/data/docs/runbooks/scaling-and-extensions.md": "5c11190d6f701d398ee378ffbc5737276428c47070e9be1973504bd71151aa04",
+      "src/software_factory/data/docs/runbooks/semantic-assistance.md": "5ba1dd9bbaba2618420ab2575ab9fa574310c5bf4d468354d13fb4ed15bcc371",
+      "src/software_factory/data/docs/runbooks/upgrading.md": "0e1aeaa46cb1211dca9a1041464ea40141a3974c74d5973e73c9fb405fa74719",
+      "src/software_factory/data/docs/runbooks/vendor-behavior.md": "8d51df9dc2a4de9253800352cb15217cf14d602c0eca04417df02848bf685293",
+      "src/software_factory/data/docs/vendor-smoke-tests.md": "7f55dfb29b40a5111bead947d19c99685c55c05f0d87cf8014edb2bbf4a3b9c4",
+      "src/software_factory/data/models/policy.json": "b7590c06af74350c7b725f07fdbcf6a68aeb1aed8017629cfbd89d17847309b0",
+      "src/software_factory/data/models/recommendations.json": "301ae18ad5d0880cd0b11dbdaa303a0409845520dc70b3900ffa9c4c18db9244",
+      "src/software_factory/data/models/selection-rubric.json": "cf46523b9298c2daf461768930df001105c080f3959c72ba2f482395c80cdb6c",
+      "src/software_factory/data/policy.json": "8a4dd605073f6d520ba30c7461665c5d5b11db0c0859604ebfa84cce429aac5c",
+      "src/software_factory/data/prompts/factory-blueprint.md": "dbee5211914c98e77b9a044c14137e61c3b13b9d73fd2518465199af9c9b1e58",
+      "src/software_factory/data/prompts/factory-build.md": "b56d805e6b974a7ffdc501e732279fd5a016702821918e017e98a00fdef29cd5",
+      "src/software_factory/data/prompts/factory-resume.md": "64766aedaf98ca3a3549f1044930ec47ad95d053692a5e831501bcefb5364827",
+      "src/software_factory/data/prompts/factory-status.md": "d9e482e1ae29f61d18213d55443a121cc2d7573f8736184b5af90f775bd54c59",
+      "src/software_factory/data/registry.json": "f21734b7bea4953f01b9c98641dc0dd25b0f8657482481d4f8666b5daffafe86",
+      "src/software_factory/data/roles/implementer.md": "8fce5f4ee514a53a4154e0b551a7f138eaead534281f27d8d1694651586c43f6",
+      "src/software_factory/data/roles/orchestrator.md": "7040a8796cb0e4b52f9365895b4ec1ad7f1d184766c7d8a69871dc7e10109788",
+      "src/software_factory/data/roles/planner.md": "f45fb9708f22cf2a1ed7c19c0c3967244e123840d26e3bb956a95a3838666336",
+      "src/software_factory/data/roles/reviewer.md": "6a1b6aed8ebf90de6e0ee9c6e7734a8742811e55cdfd3079a033dd3764d5cb14",
+      "src/software_factory/data/roles/verifier.md": "9e5bbd2f23bdb48df2aee51b9f3bc3dd9212b01b2b2c25940377aa7d3a79d99b",
+      "src/software_factory/data/runtime/pyproject.toml": "67bb59e1dd35b118cce6d30e052e852f5a03310e4feb0363c7b29a07b33dd19f",
+      "src/software_factory/data/runtime/uv.lock": "09637a12f2795c8fad175a6e9b5c22b5cea7e3e44f13c90aee17e9199f2fc103",
+      "src/software_factory/data/schemas/evidence.schema.json": "c8881d3b3f33ad326b55389f429fb5208ee2bc6b73c8752e01f483c832986279",
+      "src/software_factory/data/schemas/factory.schema.json": "a3b61fa9d4fd00f2d3a7740b1851ba8ae6417eded10428baf496f2ccbba2386d",
+      "src/software_factory/data/schemas/installation.schema.json": "d474f62a9f0d7261a98468eaa0dec93ccc70f4423afd4467b56877a8f33f9d4a",
+      "src/software_factory/data/schemas/mission.schema.json": "f79e6fea6217c9e183d9d6d174856e3383601c1c3758d9e00ec2e7861fead032",
+      "src/software_factory/data/schemas/model-outcome.schema.json": "9ce76b3745ce8da295b3b6e808bdbcdf5f1e72acbde31c6a04fe0c222d1fc549",
+      "src/software_factory/data/schemas/models.schema.json": "35b7f5872fe21242e00bcb24187d615252b2661b3d39ef1f028ea6cdf3830471",
+      "src/software_factory/data/schemas/registry.schema.json": "f49feb50ef6fab845c419134541485d59674d8b9577d6529b14dc99efae6dc83",
+      "src/software_factory/data/schemas/result-index.schema.json": "85b2e5e67b29c829be07eda8cfae71e330b2e4e2634005a629a4c5604e240657",
+      "src/software_factory/data/schemas/result.schema.json": "ec1c90dcad0349e1f05a155f35157483dc10f04d3bd1e28f43ea4228c1dfbe69",
+      "src/software_factory/data/schemas/semantic.schema.json": "7e403471c9533138b50ec55ddb73018a743ed954f0fbd0026d2f5945bf265431",
+      "src/software_factory/data/skills/factory-handoff/SKILL.md": "9f4557afb492c27f5e87d3e9c9b922430e36a91edd09d03b3606412c91529753",
+      "src/software_factory/data/skills/factory-implement/SKILL.md": "6f7045327d49a283767631695af7f62f129a2dab0dfa5b6b6e901f5b59ff1c7c",
+      "src/software_factory/data/skills/factory-models/SKILL.md": "cc45f78e9070201d36f928bdc20ded2c1945f14ddab87911418f03b8bae5f31f",
+      "src/software_factory/data/skills/factory-plan/SKILL.md": "3884fd9a8466610d58eed6710fc108674383a07dd5ef6a594204feea1bf898da",
+      "src/software_factory/data/skills/factory-recover/SKILL.md": "76b07f1c1a8572b2303f8f2f3ccdca2f96da843a6ab5452b631ec2c809841b73",
+      "src/software_factory/data/skills/factory-release/SKILL.md": "37ce2350c025f01a6078e6a56aee4db7e8f74f1575a15d02b94cda5e1e50d7e8",
+      "src/software_factory/data/skills/factory-repair/SKILL.md": "0722eb9a8436873cffa4ea979effff937267aa8955cf964a39e6d0acec23ab8d",
+      "src/software_factory/data/skills/factory-review/SKILL.md": "8c7a5fd3a7395fbaef2279c1ec7311d0721185fc904b3826d245ea05d951015e",
+      "src/software_factory/data/skills/factory-semantic/SKILL.md": "63d61d470ca2d0b9aabe6f571a8ce5309e2f4b5a0e1e49ed1ee43f57f23c5346",
+      "src/software_factory/data/skills/factory-semantic/references/typesafe.md": "96e2f804683689c75910375425e68766b07750f17417129ab506f6634fb26f5a",
+      "src/software_factory/data/skills/factory-semantic/resources/claim-support.json": "f925ce4b4355c981703038d5fd7a0cc11b935306af105b36aeb7aa70f1655916",
+      "src/software_factory/data/skills/factory-specify/SKILL.md": "4e468126adf448028576d022d85f48c46ba54098b9ec44b3afe41594fafa8ec9",
+      "src/software_factory/data/skills/factory-start/SKILL.md": "bdbe3d57a90b7a5de9b8e41a4a1ea9fd3f9aa17e1d340c7c526bb25bc92e8fdd",
+      "src/software_factory/data/skills/factory-verify/SKILL.md": "6031f7fe9d1dac94792b359f79048bb2f929b5becba9e8d44d2924b4f43384e7",
+      "src/software_factory/data/templates/ci-python.yml.in": "3493ebe2db03efd55c177ff6297d57e5a139e462f8e4a52622195d032b5b0896",
+      "src/software_factory/data/templates/decision.md": "90d0126b72a020ec05dfc9ad2351662888d6db698fc51ac10513cffec5bb5e7d",
+      "src/software_factory/data/templates/handoff.md": "b31cb67c8697e666ec4d428c9d855b483ab1f1aa2361fe5b67aa866ab4a6dc3e",
+      "src/software_factory/data/templates/mission.json": "ec8c220370d356d8579e0c392fb6846cd46da3b89bda1a422df29bb09161fe3f",
+      "src/software_factory/data/templates/plan.md": "dc3d7e012dd76975fea57e95af93665ee458745e427175a9ae500fad568e1c87",
+      "src/software_factory/data/templates/pull-request.md": "4c176ef198ff5419b8ce10e8ebabff0337876ee60605dbe3b4f0d97a8c93eaf1",
+      "src/software_factory/data/templates/recovery.md": "b18effd71e901929ad7f9eaf5974f93d0171d7cf1d06c18d75f1942cccb4a10f",
+      "src/software_factory/data/templates/release.md": "1a50698c2f04d665b44f94a3b65e5c1ff7065ce8c4c4998d2f62fac2eda10f16",
+      "src/software_factory/data/templates/review.md": "6bf9a054eac089b5196e52ac3ec11fccc06240e77ad0beaf29d6ce893e88ce5d",
+      "src/software_factory/data/templates/spec.md": "a5095a1287dafc72264012987529d1d2cbff35d71d45dfe658df35a618539b23",
+      "src/software_factory/data/vendors/claude.json": "6167d51d06d7d33517a042a74d66505de26b6e8c49f8f30f59e6a5455f04df80",
+      "src/software_factory/data/vendors/codex.json": "f745e104112389992007a6a64330fb59b547daceb85c937b11fd224b45840b34",
+      "src/software_factory/data/vendors/copilot.json": "3fb0f6b55593c733706942bfc56fa14da56c74d6595f35c21f3fa6f0ca050727",
+      "src/software_factory/data/workflow.json": "cda8235b81c43d50f77abaaa09d7a0586040e6072c2792977dad61473489e8ab",
+      "src/software_factory/evidence.py": "5219d0175a5263fa2b4116d9e6654e6f33bf3560745300c1eec71ff2cf678e6d",
+      "src/software_factory/installation.py": "5f4318482ea1594ea80320471fe6a45a34b6a1c18a6901c2fb0e3d0f69685191",
+      "src/software_factory/jev.py": "acca9fe1b5341f050a63a1c49df89008a9b6311bda2c21ae877fd11958f0362f",
+      "src/software_factory/models.py": "a9e1bff646e26b37b511effe26383bb7509978acfa8a026d025c82a6e577677b",
+      "src/software_factory/rendering.py": "dd134e45f41d9f02e8857ab55308d5d3078f686048deebff5111209f6e3c6fcf",
+      "src/software_factory/routing.py": "68e78c63396a3c44bd0e37c66abffa664ad6944172317145e92bdb8b265c7dbc",
+      "src/software_factory/semantic.py": "431ec2986211ae3273c9d9609a72f2840ce3bdd8db9e5571ebe5ff4577b6e2c6",
+      "src/software_factory/transactions.py": "b7b1dd6eef81ccc0bbcf03edc011be6e3142c8d470456a80e9b40fa608c54b7b",
+      "src/software_factory/workflow.py": "58caa58bcd842a5a1df4c7b82762267f4504b9015813d2e426b681d25777552b",
+      "tests/test_checks.py": "cbe00cf21b554dec36cddcd64314c3fad3112cc677aa59a4fde92b2f440e401f",
+      "tests/test_cli.py": "99fc3371ec641c9b31e750155ed399bda2e552cdefbe9d7b79ff36b95c6c508b",
+      "tests/test_installation.py": "37913aed1867284ce1ceb553fb6b38b8d466d5258f61858526517774760d6ae1",
+      "tests/test_jev.py": "57a29f1fbd712bfe56d7bc6e07b64a6f077e997890545b2179931bb1262194a0",
+      "tests/test_models.py": "00c98343e84acc2179614de7b062ec398fa81246e65ed9f8b1de28f784127f9a",
+      "tests/test_native_package.py": "a3f97ba0aea12a16790d1d92ec022515ec46de65613e563ccbcdef31fcb0d760",
+      "tests/test_routing.py": "7fc6e2d8404fbb74be29262ab4896ae0a9108de4db84b85418db0676f84b30cc",
+      "tests/test_semantic.py": "6bb056a7beeab983b1fb294f1ce1c3bf02dea86a32e3a82067b540fa3f68d755",
+      "tests/test_workflow.py": "381deaaf5b5fe9a59c00bc119ddf01c5eb4216cec271e86cdb51914f87d89914",
+      "uv.lock": "8e267abcc254b5b813cb0639946716b97d6c2670414b0015e5600b8cc5219ea5"
+    },
+    "excluded": "docs/architecture*.md and docs/architecture/** are written by another session; not part of this reviewed identity or of the artifacts"
+  },
+  "artifacts": {
+    "software_factory-0.2.6-py3-none-any.whl": {
+      "sha256": "c54d7b07290dc7feb78547bd358da3780d6db47e28e361bb3e83207a3328727c",
+      "bytes": 257517
+    },
+    "software_factory-0.2.6.tar.gz": {
+      "sha256": "f7a769016c8f024249ae41dc65bfb4414cf6ef01b41fa963537ac3de2a9fab92",
+      "bytes": 281706
+    }
+  },
+  "checks": [
+    {
+      "command": "uv sync --locked",
+      "outcome": "pass"
+    },
+    {
+      "command": "uv run pytest -q",
+      "python": "3.14.4",
+      "outcome": "pass",
+      "tests": 303,
+      "subtests": 115
+    },
+    {
+      "command": "UV_PROJECT_ENVIRONMENT=<scratch>/venv311c uv sync --locked --python 3.11; <venv>/bin/python -m pytest -q",
+      "python": "3.11.16",
+      "outcome": "pass",
+      "tests": 303,
+      "subtests": 115
+    },
+    {
+      "command": "uv run ruff check .; uv run ruff format --check .",
+      "outcome": "pass",
+      "formatted_files": "all Python and Markdown files (ruff 0.16.9 also checks Markdown)"
+    },
+    {
+      "command": "uv build --no-sources",
+      "outcome": "pass",
+      "reproducible": "main-tree build byte-identical to disposable-copy build"
+    },
+    {
+      "command": "uv run python scripts/release_smoke.py dist/software_factory-0.2.6-py3-none-any.whl",
+      "outcome": "pass",
+      "wheel_entries": 118,
+      "node_available": false,
+      "checks": [
+        "isolated wheel installation",
+        "hydration, dispatch, profiles, preservation, links, reinstall",
+        "upgrade no-op, relinquished export, downgrade refusal, crash recovery, drift, reinstall",
+        "JEV toggle and offline plan validation (mocked provider)"
+      ]
+    },
+    {
+      "command": "wheel content inspection",
+      "outcome": "pass",
+      "excludes": [
+        "Node files",
+        "bytecode",
+        "private .factory/local records",
+        "removed installed-*.md.in templates"
+      ]
+    },
+    {
+      "command": "upgrade experiment 0.2.0 -> 0.2.x (isolated venvs, disposable repos)",
+      "outcome": "pass",
+      "notes": "repo without missions and with a PROPOSED mission upgrades; 0.2.0 evidence lacking sequence is blocked with actionable message and no changes"
+    },
+    {
+      "command": "sha256sum -c SHA256SUMS",
+      "cwd": "dist",
+      "outcome": "pass"
+    }
+  ],
+  "independent_reviews": [
+    {
+      "scope": "end-to-end review of 0.2.0 (packaging, JEV, workflow/evidence, context/concurrency/security) with adversarial challenge pass",
+      "outcome": "findings P1-P9 and documentation claims; see fix set"
+    },
+    {
+      "scope": "fix specialists in separate /tmp workspaces with disjoint file ownership: workflow/evidence, lifecycle/CLI, JEV routing, docs; root integration with preimage hash checks",
+      "outcome": "integrated"
+    },
+    {
+      "scope": "independent cross-review of integrated diff (64 files) including 0.2.0->0.2.1 upgrade experiment",
+      "outcome": "1 high, 2 medium, 4 low found; fixed by a separate specialist"
+    },
+    {
+      "scope": "independent re-verification of high/medium fixes",
+      "outcome": "verified; no blocking issues"
+    },
+    {
+      "scope": "closing round: history validation of new schemas, factory.json without missions, symlink refusal under missions, doctor entry_skill_replaced/entry_skill_missing; independently verified",
+      "outcome": "verified; no blocking issues"
+    },
+    {
+      "scope": "leftover removal: global --json compatibility flag, init --to, constitution_path argument, duplicate semantic --root, unused JEV_ENDPOINT; version 0.2.3",
+      "outcome": "full release gates pass"
+    },
+    {
+      "scope": "0.2.4: uninstall unmarks edited shared sections (reinstall works), actionable Codex key conflict, doc corrections verified against code",
+      "outcome": "verified; no blocking issues"
+    },
+    {
+      "scope": "0.2.6: official TypeSafe guidance adopted \u2014 bounded retries (<=2 on 408/429/529/5xx/connection errors within deadline), model-selection confidence gate (jev.min_confidence 0.6 -> unresolved), claim review threshold (jev.claim_accept_confidence 0.8 -> needs_review), README key/skill guidance; verified with fake local HTTP server and tamper tests",
+      "outcome": "verified; no blocking issues; one doc wording defect fixed before release"
+    }
+  ],
+  "defaults": {
+    "jev.enabled": false,
+    "jev.claim_mode": "shadow",
+    "delivery": "disabled",
+    "product_checks": "deliberately failing placeholder until configured"
+  },
+  "not_run": [
+    "paid JEV inference and selection-quality calibration",
+    "authenticated interactive Claude/Codex/Copilot discovery",
+    "macOS/Windows validation",
+    "remote registry/CI/deployment",
+    "real macOS/Windows file-monitor behaviour (simulated only)"
+  ],
+  "known_limitations": [
+    "Local records remain local-unattested: evidence, reviews, decisions and CI references are caller-supplied and not authenticated",
+    "A replaced entry-point skill fails doctor (entry_skill_replaced) but is not a gate reason",
+    "Symlink refusal under .factory/missions runs during upgrade history validation (when a relevant schema changes); ordinary commands use safe_path on the records they read"
+  ],
+  "restart_record": "docs/restart-record.json",
+  "original_checkout": "/home/reshif/software-factory",
+  "original_revision": "e1dfd9327a21568763cf0c933843d976e50c680d",
+  "original_working_tree": "Existing modified and untracked work preserved; no reset or cleanup",
+  "constitution_version": "1.0.0",
+  "constitution_sha256": "a390c46c67dede90573750f98ba3cb9b3fdde3cd167a8da8347e21d9086a4e78",
+  "installed_cli": {
+    "path": "/home/reshif/.local/bin/software-factory",
+    "version": "0.2.6",
+    "command": "uv tool install --reinstall dist/software_factory-0.2.6-py3-none-any.whl (cwd /tmp)",
+    "post_install_check": "fresh repo init --profile claude,codex,copilot; doctor ok; edited AGENTS.md section -> uninstall unmarks -> init adds fresh block, edit kept",
+    "rollback": "previous artifacts archived under /tmp/software-factory-previous-dist-*.tar.gz"
+  },
+  "deferred": [
+    "factory.json keys completion_target, parallel_writers and evidence_exclude are documented as informational (kept to avoid a data-format migration)"
+  ],
+  "previous_releases": [
+    {
+      "version": "0.2.0",
+      "source_identity": "dc5d78f76fd75e28cdd8f12f3de83b574ea8a352b632dec65604475f2eba8014",
+      "artifacts": {
+        "software_factory-0.2.0-py3-none-any.whl": "ecc3326e4bc4748dda9b0a5493f1959edfa8e64daa34c55823c72b865cceac1b",
+        "software_factory-0.2.0.tar.gz": "7112a1f226a62998f77351d210788778cb95a4d8bc6c19e537ea9506767820ae"
+      }
+    },
+    {
+      "version": "0.2.5",
+      "artifacts": {
+        "software_factory-0.2.5-py3-none-any.whl": "c45e14e7e489dd5509361e76fa8870768d9ff8901d2ee07b9de1c45c2d168192",
+        "software_factory-0.2.5.tar.gz": "93e91c411d9b149099163ae05b237061db7adcc036a37009cc8e5f5b5ff69cd1"
+      }
+    },
+    {
+      "version": "0.2.4",
+      "artifacts": {
+        "software_factory-0.2.4-py3-none-any.whl": "96b6f55ad5c36ba156f8c59dd223a71873c604c35872adaa594a69f5190e65e5",
+        "software_factory-0.2.4.tar.gz": "d2e9de6d88c661c9b444c365e2a1d92c654e17b3c629ee4b1e5a01552bc66e53"
+      }
+    },
+    {
+      "version": "0.2.3",
+      "artifacts": {
+        "software_factory-0.2.3-py3-none-any.whl": "fb63da0239c0b22b7398beaccfa3804e162d8f5e49ca4c15ded8d8512cea884b",
+        "software_factory-0.2.3.tar.gz": "8fefbe4d6efd68dc004779fd11b6c7d639a1e25616918ecee08b0ca6d414508e"
+      }
+    },
+    {
+      "version": "0.2.1",
+      "status": "internal candidate, superseded by 0.2.3; not released"
+    }
+  ],
+  "official_guidance": {
+    "source": "https://docs.typesafe.ai (read 2026-09-27)",
+    "access": "direct HTTP API (documented official method); official typesafe-sdk not adopted to avoid 5 runtime dependencies and alias/base-URL defaults",
+    "mcp": "no official TypeSafe MCP server exists; third-party servers not adopted"
+  }
+}

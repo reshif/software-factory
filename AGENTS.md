@@ -1,0 +1,3 @@
+# Python software-factory build
+
+The user authorized a Python/uv port of /home/reshif/software-factory, built cleanly here. Preserve the original checkout. Follow its constitution 1.0.0 and accepted packaging specification, amended for Python/uv. One writer per workspace; parallel specialists use separate /tmp workspaces and root integrates their disjoint files. No Node runtime in distributions. Use uv sync --locked, uv run pytest, uv run ruff check, uv build, and isolated wheel installation checks. No publication or live paid inference without actual authority. Keep user files intact during init/upgrade/uninstall. Do not weaken gates or pretend unavailable native-client/OS checks passed.

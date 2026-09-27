@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "adapters",
+    "roles",
+    "skills",
+    "entries"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "adapters": {
+      "const": [
+        "claude",
+        "codex",
+        "copilot"
+      ]
+    },
+    "roles": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "description",
+          "capability",
+          "skill"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+            "maxLength": 48
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "capability": {
+            "enum": [
+              "read",
+              "verify",
+              "write"
+            ]
+          },
+          "skill": {
+            "type": "string",
+            "pattern": "^factory-[a-z0-9]+(-[a-z0-9]+)*$",
+            "maxLength": 64
+          }
+        }
+      }
+    },
+    "skills": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 11,
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "pattern": "^factory-[a-z0-9]+(-[a-z0-9]+)*$",
+        "maxLength": 64
+      }
+    },
+    "entries": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 4,
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "pattern": "^factory-[a-z0-9]+(-[a-z0-9]+)*$",
+        "maxLength": 64
+      }
+    }
+  }
+}

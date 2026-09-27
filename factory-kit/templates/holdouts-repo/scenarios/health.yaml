@@ -1,7 +1,0 @@
-name: healthz reports ok
-request:
-  method: GET
-  path: /healthz
-expect:
-  status: 200
-  body_contains: ok

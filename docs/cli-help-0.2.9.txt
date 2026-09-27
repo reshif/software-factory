@@ -1,0 +1,47 @@
+usage: software-factory [--root PATH] COMMAND [OPTIONS]
+
+Software Factory 0.2.9
+Set up coding agents, manage missions, and verify project work.
+
+options:
+  -h, --help   show this help message and exit
+  --version    Show the CLI version
+  --root PATH  Select a project; accepted before or after any command
+
+Project setup:
+  inspect         Inspect a project and suggest checks without changing files
+  doctor          Diagnose setup, configuration, and runtime problems
+  init            Initialize a project with native agent profiles
+  upgrade         Upgrade a project's installed factory to this release
+  uninstall       Remove factory-owned files while preserving user changes
+  render          Regenerate native agent instructions
+  recover         Inspect or recover an interrupted factory file operation
+
+Credentials:
+  auth            Save, inspect, or remove your TypeSafe API key
+
+Models and assistance:
+  models          Discover models and plan assignments; no settings changed
+  semantic (jev)  Assess claim support with JEV (advisory; off by default)
+  triage          Explain check failures with JEV (advisory; off by default)
+
+Missions and evidence:
+  mission         Manage recoverable mission records
+  status          Show mission status without starting work
+  checks          Run configured setup and product checks
+  verify          Run checks and record mission verification evidence
+  gate            Assess readiness without changing mission state
+  packet          Prepare local PR, handoff, release, or recovery packets
+
+Information:
+  version         Show version and Python runtime details as JSON
+
+Examples:
+  software-factory init . --profile codex
+  software-factory doctor --root /path/to/project
+  software-factory auth login
+  software-factory status
+
+Learn more:
+  software-factory COMMAND --help
+  software-factory auth login --help

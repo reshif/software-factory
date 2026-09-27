@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "protected_paths": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "factory.json",
+    "factory.lock.json",
+    ".factory/policy.json",
+    ".factory/workflow.json",
+    ".factory/roles/**",
+    ".factory/skills/**",
+    ".factory/schemas/**",
+    ".factory/vendors/**",
+    ".factory/templates/**",
+    ".factory/prompts/**",
+    ".github/**",
+    ".claude/**",
+    ".codex/**",
+    ".agents/**",
+    ".factory/models/**",
+    ".factory/registry.json",
+    ".factory/installation.json",
+    ".factory/CONSTITUTION.md",
+    ".factory/src/**",
+    ".factory/pyproject.toml",
+    ".factory/uv.lock",
+    ".factory/run.py",
+    ".factory/docs/**"
+  ],
+  "sensitive_paths": [
+    "src/auth/**",
+    "migrations/**",
+    "tests/fixtures/**"
+  ],
+  "required_decisions": [
+    "scope"
+  ],
+  "sensitive_decision": "exception"
+}

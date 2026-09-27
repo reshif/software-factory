@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "adapters": [
+    "claude",
+    "codex",
+    "copilot"
+  ],
+  "roles": [
+    {
+      "name": "planner",
+      "description": "Investigate requirements and propose bounded tasks and acceptance checks.",
+      "capability": "read",
+      "skill": "factory-plan"
+    },
+    {
+      "name": "implementer",
+      "description": "Implement one assigned task within its agreed paths and acceptance criteria.",
+      "capability": "write",
+      "skill": "factory-implement"
+    },
+    {
+      "name": "verifier",
+      "description": "Execute configured checks and report revision-bound evidence without weakening checks.",
+      "capability": "verify",
+      "skill": "factory-verify"
+    },
+    {
+      "name": "reviewer",
+      "description": "Independently inspect the assigned revision, requirements and evidence; report findings.",
+      "capability": "read",
+      "skill": "factory-review"
+    }
+  ],
+  "skills": [
+    "factory-start",
+    "factory-models",
+    "factory-specify",
+    "factory-plan",
+    "factory-implement",
+    "factory-verify",
+    "factory-review",
+    "factory-repair",
+    "factory-handoff",
+    "factory-release",
+    "factory-recover",
+    "factory-semantic"
+  ],
+  "entries": [
+    "factory-build",
+    "factory-blueprint",
+    "factory-resume",
+    "factory-status"
+  ]
+}

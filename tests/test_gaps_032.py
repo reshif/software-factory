@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from test_mission_030 import assess_gate, brief, plan_mission, put, repo  # noqa: F401  (fixture)
+from test_mission_030 import assess_gate, brief, cli, plan_mission, put, repo  # noqa: F401  (fixture)
 
 from software_factory.core import FactoryError
 
@@ -44,3 +44,52 @@ def test_maintenance_mission_may_be_briefed_with_changed_controls(repo):  # noqa
     id = plan_mission(repo, kind="maintenance", owned=("**",))
     put(repo, "src/.claude/settings.json", "{}\n")
     assert brief(repo, id, "context")["path"].endswith("context.md")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/security/auth.py",
+        "app/auth.py",
+        "src/auth/session.py",
+        "pkg/billing/invoice.py",
+        "pkg/payments/charge.py",
+        "db/migrations/0001_init.sql",
+        "infra/main.tf",
+    ],
+)
+def test_security_billing_and_infrastructure_paths_are_sensitive_by_default(repo, path):  # noqa: F811
+    """F-5: the default policy treats common security, money and infrastructure code as sensitive."""
+    id = plan_mission(repo, owned=("**",))
+    put(repo, path, "CHANGED = True\n")
+    risk = cli(repo, "mission", "risk", "--mission", id)
+    assert f"Sensitive path changed: {path}" in risk["reasons"]
+    assert risk["tier"] == "high"
+
+
+@pytest.mark.parametrize(
+    "path, content",
+    [
+        ("tests/test_extra.py", "import pytest\n\n\n@pytest.mark.skip\ndef test_a():\n    assert 1\n"),
+        ("tests/test_extra.py", "import pytest\n\n\n@pytest.mark.xfail\ndef test_a():\n    assert 1\n"),
+        ("tests/test_extra.py", "def test_a():\n    import pytest\n    pytest.skip('later')\n"),
+        ("web/app.test.js", "it.skip('works', () => { expect(1).toBe(1) })\n"),
+        ("web/app.spec.ts", "describe.skip('suite', () => {})\n"),
+    ],
+)
+def test_added_skip_or_xfail_marker_raises_risk(repo, path, content):  # noqa: F811
+    """F-5: disabling a test by adding a marker is test weakening even though lines were added."""
+    id = plan_mission(repo, owned=("**",))
+    put(repo, path, content)
+    risk = cli(repo, "mission", "risk", "--mission", id)
+    assert f"Test skip or expected-failure marker added: {path}" in risk["reasons"]
+    assert risk["tier"] == "high"
+
+
+@pytest.mark.parametrize("path", ["conftest.py", "tests/conftest.py", "pytest.ini", "jest.config.js"])
+def test_test_runner_configuration_change_raises_risk(repo, path):  # noqa: F811
+    id = plan_mission(repo, owned=("**",))
+    put(repo, path, "# changed\n")
+    risk = cli(repo, "mission", "risk", "--mission", id)
+    assert f"Test runner configuration changed: {path}" in risk["reasons"]
+    assert risk["tier"] == "high"

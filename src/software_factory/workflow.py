@@ -1412,6 +1412,28 @@ def _policy_paths(value, key, default=()):
     return set(items)
 
 
+# Markers that disable a test or accept its failure; adding one weakens tests even when lines are added.
+SKIP_MARKERS = re.compile(
+    r"@pytest\.mark\.(?:skip|skipif|xfail)\b|\bpytest\.(?:skip|xfail|importorskip)\("
+    r"|@unittest\.(?:skip|skipIf|skipUnless|expectedFailure)\b|\bself\.skipTest\("
+    r"|\b(?:it|test|describe|context|suite)\.(?:skip|todo|failing)\(|\bx(?:it|describe|test)\("
+    r"|\bt\.Skip(?:f|Now)?\(|#\[ignore\]|@(?:Disabled|Ignore)\b"
+)
+# Test-runner configuration (by file name) that can change what runs or passes.
+TEST_CONFIG_FILES = (
+    "conftest.py",
+    "pytest.ini",
+    "tox.ini",
+    "noxfile.py",
+    ".coveragerc",
+    "jest.config.*",
+    "vitest.config.*",
+    "karma.conf.*",
+    ".mocharc*",
+    "playwright.config.*",
+    "cypress.config.*",
+    "phpunit.xml*",
+)
 ASSERTION_MARKERS = re.compile(
     r"\bassert\b|\bexpect\(|\.should|assertEqual|assertTrue|assertRaises|pytest\.raises"
     r"|\bt\.(?:Error|Fatal)|\brequire\.[A-Z]"
@@ -1427,9 +1449,9 @@ def _patch_path(token):
     return None if token == "/dev/null" else token[2:]
 
 
-def removed_lines(patch):
-    """Removed content lines of a unified patch, per repository path."""
-    removed, path, old = {}, None, None
+def _patch_lines(patch, sign):
+    """Content lines of a unified patch that start with sign ("-" or "+"), per repository path."""
+    lines, path, old = {}, None, None
     for raw in patch.decode("utf-8", "replace").splitlines():
         if raw.startswith("diff --git "):
             path = old = None
@@ -1437,9 +1459,19 @@ def removed_lines(patch):
             old = _patch_path(raw[4:].rstrip("\t"))
         elif path is None and raw.startswith("+++ "):
             path = _patch_path(raw[4:].rstrip("\t")) or old
-        elif path and raw.startswith("-"):
-            removed.setdefault(path, []).append(raw[1:])
-    return removed
+        elif path and raw.startswith(sign):
+            lines.setdefault(path, []).append(raw[1:])
+    return lines
+
+
+def removed_lines(patch):
+    """Removed content lines of a unified patch, per repository path."""
+    return _patch_lines(patch, "-")
+
+
+def added_lines(patch):
+    """Added content lines of a unified patch, per repository path."""
+    return _patch_lines(patch, "+")
 
 
 def check_scripts(root, mission, config):
@@ -1480,6 +1512,7 @@ def assess_risk(root, mission, candidate=None, config=None):
     changed = [p for p in candidate["changed_paths"] if not is_metadata(p)]
     diff = candidate_diff(root, mission["base_commit"], changed)
     removed_by_path = removed_lines(diff["patch"])
+    added_by_path = added_lines(diff["patch"])
     scripts = check_scripts(root, mission, config)
     # Diff reasons (e.g. a text file the attributes mark binary, hiding its line stats) raise the tier.
     reasons, size = list(diff.get("reasons", [])), 0
@@ -1501,6 +1534,10 @@ def assess_risk(root, mission, candidate=None, config=None):
             reasons.append(f"Test file has net removed lines: {path} (+{added} -{removed})")
         if is_test and any(ASSERTION_MARKERS.search(line) for line in removed_by_path.get(path, [])):
             reasons.append(f"Test assertions removed: {path}")
+        if is_test and any(SKIP_MARKERS.search(line) for line in added_by_path.get(path, [])):
+            reasons.append(f"Test skip or expected-failure marker added: {path}")
+        if any(matches_path(name, p) for p in TEST_CONFIG_FILES):
+            reasons.append(f"Test runner configuration changed: {path}")
         if path in scripts:
             reasons.append(f"Check command script changed: {path}")
 

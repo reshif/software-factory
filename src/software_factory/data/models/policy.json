@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "kind": "policy",
+  "guidance_max_age_days": 7,
+  "catalog_max_age_hours": 24,
+  "allowed_providers": [],
+  "denied_models": [],
+  "allow_preview": false,
+  "preferences": {
+    "complex": [
+      "openai-astra",
+      "anthropic-opus",
+      "openai-sol",
+      "anthropic-fable"
+    ],
+    "coding": [
+      "openai-sol",
+      "anthropic-sonnet",
+      "anthropic-opus",
+      "openai-astra"
+    ],
+    "bounded": [
+      "openai-luna",
+      "anthropic-haiku",
+      "openai-sol",
+      "anthropic-sonnet"
+    ],
+    "review": [
+      "openai-astra",
+      "anthropic-opus",
+      "openai-sol",
+      "anthropic-sonnet"
+    ]
+  },
+  "role_intents": {
+    "orchestrator": "complex",
+    "planner": "complex",
+    "implementer": "coding",
+    "verifier": "bounded",
+    "reviewer": "review",
+    "support": "bounded"
+  }
+}

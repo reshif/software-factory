@@ -1,9 +1,0 @@
-name: creating an item echoes its name
-request:
-  method: POST
-  path: /items
-  json:
-    name: scenario-item
-expect:
-  status: 201
-  body_contains: scenario-item

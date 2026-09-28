@@ -1,0 +1,44 @@
+%%{init: {"theme":"base","look":"classic","fontFamily":"Arial, sans-serif","themeVariables":{"fontFamily":"Arial, sans-serif","fontSize":"15px","lineColor":"#64748B","primaryTextColor":"#0F172A","edgeLabelBackground":"#F8FAFC"},"flowchart":{"curve":"basis","htmlLabels":true,"nodeSpacing":35,"rankSpacing":60,"wrappingWidth":280}}}%%
+flowchart TB
+  subgraph selection["MODEL SELECTION · executable plan contract"]
+    request["Task request + current client catalog<br/>Profile · session · capabilities · effort"]:::data
+    discovery["Optional Codex app-server discovery<br/>initialize → model/list only"]:::external
+    eligible["models.py eligibility<br/>Availability · operation · identity · context<br/>Policy · lifecycle · cost · freshness"]:::gate
+    toggle{"JEV selection enabled?"}:::gate
+    deterministic["Factory selector<br/>Reviewed recommendations + explicit preferences"]:::runtime
+    jevselect["routing.py bounded candidate Choice<br/>Explicit preferences bypass provider<br/>No failure fallback to another selector"]:::advisory
+    receipt[("Model plan + routing receipt<br/>Input / contract hashes + assignments<br/>Stored responses for offline replay")]:::data
+    dispatch["models dispatch<br/>Return native settings, applied = false"]:::runtime
+    client["Native client applies settings and runs work"]:::actor
+    observation[("Task attempt + result observation<br/>Requested versus observed identity")]:::data
+    calibration["calibration.py<br/>Private comparable-cohort summaries"]:::runtime
+    request --> eligible
+    discovery --> request
+    eligible --> toggle
+    toggle -->|OFF| deterministic --> receipt
+    toggle -->|ON| jevselect --> receipt
+    receipt --> dispatch -.-> client
+    client -.->|caller records observation| observation --> calibration
+  end
+  subgraph claims["CLAIM ASSISTANCE · separate advisory path"]
+    packet["Explicit claim / source packet<br/>Supplied excerpts + IDs + hashes + locators"]:::data
+    preflight["semantic.py<br/>Toggle · mode · no-network · cancellation<br/>Freshness · rubric · byte and pair bounds"]:::gate
+    claimrequest["At most one provider call<br/>Five claim-to-source relations"]:::advisory
+    report[("Private cache + redacted report<br/>Shadow withholds judgment details<br/>Advisory exposes them to the caller")]:::data
+    caller["Caller reasons about returned findings<br/>No import into readiness gates"]:::actor
+    packet --> preflight --> claimrequest --> report -.-> caller
+  end
+  transport["jev.py · shared strict HTTPS transport<br/>Fixed endpoint · deadline · size limits<br/>Strict JSON / Choice validation · no retries"]:::advisory
+  api["api.typesafe.ai/v1/systemone<br/>TYPESAFE_API_KEY from environment"]:::external
+  jevselect --> transport
+  claimrequest --> transport --> api
+  style selection fill:#EFF6FF,stroke:#93C5FD,stroke-width:1px
+  style claims fill:#EEF2FF,stroke:#A5B4FC,stroke-width:1px
+
+  classDef actor fill:#EDE9FE,stroke:#6D28D9,color:#3B0764,stroke-width:2px;
+  classDef runtime fill:#DBEAFE,stroke:#1D4ED8,color:#172554,stroke-width:1.5px;
+  classDef data fill:#CCFBF1,stroke:#0F766E,color:#134E4A,stroke-width:1.5px;
+  classDef gate fill:#FEF3C7,stroke:#B45309,color:#451A03,stroke-width:2px;
+  classDef external fill:#F1F5F9,stroke:#475569,color:#0F172A,stroke-width:1.5px;
+  classDef advisory fill:#E0E7FF,stroke:#4338CA,color:#312E81,stroke-width:1.5px;
+  classDef stop fill:#FFE4E6,stroke:#BE123C,color:#881337,stroke-width:2px;

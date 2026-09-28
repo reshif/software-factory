@@ -1,0 +1,42 @@
+# Delivery and recovery integration
+
+The default factory stops at READY_PR and has `delivery.enabled` set to false. It prepares local evidence and packets; it does not create a deployment platform, hold credentials, authenticate approvals or continuously observe production. Delivery uses an existing product pipeline configured and authorized by its owners.
+
+READY_PR means local evidence is consistent (local-unattested). Evidence JSON, decision records, reviews and `mission ci-result` URLs/conclusions are caller-supplied and not authenticated; the CI URL is not checked. Authoritative assurance requires branch protection and remote CI that itself re-runs `software-factory checks --require-clean` (or the product checks). Set `owners.maintainer` and `owners.reviewer` for the humans involved: without a maintainer, self-review is not detected, so use a separate reviewer context. `owners.reviewer` only affects a `doctor` warning; no gate uses it. Files under `.factory/missions/` that are not factory records (mission.json, spec/plan/decisions/handoff/recovery markdown, packets, `results/`, `evidence/<rev>/checks.json`, `models/<id>.json`) are candidate content and block the gate. Product checks run without `TYPESAFE_API_KEY`. A task whose checks fail after it left RUNNING must go back through RUNNING, spending a repair attempt, before it can be DONE. Mission `--input` paths are repository-root-relative (for example under `.factory/local/`). Missions in DELIVERED, RECOVERED or CANCELED accept no further records.
+
+## Configure the real product process
+
+Identify the actual repository, required GitHub checks/reviews, staging and production targets, immutable artifact identity, deployment commands and recovery command. Supply credentials through the existing CI/deployment system, never mission files. Define owners and decision references for merge, release and recovery. Check what the actual GitHub account and repository enforce.
+
+Configure real validation: staging user flows, health checks, observation window, failure triggers and code/data recovery. Hidden holdouts require a separate inaccessible test path and runner; keeping a file elsewhere in the same agent-readable repository does not hide it.
+
+The state machine can record delivery stages only when delivery is enabled and required external references exist. Use `software-factory mission record-delivery --mission ID --input PATH` with the schema's delivery fields: `pr_ref`, `merge_ref`, `artifact_digest`, `staging_ref`, `release_ref`, `recovery_ref`, `deployment_ref`, `observation` (`{ref, status}`), `incident_ref`, `recovery_observation` and `follow_up_mission`. CI results use `software-factory mission ci-result` instead. A local transition records progress; it does not prove a remote mutation happened. Verify the external artifact, operation and decision before writing the record.
+
+## Follow the lifecycle
+
+1. Commit the candidate before verification, task results and review, then establish READY_PR for that commit. The candidate fingerprint includes HEAD, so a commit made after READY_PR makes the evidence stale. READY_PR is local, unattested evidence (constitution rule 20). Open a remote PR only through authorized tooling and optionally record `pr_ref`.
+2. Inspect remote CI on the actual candidate commit; the recorded URL and conclusion are your assertion, not a verified CI result. Record it with `software-factory mission ci-result --mission ID --url URL --head SHA --conclusion success|failure [--reason TEXT]`. Success requires a passing gate, a clean working tree, `SHA` equal to HEAD, and HEAD on a work branch whose commit is not already on the trunk. With a remote the trunk must be remote-tracking (`--trunk origin/BRANCH` or `origin/HEAD`); a repository without remotes uses local `main`/`master`. The trunk is recorded and reused at MERGED. A failure needs `--reason` and returns the mission to IMPLEMENTING.
+3. Obtain the required human review and observe the actual merge. Record a `merge` decision bound to the CI candidate fingerprint and `merge_ref` (the merge commit SHA, fetched locally), then transition to MERGED. The tool refuses a merge commit that is missing, not reachable from the recorded trunk, older than the mission base, the unintegrated candidate itself, or whose changed files differ from the CI candidate. These local checks are forgeable; branch protection and required CI are authoritative. From MERGED on, `software-factory gate` and `status` verify against the merge commit.
+4. Use the existing pipeline to build an identified artifact and stage that artifact. Record staging execution and required validation results.
+5. Prepare the authored release record from `.factory/templates/release.md`: artifact, target, staging evidence, actual decision and recovery path. `software-factory packet --mission ID --kind release` generates a separate `release-packet.md` when delivery is enabled and artifact/staging references exist. It never executes deployment commands. Revalidate when the subject changes. DEPLOYING requires `recovery_ref`.
+6. Promote the same artifact only under the actual release authority. Observe configured health and user-flow outcomes and record `observation` with `status: healthy` before declaring DELIVERED. An unhealthy observation cannot reach DELIVERED.
+
+GitHub can accept successful, skipped or neutral conclusions for required status checks. When the requirement is that tests ran and passed, configure a required check that verifies that condition rather than relying on the job's name. Branch-protection setup remains an external prerequisite. [GitHub protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches).
+
+## Recover from failure
+
+Use the actual recovery trigger and previously authorized action. A standing recovery decision can be sufficient; do not repeatedly ask for authorization already given. Expanded access or destructive data work outside that decision requires a new concrete decision before action.
+
+Inspect current external state before retries. Identify whether the action disables a flag, rolls back an artifact, repairs data or applies a forward fix. Code rollback does not automatically reverse schema or data changes.
+
+Record `incident_ref` and a `recovery` decision whose reference is `recovery_ref` and whose subject is the artifact digest, then transition DEPLOYING or OBSERVING → RECOVERING. Record attempted action, operation ID, observed outcome and post-recovery checks using `.factory/templates/recovery.md`. RECOVERED requires a healthy `recovery_observation` and a `follow_up_mission` ID for the repair work; if recovery cannot be verified, use `software-factory mission block` with the reason. With enabled delivery, artifact and recovery references, `software-factory packet --mission ID --kind recovery` prepares `recovery-packet.md` without executing the operation. Preserve incident evidence and open appropriate follow-up work. Restored service on the previous artifact does not mean the failed feature was delivered.
+
+## Validation boundary
+
+This repository's local tests cover records, transitions and evidence preparation in temporary repositories. They do not validate a real deployment environment. Enable delivery only after the product's authenticated staging, promotion and recovery exercises are recorded; until then report it as unconfigured.
+
+## Refresh checks after integration
+
+Accepted CI evidence and completed task result links remain fixed. Later verification runs use the exact recorded CI candidate; the latest failure blocks forward delivery even if an older run passed. To replace missing local logs or recheck the candidate from a merge/squash checkout, follow [post-merge verification reconciliation](resume-and-switch.md#restore-post-merge-verification). A held mission stays held until explicitly resumed; checking evidence never starts deployment.
+
+Optional [failed-check triage](check-triage.md) can suggest where to start diagnosing a failed check; it is advisory only and never changes repair budgets, evidence or gates.

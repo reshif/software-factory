@@ -1,0 +1,12 @@
+# Optional example; review action pins and product settings before installing.
+name: Product checks
+on: [push, pull_request]
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --no-dev --project .factory
+      - run: uv run --locked --project .factory software-factory render --check
+      - run: uv run --locked --project .factory software-factory checks --require-clean

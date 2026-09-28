@@ -1,0 +1,354 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "name",
+    "profile",
+    "completion_target",
+    "work_types",
+    "limits",
+    "checks",
+    "owners",
+    "delivery",
+    "evidence_exclude"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "profile": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/profile"
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/profile"
+          }
+        }
+      ]
+    },
+    "completion_target": {
+      "enum": [
+        "READY_PR",
+        "DELIVERED"
+      ]
+    },
+    "work_types": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "feature",
+          "patch",
+          "maintenance"
+        ]
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repair_attempts",
+        "parallel_writers",
+        "check_timeout_seconds"
+      ],
+      "properties": {
+        "repair_attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20
+        },
+        "parallel_writers": {
+          "const": 1
+        },
+        "check_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "check_output_bytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 67108864
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "command",
+          "cwd",
+          "required",
+          "timeout_seconds"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,79}$"
+          },
+          "command": {
+            "$ref": "#/definitions/command"
+          },
+          "cwd": {
+            "type": "string",
+            "minLength": 1
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600
+          },
+          "output_limit_bytes": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 67108864
+          }
+        }
+      }
+    },
+    "owners": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maintainer",
+        "reviewer"
+      ],
+      "properties": {
+        "maintainer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reviewer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "staging_command",
+        "release_command",
+        "recovery_command"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "staging_command": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/command"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "release_command": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/command"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recovery_command": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/command"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "model_selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "inherit",
+            "recommend",
+            "required"
+          ]
+        }
+      }
+    },
+    "evidence_exclude": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "setup": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "command",
+          "cwd",
+          "timeout_seconds"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,79}$"
+          },
+          "command": {
+            "$ref": "#/definitions/command"
+          },
+          "cwd": {
+            "type": "string",
+            "minLength": 1
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600
+          },
+          "output_limit_bytes": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 67108864
+          }
+        }
+      }
+    },
+    "jev": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "provider",
+        "model"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "provider": {
+          "const": "typesafe"
+        },
+        "model": {
+          "type": "string",
+          "pattern": "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "deadline_ms": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 30000
+        },
+        "max_pairs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "max_request_bytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 24576
+        },
+        "max_response_bytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 262144
+        },
+        "max_source_age_hours": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8760
+        },
+        "cache": {
+          "type": "boolean"
+        },
+        "cache_ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "claim_mode": {
+          "enum": [
+            "shadow",
+            "advisory"
+          ]
+        },
+        "min_confidence": {
+          "description": "Model routing: a JEV choice below this confidence leaves the assignment unresolved (default 0.6).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.6
+        },
+        "claim_accept_confidence": {
+          "description": "Semantic claim checks: minimum JEV confidence to accept a claim judgment (default 0.8). Does not affect model plans.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.8
+        },
+        "triage_accept_confidence": {
+          "description": "Check triage: minimum JEV confidence to classify a failed check; lower confidence or abstain leaves it unclassified for a human (default 0.6). Advisory only.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.6
+        }
+      }
+    }
+  },
+  "definitions": {
+    "command": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "profile": {
+      "enum": [
+        "claude",
+        "codex",
+        "copilot"
+      ]
+    }
+  }
+}

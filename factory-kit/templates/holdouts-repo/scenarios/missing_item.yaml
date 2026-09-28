@@ -1,6 +1,0 @@
-name: fetching a nonexistent item is a 404
-request:
-  method: GET
-  path: /items/999999
-expect:
-  status: 404

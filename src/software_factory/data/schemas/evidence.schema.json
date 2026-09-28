@@ -1,0 +1,228 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Local factory verification evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "mission_id",
+    "fingerprint",
+    "post_fingerprint",
+    "head",
+    "base_commit",
+    "spec_hash",
+    "sequence",
+    "started_at",
+    "finished_at",
+    "source_changed",
+    "checks",
+    "trust"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "mission_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "fingerprint": {
+      "$ref": "#/definitions/hash"
+    },
+    "fingerprint_format": { "const": "git-mode-v1" },
+    "post_fingerprint": {
+      "$ref": "#/definitions/hash"
+    },
+    "head": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40,64}$"
+    },
+    "base_commit": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40,64}$"
+    },
+    "spec_hash": {
+      "$ref": "#/definitions/hash"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "started_at": {
+      "type": "string",
+      "minLength": 20
+    },
+    "finished_at": {
+      "type": "string",
+      "minLength": 20
+    },
+    "source_changed": {
+      "type": "boolean"
+    },
+    "trust": {
+      "const": "local-unattested"
+    },
+    "model_assignments": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task_id",
+          "assignment_hash"
+        ],
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,79}$"
+          },
+          "assignment_hash": {
+            "$ref": "#/definitions/hash"
+          }
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "command",
+          "cwd",
+          "required",
+          "status",
+          "exit_code",
+          "signal",
+          "duration_ms",
+          "stdout_log",
+          "stderr_log",
+          "truncated"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "command": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "cwd": {
+            "type": "string",
+            "minLength": 1
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "pass",
+              "fail",
+              "timeout",
+              "error",
+              "skipped",
+              "output_limit",
+              "interrupted",
+              "background_process"
+            ]
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "signal": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "stdout_log": {
+            "$ref": "#/definitions/log"
+          },
+          "stderr_log": {
+            "$ref": "#/definitions/log"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "setup": {
+      "type": "array",
+      "items": {
+        "$ref": "#/properties/checks/items"
+      }
+    },
+    "monitoring_uncertain": {
+      "type": "boolean"
+    },
+    "monitoring_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "held_state",
+        "resolution"
+      ],
+      "properties": {
+        "held_state": {
+          "enum": [
+            "PAUSED",
+            "BLOCKED"
+          ]
+        },
+        "resolution": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "definitions": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "log": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/definitions/hash"
+        }
+      }
+    }
+  }
+}

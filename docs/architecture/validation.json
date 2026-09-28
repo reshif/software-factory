@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "validated_at": "2026-09-27T11:19:00.599864+00:00",
+  "source_manifest": "source-review.json",
+  "reviewed_version": "0.2.5",
+  "tested_version": "0.2.4",
+  "source_identity_sha256": "ded030b84c6073f131c81962a15eb7fea2548d6d853f257ea7b89549d770ebf7",
+  "tested_source_identity_sha256": "9269633861cc45a1aaca00d187201a81daa2ec593ff3dac1726404f11abff239",
+  "scope": "Independent architecture review on Linux / Python 3.14.4. Checks ran against an isolated source snapshot. Final metadata/comment changes and refreshed root release reports were subsequently reviewed; they were not represented as a new full test run.",
+  "post_validation_code_changes": {
+    "version_metadata": [
+      "pyproject.toml",
+      "uv.lock",
+      "src/software_factory/__init__.py",
+      "src/software_factory/data/runtime/pyproject.toml",
+      "src/software_factory/data/runtime/uv.lock"
+    ],
+    "comment_only": [
+      "src/software_factory/routing.py"
+    ],
+    "routing_ast_unchanged": true
+  },
+  "checks": [
+    {
+      "command": "uv sync --locked",
+      "result": "pass"
+    },
+    {
+      "command": "uv run pytest -q",
+      "result": "pass",
+      "tests": 274,
+      "subtests": 93,
+      "seconds": 99.52
+    },
+    {
+      "command": "uv run ruff check .",
+      "result": "pass"
+    },
+    {
+      "command": "uv build --no-sources --out-dir <scratch>/reviewed-dist",
+      "result": "pass",
+      "outputs": [
+        "software_factory-0.2.4-py3-none-any.whl",
+        "software_factory-0.2.4.tar.gz"
+      ]
+    },
+    {
+      "command": "uv run python scripts/release_smoke.py <scratch>/reviewed-dist/software_factory-0.2.4-py3-none-any.whl",
+      "result": "pass",
+      "wheel_sha256": "96b6f55ad5c36ba156f8c59dd223a71873c604c35872adaa594a69f5190e65e5",
+      "wheel_entries": 118,
+      "node_available": false,
+      "provider": "mocked",
+      "coverage": [
+        "isolated install",
+        "hydration",
+        "pinned dispatch",
+        "profiles",
+        "user file preservation",
+        "links",
+        "upgrade",
+        "relinquishment",
+        "downgrade refusal",
+        "crash recovery",
+        "drift/reinstall",
+        "JEV toggle",
+        "offline model plan validation"
+      ]
+    },
+    {
+      "command": "Mermaid parser and Mermaid CLI browser rendering",
+      "result": "pass",
+      "mermaid_version": "12.0.0",
+      "cli_version": "12.0.0",
+      "diagrams": 5,
+      "svg_exports": 5,
+      "browser_detected_clipped_labels": []
+    },
+    {
+      "command": "Architecture Markdown link and embedded-source checks",
+      "result": "pass"
+    },
+    {
+      "command": "Reviewed source SHA-256 comparison with workspace at final review",
+      "result": "pass",
+      "files": 107
+    }
+  ],
+  "not_run": [
+    "paid JEV inference",
+    "interactive native-client compatibility",
+    "remote CI or deployment",
+    "macOS or Windows execution"
+  ],
+  "tooling": "Mermaid/Node/browser tools were installed only under /tmp for authoring and validation. No project dependency or runtime source was changed by this architecture task.",
+  "diagrams": [
+    {
+      "source": "01-system.mmd",
+      "source_sha256": "1ba9479c169239ee024d46aa3f4e6507fbf56c703234959c61abcd6b2cc61d7b",
+      "svg": "01-system.svg",
+      "svg_sha256": "c45750c823931349190ef8ee758439c2bb598df39b5365b9dc91cac6492a7168",
+      "view_box": "4 4 1315.7640380859375 1840.639404296875"
+    },
+    {
+      "source": "02-installation.mmd",
+      "source_sha256": "2f501307e6971bed29211346b1f7c4763f50b547c08f5849e93f0f552998c1e9",
+      "svg": "02-installation.svg",
+      "svg_sha256": "211fd678af1c40c36bb1c4146fd635b0562186f20840f5305980651cb78c0c9e",
+      "view_box": "4 4 2461.526123046875 1541.796875"
+    },
+    {
+      "source": "03-evidence.mmd",
+      "source_sha256": "62fad571384585944a291d46d0a88f0e2615209de160fe2780d0b6eb8734bc06",
+      "svg": "03-evidence.svg",
+      "svg_sha256": "8fa3c4c872e387b9d952a48b4ef20e47bb38c068d8e785efa9200173f90a3e54",
+      "view_box": "4 4 1628.8699951171875 1978.1131591796875"
+    },
+    {
+      "source": "04-intelligence.mmd",
+      "source_sha256": "ce6c8bbf66d0d53ea8766dc6dafc5793085c4c2bcc71a1b1a5907f38ccbe7cd2",
+      "svg": "04-intelligence.svg",
+      "svg_sha256": "e75d2fefc2f46f6dcbb4345181bd6c9853f7b39fe648affa8a3e542df6566302",
+      "view_box": "4 4 1262.27734375 1778.6602783203125"
+    },
+    {
+      "source": "05-lifecycle.mmd",
+      "source_sha256": "60372f5f25bffbd67b19379eb8a42a5cabb86db130f857b467aa8d6d2a8e9d4a",
+      "svg": "05-lifecycle.svg",
+      "svg_sha256": "88bf401f7d2ffcce6542f15dbfecf7e7d463b0edc02e75865c30ae4561674874",
+      "view_box": "4 4 3907.125 573.8541870117188"
+    }
+  ]
+}

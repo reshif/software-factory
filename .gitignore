@@ -1,27 +1,7 @@
-# OS / editor
-.DS_Store
-.vscode/
-.idea/
-*.swp
-
-# Python
+.venv/
 __pycache__/
 *.pyc
-.venv/
-
-# Node
-node_modules/
-
-# Secrets — never commit
-.env
-.env.*
-!.env.example
-*.pem
-*.key
-
-# Claude Code local settings
-.claude/settings.local.json
 .pytest_cache/
-.claude/worktrees/
-factory-controller/deploy/secrets/
-factory-controller/deploy/.env
+.ruff_cache/
+dist/
+.factory/local/

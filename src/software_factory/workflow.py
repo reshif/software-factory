@@ -196,6 +196,7 @@ TASK_MANAGED_FIELDS = (
     "attempt_base",
     "budget_resets",
     "repair_required",
+    "blocked_reason",
     "model_attempts",
 )
 

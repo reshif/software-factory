@@ -7,7 +7,7 @@ description: Independently review a factory candidate by kind (code, acceptance 
 
 ## Inputs and preconditions
 
-The constitution in AGENTS.md applies; read [the constitution](../../../.factory/CONSTITUTION.md) only if it is not in your context. Follow the [reviewer contract](../../../.factory/roles/reviewer.md). Work from the brief the orchestrator generated with `software-factory mission brief --mission ID --kind code|acceptance|adversarial` and its `diff.patch`. Use a context separate from implementation, and prefer a model different from the implementer's where available. Do not spawn nested agents. If a separate context is unavailable, report that; do not simulate independence.
+The constitution in AGENTS.md applies; read [the constitution](../../../.factory/CONSTITUTION.md) only if it is not in your context. Follow the [reviewer contract](../../../.factory/roles/reviewer.md). Work from the brief the orchestrator generated with `software-factory mission brief --mission ID --kind code|acceptance|adversarial` and its `diff.patch`. Use a context separate from implementation, and prefer a model different from the implementer's where available. Do not start nested agents or edit mission records. If a separate context is unavailable, report that; missing independence is reported, never simulated.
 
 ## Kinds
 
@@ -19,7 +19,7 @@ The lane and `mission risk` decide which kinds the gate requires.
 
 ## Procedure
 
-1. Read the code and diff first. Read the implementer's report last, as claims to falsify.
+1. Read the code and diff first. Read the implementer's report last, as testimony to falsify.
 2. For each AC ask: what would be observably wrong if this were not delivered, and does any recorded check or test actually exercise it? An untested AC is a verification gap.
 3. Give each AC a verdict: `pass`, `fail` or `needs_human`. Use `needs_human` when you cannot decide from the evidence.
 4. Report only real defects; there is no quota, and zero findings is a valid result. Each finding has exactly these keys: a unique `id` (required when blocking), `severity` (`blocking` or `nonblocking`), `path`, `message` (the defect, its impact and supporting evidence in one text) and optional `verified` (true only when you reproduced or directly confirmed it); other keys are rejected. Use [the review template](../../../.factory/templates/review.md).
@@ -38,7 +38,7 @@ A review JSON for the actual fingerprint: `kind`, `status` (`pass` or `changes_r
 
 Unknown keys are rejected with the allowed list.
 
-If code changes during review, repeat the affected kinds against the new fingerprint. Optional JEV claim assessment (`semantic verify-claims`) is advisory and never gate evidence.
+If code changes during review, repeat the affected kinds against the new fingerprint. Optional JEV claim assessment (`semantic verify-claims`) is advice, not verification, and never gate evidence.
 
 ## Failure behavior
 

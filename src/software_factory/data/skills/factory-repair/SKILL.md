@@ -13,7 +13,7 @@ The constitution in AGENTS.md applies; read [the constitution](../../../.factory
 
 Optionally, before retrying a failed check, run `uv run --locked --project .factory software-factory triage --mission ID --revision REV` ([check triage](../../../.factory/docs/runbooks/check-triage.md)); use the category to choose diagnosis, never to skip diagnosis or retry blindly.
 
-Reproduce or narrow the failure with the smallest useful investigation. State the hypothesis and what evidence would discriminate it. The orchestrator diagnoses and briefs; the fix itself goes to an implementer through a fresh `mission brief --task TASK`, whose notes carry earlier results. Do not repeat equivalent actions without new evidence.
+Reproduce or narrow the failure with the smallest useful investigation. State the hypothesis and what evidence would discriminate it. The orchestrator diagnoses and briefs; the fix itself goes to an implementer through a fresh `mission brief --task TASK`, whose notes carry earlier results (*Deliberate repair*).
 
 Use the task state commands so retry attempts are recorded. Check `factory.json` limits before another attempt. Changes to accepted behavior, protected factory rules or required checks follow the actual scope policy; a failure does not grant new authority.
 
@@ -23,7 +23,7 @@ Diagnose context, tooling and code defects before model escalation. Reassignment
 
 ## Escalate
 
-Stop repairing and escalate to the user, with the mission BLOCKED (`mission block --reason TEXT --next TEXT`) and one concrete question, when:
+Per *Escalate instead of guessing*, stop repairing and escalate to the user, with the mission BLOCKED (`mission block --reason TEXT --next TEXT`) and one concrete question, when:
 
 - the task's repair budget is exhausted;
 - the fix needs a high-risk action: protected factory paths, check definitions, test removal, dependency or CI changes, destructive Git, or anything outside authorization;

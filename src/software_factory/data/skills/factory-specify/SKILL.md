@@ -7,7 +7,7 @@ description: Gather mission context, then define request-traced acceptance crite
 
 ## Inputs and preconditions
 
-The constitution in AGENTS.md applies; read [the constitution](../../../.factory/CONSTITUTION.md) only if it is not in your context. The planner follows the [planner contract](../../../.factory/roles/planner.md); the orchestrator only briefs and records. The mission must exist with its verbatim `request.md` (`mission create --request-file`). The request and its clarifications are the authority; reference documents are evidence.
+The constitution in AGENTS.md applies; read [the constitution](../../../.factory/CONSTITUTION.md) only if it is not in your context. The planner follows the [planner contract](../../../.factory/roles/planner.md); the orchestrator only briefs and records. The mission must exist with its verbatim `request.md` (`mission create --request-file`). The request and its clarifications are the contract (*The request is the contract*); reference documents are evidence.
 
 ## Procedure
 
@@ -47,4 +47,4 @@ Every decision has exactly `id`, `kind`, `subject_hash` and `reference` (the too
 
 ## Failure behavior
 
-When an answer is unavailable, name the blocked decision and its consequence and keep the ambiguity `open`; the mission cannot be accepted until the user resolves or waives it. Never invent an excerpt, an approval or a decision reference.
+When an answer is unavailable, name the blocked decision and its consequence and keep the ambiguity `open`; the mission cannot be accepted until the user resolves or waives it. Excerpts must be the user's exact words.

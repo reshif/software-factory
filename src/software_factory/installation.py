@@ -331,6 +331,69 @@ def validate_history(root: Path, schema_changes, effective) -> dict:
     return {"schemas": sorted(schema_changes), "validated_records": validated}
 
 
+CONSTITUTION = ".factory/CONSTITUTION.md"
+TERMINAL_MISSION_STATES = {"DELIVERED", "RECOVERED", "CANCELED"}
+
+
+def constitution_reconcile(root: Path, new: bytes | None) -> list[dict] | None:
+    """Missions still bound to the constitution an upgrade replaces, or None when it is unchanged.
+
+    The upgrade proceeds; each listed mission stops at its next scope check until reconciled.
+    """
+    from .workflow import constitution_version
+
+    current = optional(root, CONSTITUTION)
+    if new is None or current == new:
+        return None
+    new_hash = sha256(new)
+    to_version = constitution_version(new.decode("utf-8", "replace"))
+    old_version = constitution_version(current.decode("utf-8", "replace")) if current is not None else None
+    old_hash = sha256(current) if current is not None else None
+    missions = safe_path(root, ".factory/missions")
+    found = []
+    for path in sorted(missions.glob("*/mission.json")) if missions.is_dir() else []:
+        try:
+            safe_path(root, path.relative_to(root).as_posix())
+            mission = json.loads(path.read_bytes())
+        except (FactoryError, OSError, ValueError):
+            continue  # Unreadable or unsafe records are reported by doctor/history validation.
+        if not isinstance(mission, dict) or mission.get("state") in TERMINAL_MISSION_STATES:
+            continue
+        bound = mission.get("constitution_hash")
+        if bound == new_hash:
+            continue
+        found.append(
+            {
+                "id": mission.get("id", path.parent.name),
+                "state": mission.get("state"),
+                "from_version": mission.get("constitution_version")
+                or (old_version if bound == old_hash else None),
+                "to_version": to_version,
+            }
+        )
+    return found
+
+
+def constitution_reconcile_note(new_hash: str) -> str:
+    return (
+        "This release changes .factory/CONSTITUTION.md (new sha256 "
+        f"{new_hash}); the upgrade is not blocked, but each listed mission stops at its next scope "
+        "check until reconciled: software-factory mission block --mission <id> --reason "
+        "'Constitution changed; reconcile before continuing'; then software-factory mission decision "
+        "--mission <id> --input - with "
+        + json.dumps(
+            {
+                "id": f"D-CONST-{new_hash[:8]}",
+                "kind": "exception",
+                "subject_hash": new_hash,
+                "reference": "<who approved the constitution change, and where>",
+            }
+        )
+        + "; then software-factory mission accept-scope --mission <id> (returns it to PLANNED; "
+        "tasks restart from TODO and need fresh verification and review)"
+    )
+
+
 def install(
     root: Path,
     *,
@@ -418,6 +481,7 @@ def install(
     if conflicts:
         raise FactoryError("Installation conflicts; no changes applied: " + ", ".join(conflicts))
     history = None
+    reconcile = constitution_reconcile(root, effective.get(CONSTITUTION)) if upgrade else None
     if upgrade:
         missions = safe_path(root, ".factory/missions")
         has_missions = missions.is_dir() and any(missions.iterdir())
@@ -475,6 +539,12 @@ def install(
     }
     if history is not None:
         report["history"] = history
+    if reconcile is not None:
+        report["missions_needing_constitution_reconcile"] = reconcile
+        if reconcile:
+            report["constitution_reconcile_note"] = constitution_reconcile_note(
+                sha256(effective[CONSTITUTION])
+            )
     if dry_run:
         return report
     # Warm and validate the complete runtime before any target write.

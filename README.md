@@ -49,6 +49,10 @@ The complete sequence is: intake and model checkpoint → specification → task
 
 Installed details live in `.factory/docs/runbooks/factory-setup.md`, `prompts.md`, `runtime-contract.md`, and `resume-and-switch.md`. Use `software-factory --help` and each subcommand's `--help` for CLI arguments.
 
+## Constitution
+
+Every factory session follows `.factory/CONSTITUTION.md` (2.0.0), copied into the managed AGENTS.md section. It ranks below the host's instruction hierarchy, organization controls and the user's current authorization, and above roles, skills and briefs; it grants no permission. The [enforcement map](src/software_factory/data/docs/runbooks/constitution-enforcement.md) (installed as `.factory/docs/runbooks/constitution-enforcement.md`) maps each rule to the gate check, guard or tool restriction that enforces it, or marks it instruction-only. Commit an upgrade that changes the constitution on its own, outside any product mission's diff; `upgrade` then lists pre-merge missions under `missions_needing_constitution_reconcile` without blocking. Reconcile each with an `exception` decision for the new constitution hash and `mission accept-scope`, then re-verify and re-review.
+
 ## Enforcement per client
 
 Factory roles are instructions first. Optional Claude Code enforcement is off by default and is enabled in `factory.json`, followed by `software-factory render`:

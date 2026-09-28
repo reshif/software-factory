@@ -33,6 +33,10 @@ The current native package schema rejects removed compatibility/configuration fo
 
 Also confirm, in the disposable-project smoke run, that every relative Markdown link in exported skills and `.factory/docs` resolves, that no exported specialist has an agent tool, and that the opt-in Claude orchestrator agent has no Edit/Write. Unit tests exercise `orchestrator_guard.py` offline; record the Claude hook behavior as not run until observed in a live client. No Copilot hooks ship in 0.3.0. Check that 0.2.x mission history still validates on `upgrade --dry-run`.
 
+## 0.3.1 additions
+
+The release ships constitution 2.0.0 (MAJOR; see docs/implementation.md). In the disposable-project smoke run, also confirm that the managed AGENTS.md section carries the 2.0.0 text, that `.factory/docs/runbooks/constitution-enforcement.md` is installed and its links resolve, and that no installed role, skill, prompt or runbook cites a rule by number. Upgrade a project holding a 0.3.0 pre-merge mission: `upgrade --dry-run` must list it under `missions_needing_constitution_reconcile` without blocking, and the reconciliation in the runbook must return it to PLANNED. Keep the enforcement map in step with any gate or guard change.
+
 ## Review decisions in this port
 
 Independent reviewers covered installation/ownership/transactions, JEV, models/calibration, and workflow/evidence/checks. Repairs bind operations to early preimages, protect journals before writes, reject path/ownership aliases, preserve shared text, validate required assets, bound model discovery writes, collect final filesystem-monitor events, discover ignored governance files on each snapshot, and observe configuration before running checks. These strengthen consistency checks without adding permissions or changing the constitution.

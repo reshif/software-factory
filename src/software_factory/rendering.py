@@ -343,7 +343,7 @@ def plan_render(
     for role in registry["roles"]:
         name = role["name"]
         body = (
-            f"The constitution in AGENTS.md applies; read .factory/CONSTITUTION.md (SHA-256 {sha256(constitution)}) only if it is not in your context. Your role instructions follow. Assigned skill: {role['skill']}. Require objective, permitted paths, dependencies, revision, checks and result contract.\n\n"
+            f"The constitution in AGENTS.md applies; read .factory/CONSTITUTION.md (SHA-256 {sha256(constitution)}) only if it is not in your context. Your role instructions follow. Assigned skill: {role['skill']}. Work only from the generated brief the orchestrator provides (software-factory mission brief); report missing brief fields instead of guessing.\n\n"
             + roles[name]
         )
         if "claude" in selected_profiles:

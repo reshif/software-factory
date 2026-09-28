@@ -462,7 +462,7 @@ def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=Fa
                     "Mission changed during verification; evidence was saved but not registered"
                 )
             value["evidence"].append(reference)
-            # Repair budget (constitution rule 15): failing a task's checks after it
+            # Repair budget (constitution: Deliberate repair): failing a task's checks after it
             # left RUNNING consumes its attempt. It cannot become DONE again until it
             # re-enters RUNNING, which counts a new attempt. Failures while RUNNING
             # belong to the attempt in progress; setup/monitoring failures flag nothing.

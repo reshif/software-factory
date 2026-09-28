@@ -529,6 +529,7 @@ def create_mission(root, input, require_request=False):
             "branch": branch,
             "spec_hash": None,
             "constitution_hash": hash_file(root, CONSTITUTION_PATH),
+            **_constitution_version_field(root),
             "governance_snapshot": capture_local_governance(root),
             "tasks": [],
             "decisions": [],
@@ -922,12 +923,62 @@ def scope_decision_hint(id, spec_hash):
     )
 
 
+CONSTITUTION_VERSION = re.compile(r"^Version:\s*(\d+\.\d+\.\d+)\b", re.MULTILINE)
+
+
+def constitution_version(text):
+    """Return the X.Y.Z from a constitution's "Version:" line, or None."""
+    match = CONSTITUTION_VERSION.search(text)
+    return match.group(1) if match else None
+
+
+def _constitution_version_field(root):
+    try:
+        text = safe_path(root, CONSTITUTION_PATH).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    version = constitution_version(text)
+    return {"constitution_version": version} if version else {}
+
+
+def constitution_reconcile_hint(id, constitution):
+    """Exact commands that rebind a mission of any kind to a changed constitution."""
+    record = {
+        "id": f"D-CONST-{constitution[:8]}",
+        "kind": "exception",
+        "subject_hash": constitution,
+        "reference": "<who approved the constitution change, and where>",
+    }
+    return (
+        f"reconcile with: software-factory mission block --mission {id} "
+        "--reason 'Constitution changed; reconcile before continuing'; then "
+        f"software-factory mission decision --mission {id} --input - <<'EOF'\n"
+        f"{json.dumps(record)}\nEOF\n"
+        f"then software-factory mission accept-scope --mission {id} "
+        "(returns to PLANNED; tasks restart from TODO and must be re-verified and re-reviewed)"
+    )
+
+
+def constitution_changed_message(root, mission, constitution=None):
+    constitution = constitution or hash_file(root, CONSTITUTION_PATH)
+    version = _constitution_version_field(root).get("constitution_version")
+    return (
+        f"Constitution changed (mission bound to sha256 {mission['constitution_hash']}"
+        + (f", version {mission['constitution_version']}" if mission.get("constitution_version") else "")
+        + f"; {CONSTITUTION_PATH} is now sha256 {constitution}"
+        + (f", version {version}" if version else "")
+        + "); "
+        + constitution_reconcile_hint(mission["id"], constitution)
+    )
+
+
 def assert_current_scope(root, mission):
     actual = hash_file(root, f".factory/missions/{mission['id']}/spec.md")
     if mission["spec_hash"] != actual:
         raise FactoryError("Specification changed; accept a new scope before continuing")
-    if mission["constitution_hash"] != hash_file(root, CONSTITUTION_PATH):
-        raise FactoryError("Constitution changed; reconcile mission before continuing")
+    constitution = hash_file(root, CONSTITUTION_PATH)
+    if mission["constitution_hash"] != constitution:
+        raise FactoryError(constitution_changed_message(root, mission, constitution))
     if not any(
         d["kind"] == "scope" and d["subject_hash"] == actual and d["reference"].strip()
         for d in mission["decisions"]
@@ -966,14 +1017,19 @@ def accept_scope(root, id):
             raise FactoryError("Stop active tasks before changing scope")
         constitution = hash_file(root, CONSTITUTION_PATH)
         if constitution != mission["constitution_hash"]:
-            if mission["kind"] != "maintenance" or not any(
-                d["kind"] == "exception" and d["subject_hash"] == constitution and d["reference"].strip()
+            if not any(
+                d["kind"] == "exception"
+                and d["subject_hash"] == constitution
+                and str(d.get("reference") or "").strip()
                 for d in mission["decisions"]
             ):
                 raise FactoryError(
-                    "Constitution changes require maintenance and an exception decision for its exact new hash"
+                    "Constitution changes require an exception decision bound to the exact new "
+                    f"constitution sha256 {constitution}; " + constitution_reconcile_hint(id, constitution)
                 )
             mission["constitution_hash"] = constitution
+            mission.pop("constitution_version", None)
+            mission.update(_constitution_version_field(root))
         _bind_request_scope(root, mission, config)
         mission["spec_hash"] = hash_file(root, f".factory/missions/{id}/spec.md")
         assert_current_scope(root, mission)
@@ -2487,7 +2543,9 @@ def _assess_gate_snapshot(root, mission, candidate, resuming_to=None):
     if mission["spec_hash"] != candidate["spec_hash"]:
         reasons.append("Specification is unaccepted or changed since scope acceptance")
     if mission["constitution_hash"] != hash_file(root, CONSTITUTION_PATH):
-        reasons.append("Constitution changed since mission acceptance")
+        reasons.append(
+            "Constitution changed since mission acceptance: " + constitution_changed_message(root, mission)
+        )
     for kind in (
         {"scope"} | set(current.get("required_decisions", [])) | set(baseline.get("required_decisions", []))
     ):

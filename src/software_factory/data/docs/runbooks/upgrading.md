@@ -13,3 +13,18 @@ Finishing or canceling missions with the old release is not enough, because thei
 File transactions use preimage checks, private journals and exclusive locks. `software-factory doctor` reports an interrupted operation (`interrupted_transaction`), and until recovery only `doctor`, `inspect`, `status`, `recover`, `version` and `--help` run; other commands are refused; `software-factory recover` previews recovery after an interrupted process; `software-factory recover --apply` restores only writes whose current bytes still match that operation. A live process or concurrent edits prevent recovery. Runtime setup failures report the explicit `uv sync --locked --no-dev --project .factory` recovery step.
 
 `software-factory uninstall --dry-run` previews removal. Apply without dry-run to remove unchanged owned assets and sections. Uninstall keeps edited exports and edited factory sections. For an edited section in AGENTS.md, CLAUDE.md or .github/copilot-instructions.md it removes only the two factory marker lines, leaving your text as ordinary content; a later `init` adds a fresh managed section. A `.codex/config.toml` key you changed becomes yours; if it conflicts with what the factory needs, `init` refuses and names the key to change or remove. Preserve other modified content, configuration, history, private records, their ignore rules and provenance. Purging retained state is a separate explicit operation. Restoring an earlier version requires a matched backup of runtime, configuration and records. No destructive Git cleanup is used.
+
+## Constitution changes and in-flight missions
+
+A release can ship a new constitution (0.3.1 ships 2.0.0). Commit the upgrade on its own, outside any product mission's diff: a changed `.factory/CONSTITUTION.md` inside a product mission's candidate fails that mission's gate ("Protected factory path requires a maintenance mission"), by design.
+
+Missions record the constitution hash they accepted, so after such an upgrade every pre-merge mission accepted under the old text stops at its next transition and the gate reports "Constitution changed since mission acceptance"; those errors print the exact reconciliation commands. The upgrade never blocks on this. Its report lists each such mission under `missions_needing_constitution_reconcile` as `{id, state, from_version, to_version}`, with a `constitution_reconcile_note` (also in `--dry-run`). Missions already MERGED or later keep their evidence as judged.
+
+Reconcile each listed mission, whatever its kind:
+
+1. `software-factory mission block --mission ID --reason "Constitution changed; reconciling" --next "Reconcile and re-accept scope"`.
+2. Ask the user whether the mission continues under the new constitution; record their actual answer as `software-factory mission decision --mission ID --input -` with `{"id": "D-CONST-<first 8 hex>", "kind": "exception", "subject_hash": "<exact new constitution sha256>", "reference": "<who approved the constitution change, and where>"}`. If they decline, cancel the mission with a reason instead.
+3. `software-factory mission accept-scope --mission ID`: the mission returns to PLANNED with tasks TODO, attempts kept, and records the new `constitution_version`.
+4. Run verification, record results and obtain the required reviews again before the gate.
+
+See [constitution enforcement](constitution-enforcement.md#reconciling-in-flight-missions).

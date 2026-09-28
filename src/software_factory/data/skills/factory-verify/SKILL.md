@@ -15,7 +15,7 @@ From the repository root run `uv run --locked --project .factory software-factor
 
 Compare executed checks with each AC's route. A passing command can still miss browser, integration or client behavior; `e2e`, `property` and `manual` routes need their own evidence (a verifier run, an evidence file or a review verdict). Record gaps and return them for resolution; do not silently alter required checks.
 
-Missing, skipped, failed, errored or timed-out required checks are failures. If tests mutate the candidate, that run is invalid; resolve the mutation before a new capture. Keep secrets out of shared evidence. Model metadata never substitutes for executing checks.
+Missing, skipped, failed, errored or timed-out required checks are failures. If tests mutate the candidate, that run is invalid; resolve the mutation before a new capture. Keep secrets out of shared evidence. Model metadata never substitutes for executing checks (*Advice is not verification*).
 
 Optional, when JEV is enabled: after results are recorded, `uv run --locked --project .factory software-factory semantic verify-claims --mission ID --input PATH` can assess the implementer's key claims; treat needs_review, contradicts or no_evidence as prompts to inspect, never as approval or gate evidence.
 

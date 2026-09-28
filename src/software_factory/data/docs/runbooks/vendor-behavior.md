@@ -55,11 +55,11 @@ The architecture uses one main session orchestrator that briefs, inspects and re
 
 Role instructions constrain intended behavior. Tool/runtime controls constrain capabilities only to the extent the installed client enforces them. The local verifier runs configured processes using the host environment; terminal access can write files and reach available credentials. Keep the account's actual permission configuration under operator control.
 
-Hooks are not needed for core execution. Verification is invoked explicitly, and CI is the independent remote check. Hooks and agent tool lists add opt-in guardrails for the orchestrator's "never produces" rule (below); sharing a file format does not prove equivalent runtime behavior, and each needs a live test in the selected client.
+Hooks are not needed for core execution. Verification is invoked explicitly, and CI is the independent remote check. Hooks and agent tool lists add opt-in guardrails for the constitution's *The orchestrator never produces* rule (below; all rules are mapped in the [enforcement map](constitution-enforcement.md)); sharing a file format does not prove equivalent runtime behavior, and each needs a live test in the selected client.
 
 ## Enforcement per client
 
-The orchestrator must not write product files and specialists must not spawn nested agents. Exported specialist roles never receive an agent tool in any client. How far the orchestrator rule is enforced differs:
+The orchestrator must not write product files and specialists must not spawn nested agents. Exported Claude and Copilot specialists never receive an agent tool; Codex agent files carry no tool list, so there the no-nesting rule is instruction-only. How far the orchestrator rule is enforced differs:
 
 | Client | Orchestrator enforcement | Opt-in setting | Limits |
 | --- | --- | --- | --- |

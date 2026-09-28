@@ -11,10 +11,10 @@ Use the user's request or active mission ID. Resolve the Git repository root. Th
 
 ## Procedure
 
-1. Run `uv run --locked --project .factory software-factory doctor`. Inspect Git status, the active profile and whether this client can spawn the factory specialists; if it cannot, stop and report. Diagnostics do not establish authentication or live model behavior.
-2. Find existing work with `software-factory mission list` and `mission status --mission ID` (its `live_gate` shows whether a READY_PR-or-later label still holds). Reuse a matching mission; reconcile records with the actual changes.
+1. Run `uv run --locked --project .factory software-factory doctor`. Inspect Git status, the active profile and whether this client can spawn the factory specialists; if it cannot, stop and report.
+2. Find existing work with `software-factory mission list` and `mission status --mission ID` (its `live_gate` shows whether a READY_PR-or-later label still holds). Reuse a matching mission; reconcile records with the actual changes. A "Constitution changed" error needs [reconciliation](../../../.factory/docs/runbooks/constitution-enforcement.md#reconciling-in-flight-missions).
 3. Settle the model checkpoint below.
-4. For new work, store the verbatim request with `software-factory mission create --id ID --title T --kind K --request-file -` before anything else, passing the user's words in a quoted heredoc (`<<'EOF'`); `--kind patch` selects the small lane. Never fabricate hashes or copy a template as a live mission.
+4. For new work, store the verbatim request with `software-factory mission create --id ID --title T --kind K --request-file -` before anything else, passing the user's words in a quoted heredoc (`<<'EOF'`); `--kind patch` selects the small lane. Do not copy a template as a live mission.
 5. Load only the next skill: specify (context, clarifications, criteria), plan, implement, verify, review, repair or handoff. Use release/recover only when delivery is in scope and configured.
 6. Record every transition with the state commands, in the order of the orchestrator role's [mission states](../../../.factory/roles/orchestrator.md#mission-states). Only PAUSED, BLOCKED (or `mission block`) and CANCELED take `--reason`, and they need it; resume needs `--resolution`.
 
@@ -24,8 +24,8 @@ When `model_selection.mode` is `inherit` (the default) and `jev.enabled` is fals
 
 ## Outputs and verification
 
-A current mission record, the checkpoint line, recorded phase outputs and a next action or final handoff. Run the gate before claiming READY_PR; a chat summary or subagent completion is not a gate result.
+A current mission record, the checkpoint line, recorded phase outputs and a next action or final handoff. Run the gate before claiming READY_PR.
 
 ## Failure behavior
 
-If the client lacks a capability, state the limitation; do not imply another vendor was invoked. Record blockers and preserve a handoff when progress cannot continue. Follow [resume and switch](../../../.factory/docs/runbooks/resume-and-switch.md) for interruptions.
+If the client lacks a capability, state the limitation. Record blockers and preserve a handoff when progress cannot continue. Follow [resume and switch](../../../.factory/docs/runbooks/resume-and-switch.md) for interruptions.

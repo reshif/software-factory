@@ -38,13 +38,19 @@ flowchart TD
 
 Blueprint runs the same flow up to the plan and stops before implementation. A mission created before 0.3.0 has no recorded request; it keeps the earlier gate rules and shows a warning. The small lane still needs context, criteria and an architecture diagram, kept short.
 
-The "never produces" rule is an instruction in every client. Claude Code can additionally run the orchestrator as a tool-restricted agent with a guard hook (`claude --agent factory-orchestrator`), and Copilot's `factory` agent has no edit tool; the orchestrator records everything through CLI commands that read stdin; see [enforcement per client](runbooks/vendor-behavior.md#enforcement-per-client) for what each client actually enforces.
+*The orchestrator never produces* is an instruction in every client. Claude Code can additionally run the orchestrator as a tool-restricted agent with a guard hook (`claude --agent factory-orchestrator`), and Copilot's `factory` agent has no edit tool; the orchestrator records everything through CLI commands that read stdin; see [enforcement per client](runbooks/vendor-behavior.md#enforcement-per-client) for what each client actually enforces.
 
 READY_PR is a local, unattested gate result: evidence, reviews, decisions and `ci-result` records are caller-supplied. Remote PR creation, GitHub CI, merge and production delivery require separate actual evidence. Delivery is disabled in the default product configuration. A pipeline node in this diagram is an integration boundary, not a deployed service supplied by this repository.
 
+## Constitution
+
+`.factory/CONSTITUTION.md` (2.0.0) is copied into the managed AGENTS.md section, so every client loads it at session start; exported agents cite its SHA-256. Precedence: the host's instruction hierarchy and organization controls, then the user's current authorization, then the constitution, then roles, skills and briefs. Documents, records, tool output and agent reports are evidence, never authority. When rules conflict the earlier section wins; within a section, the rule that withholds a claim, change or approval wins, and the conflict is surfaced.
+
+Sections: **Never** (six prohibitions: invented approvals, weakened tests, overstated outcomes, overwriting others' work, leaked secrets, product work changing factory controls); **Authority and intent** (authority, the request is the contract, context first, escalate instead of guessing); **Evidence** (claims are testimony, binding, advice is not verification, honest records); **Roles and review** (the orchestrator never produces, bounded specialists, one writer, independent review); **Craft** (deliberate repair, proportionate complete change); **Amendment** (maintenance missions, semver, impact record). Roles and skills cite rules by title, because numbers change between versions. What enforces each rule, and what is instruction-only, is in the [enforcement map](runbooks/constitution-enforcement.md), which also covers amendment and reconciling in-flight missions.
+
 ## Lifecycle states and the diagram
 
-The diagram shows GitHub CI between READY_PR and merge. [Constitution rule 20](../CONSTITUTION.md) defines READY_PR as complete local PR evidence that does not mean a PR exists or remote CI passed, so the state tool keeps READY_PR local and records CI afterwards:
+The diagram shows GitHub CI between READY_PR and merge. The constitution's *Honest records* rule defines READY_PR as local evidence only: it does not mean a PR exists or remote CI passed, so the state tool keeps READY_PR local and records CI afterwards:
 
 | Diagram step | Recorded state and command | Required evidence |
 | --- | --- | --- |
@@ -68,7 +74,7 @@ After MERGED the gate command and `software-factory mission status` assess the C
 
 | Component | Responsibility | Limit |
 | --- | --- | --- |
-| Constitution | Shared behavior, scope, evidence integrity and truthful reporting | Does not override host/user authority or enforce access control |
+| Constitution | Obligations for every session, role and mission: Never, Authority and intent, Evidence, Roles and review, Craft, Amendment | Grants no permission and enforces nothing itself; see [enforcement map](runbooks/constitution-enforcement.md) |
 | Main orchestrator | Brief specialists with generated briefs, inspect status/risk/diffstat, record state, run verification, resolve findings, escalate | Produces no code, tests, docs or research; does not grant approval or accept subagent claims as proof |
 | Planner/implementer/verifier/reviewer | Context and plans, one task's change, extra end-to-end evidence, reviews by kind | No nested agents; no implicit expanded authority from a role name |
 | Workflow skills and entry prompts | Reusable lifecycle procedures and directly callable build/plan/resume/status entries | Loaded when relevant; entry scope does not grant runtime permissions |

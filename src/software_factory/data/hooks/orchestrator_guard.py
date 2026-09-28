@@ -114,7 +114,7 @@ FACTORY_SUBCOMMANDS = {
         "recover-lock": (set(), set()),
         "task-add": INPUT_ONLY,
         "task-update": ({"--mission", "--input", "--task"}, set()),
-        "task-transition": ({"--mission", "--task", "--to", "--model-catalog"}, set()),
+        "task-transition": ({"--mission", "--task", "--to", "--reason", "--model-catalog"}, set()),
         "transition": ({"--mission", "--to", "--reason", "--next", "--decision"}, set()),
         "block": ({"--mission", "--reason", "--next"}, set()),
         "resume": ({"--mission", "--to", "--model-catalog", "--resolution"}, {"--replan-models"}),

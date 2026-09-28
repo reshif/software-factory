@@ -686,6 +686,16 @@
           "minItems": 1,
           "uniqueItems": true
         },
+        "display_names": {
+          "description": "Client picker display names; matched only for Copilot catalogs, never dispatched to Codex or Claude.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._:/()+@\\[\\]-]{0,159}$"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
         "strengths": {
           "type": "string",
           "minLength": 1,
@@ -819,7 +829,8 @@
           "type": "array",
           "items": {
             "type": "string",
-            "pattern": "^https://"
+            "pattern": "^https://",
+            "maxLength": 2048
           },
           "minItems": 0,
           "uniqueItems": true
@@ -1241,7 +1252,8 @@
                   "no_eligible_candidates",
                   "abstained",
                   "jev_choice",
-                  "low_confidence"
+                  "low_confidence",
+                  "single_eligible_candidate"
                 ]
               },
               "confidence": {
@@ -1258,6 +1270,11 @@
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 3
+              },
+              "masks": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000
               }
             }
           }

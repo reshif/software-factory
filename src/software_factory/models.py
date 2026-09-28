@@ -67,7 +67,8 @@ def validate_document(root, kind, value):
     schema["$ref"] = f"#/definitions/{kind}"
     errors = sorted(Draft7Validator(schema).iter_errors(value), key=lambda e: str(e.path))
     if errors:
-        raise FactoryError(f"Invalid model {kind}: {errors[0].message}")
+        location = "/".join(str(part) for part in errors[0].absolute_path) or "<document>"
+        raise FactoryError(f"Invalid model {kind} at {location}: {errors[0].message}")
     if value.get("profile") and value["harness"] not in MODEL_HARNESSES[value["profile"]]:
         raise FactoryError("Model profile/harness mismatch")
     for field in ("observed_at", "created_at", "checked_at"):
@@ -86,17 +87,19 @@ def validate_document(root, kind, value):
                 raise FactoryError(f"Unsupported default effort: {m['id']}")
             if m["identity"] == "auto" and value["profile"] != "copilot":
                 raise FactoryError("Auto strategy is only supported for Copilot")
-            if (
-                m["identity"] != "alias"
-                and m["resolved_model"] is not None
-                and m["resolved_model"] != m["id"]
-            ):
-                raise FactoryError("Only aliases can resolve to a different model identifier")
+            # Exact and auto entries name themselves; an alias must resolve elsewhere.
+            if m["identity"] != "alias" and m["resolved_model"] is not None:
+                raise FactoryError(
+                    f"Only aliases record resolved_model; set it to null for {m['identity']} model {m['id']}"
+                )
+            if m["identity"] == "alias" and m["resolved_model"] == m["id"]:
+                raise FactoryError(f"Alias {m['id']} cannot resolve to itself; record it as exact")
     if kind == "request":
         _unique([a["id"] for a in value["assignments"]], "assignment ID")
         _unique([a["key"] for a in value["research"]], "research guidance key")
         for entry in value["research"]:
             _timestamp(entry["checked_at"])
+            _guidance_names(entry)
         if sum(a["requirements"]["operation"] == "main" for a in value["assignments"]) > 1:
             raise FactoryError("A plan has at most one main-session assignment")
         if any(a["preferred_model"] and not (a["rationale"] or "").strip() for a in value["assignments"]):
@@ -105,6 +108,7 @@ def validate_document(root, kind, value):
         _unique([e["key"] for e in value["entries"]], "guidance key")
         for entry in value["entries"]:
             _timestamp(entry["checked_at"])
+            _guidance_names(entry)
     if kind == "observation":
         if _timestamp(value["observed_at"]) > time.time() + 300:
             raise FactoryError("Model observation time is in the future")
@@ -115,6 +119,54 @@ def validate_document(root, kind, value):
         if value["provenance"] != "unknown" and not (value["reference"] or "").strip():
             raise FactoryError("Model observations need an evidence reference")
     return value
+
+
+def _guidance_names(entry):
+    """Native IDs and client display names are disjoint lists of one guidance entry."""
+    names = [n.lower() for n in entry["model_ids"] + entry.get("display_names", [])]
+    if len(set(names)) != len(names):
+        raise FactoryError(f"Guidance {entry['key']} repeats a model ID or display name")
+
+
+def _identifiers(entry, profile):
+    """Identifiers a catalog of ``profile`` may use for this guidance.
+
+    Only Copilot selects models by display name; Codex and Claude need native IDs,
+    so a display name there is never matched (and never dispatched).
+    """
+    return entry["model_ids"] + (entry.get("display_names", []) if profile == "copilot" else [])
+
+
+# Research may refresh reviewed guidance evidence, never what the key identifies.
+RESEARCH_REFRESHABLE = ("strengths", "sources", "checked_at")
+
+
+def guidance_entries(request, recommendations):
+    """Request research merged over reviewed guidance, keyed by guidance key.
+
+    A research entry reusing a reviewed key may only refresh its strengths,
+    sources and checked_at; re-binding a reviewed preference key to other models,
+    providers, profiles or client prerequisites is rejected.
+    """
+    reviewed = {e["key"]: e for e in recommendations["entries"]}
+    for entry in request["research"]:
+        original = reviewed.get(entry["key"])
+        if original is None:
+            continue
+        fixed = {k: v for k, v in entry.items() if k not in RESEARCH_REFRESHABLE}
+        if fixed != {k: v for k, v in original.items() if k not in RESEARCH_REFRESHABLE}:
+            changed = sorted(
+                k
+                for k in set(fixed) | set(original)
+                if k not in RESEARCH_REFRESHABLE and fixed.get(k) != original.get(k)
+            )
+            raise FactoryError(
+                f"Research entry {entry['key']} re-binds reviewed guidance ({', '.join(changed)}); "
+                "only strengths, sources and checked_at may be refreshed. Use a new research key for "
+                "other models"
+            )
+    keys = {r["key"] for r in request["research"]}
+    return request["research"] + [e for e in recommendations["entries"] if e["key"] not in keys]
 
 
 def model_controls(root):
@@ -202,7 +254,7 @@ def _identity_guidance(model, catalog, entries):
         for e in entries
         if e["provider"] == model["provider"]
         and catalog["profile"] in e["profiles"]
-        and identity in e["model_ids"]
+        and identity in _identifiers(e, catalog["profile"])
     ]
 
 
@@ -221,7 +273,8 @@ def _version_reasons(guidance, catalog):
     minimum = guidance.get("minimum_client_versions", {}).get(catalog["harness"])
     if not minimum:
         return []
-    match = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", catalog["client_version"])
+    # "2.1.300 (Claude Code)", "v2.1.300" and "codex-cli 0.46.0" all name a version.
+    match = re.search(r"(?<![\d.])(\d+)\.(\d+)\.(\d+)(?!\.?\d)", catalog["client_version"])
     if not match or tuple(map(int, match.groups())) < tuple(map(int, minimum.split("."))):
         return [f"Client version {minimum} or newer is required for this model"]
     return []
@@ -280,6 +333,8 @@ def eligibility(model, requirement, catalog, policy):
             )
         elif model["cost_tier"] > requirement["parent_cost_tier"]:
             reasons.append("Copilot Local child exceeds parent cost tier")
+    # Auto's lifecycle is the catalog's own claim for the strategy: a stable auto
+    # entry passes the stable-lifecycle rule above like any other model.
     if model["identity"] == "auto" and (
         requirement["allowed_providers"]
         or policy["allowed_providers"]
@@ -287,7 +342,6 @@ def eligibility(model, requirement, catalog, policy):
         or requirement["min_context_tokens"] is not None
         or requirement["effort"] is not None
         or requirement["max_cost_tier"] is not None
-        or not (policy["allow_preview"] and requirement["allow_preview"])
     ):
         reasons.append("Auto cannot prove these per-model hard constraints")
     return list(dict.fromkeys(reasons))
@@ -316,13 +370,22 @@ def create_model_plan(root, request, catalog, at=None, *, selector=None):
         raise FactoryError("Request and inventory refer to different clients/harnesses")
     controls = model_controls(root)
     policy, recommendations = controls["policy"], controls["recommendations"]
-    entries = request["research"] + [
-        e for e in recommendations["entries"] if e["key"] not in {r["key"] for r in request["research"]}
-    ]
+    entries = guidance_entries(request, recommendations)
     for entry in entries:
         if _timestamp(entry["checked_at"]) > _timestamp(at) + 300:
             raise FactoryError(f"Guidance {entry['key']} is dated in the future")
-    warnings = freshness(catalog, request, policy, at)
+    for item in request["assignments"]:
+        if item["intent"] != policy["role_intents"][item["role"]]:
+            raise FactoryError(
+                f"Assignment {item['id']} intent {item['intent']} differs from the policy intent "
+                f"{policy['role_intents'][item['role']]} for role {item['role']}; use the policy intent"
+            )
+    stale = freshness(catalog, request, policy, at)
+    if stale:
+        raise FactoryError(
+            "Cannot plan with this catalog: " + "; ".join(stale) + ". Rediscover the catalog for this session"
+        )
+    warnings = []
     if catalog["provenance"]["kind"] != "runtime":
         warnings.append(f"Inventory provenance: {catalog['provenance']['kind']}; not runtime-attested")
     selected_parent = None
@@ -347,11 +410,7 @@ def create_model_plan(root, request, catalog, at=None, *, selector=None):
             requirements["parent_cost_tier"] = parent_tier
         rejected, eligible = [], []
         for model in catalog["models"]:
-            reasons = (
-                parent_errors
-                + freshness(catalog, request, policy, at)
-                + eligibility(model, requirements, catalog, policy)
-            )
+            reasons = parent_errors + eligibility(model, requirements, catalog, policy)
             guidance = _guidance_for(model, catalog, entries)
             for prerequisite in _identity_guidance(
                 model, catalog, recommendations["entries"] + request["research"]
@@ -421,7 +480,9 @@ def create_model_plan(root, request, catalog, at=None, *, selector=None):
                 item["rationale"]
                 if selected["preferred"]
                 else (
-                    f"{selected['guidance']['strengths']} Selected by JEV among reviewed candidates satisfying the hard constraints; this is a local-unattested selection, not a comparative benchmark."
+                    f"{selected['guidance']['strengths']} The only reviewed candidate satisfying the hard constraints; no JEV request was needed. This is not a comparative benchmark."
+                    if selector is not None and len(eligible) == 1
+                    else f"{selected['guidance']['strengths']} Selected by JEV among reviewed candidates satisfying the hard constraints; this is a local-unattested selection, not a comparative benchmark."
                     if selector is not None
                     else f"{selected['guidance']['strengths']} Selected by the configured {item['intent']} preference order among eligible choices; this is not a comparative benchmark."
                 )
@@ -461,6 +522,10 @@ def create_model_plan(root, request, catalog, at=None, *, selector=None):
     return plan
 
 
+def _reject_constant(value):
+    raise ValueError(f"non-finite JSON number {value}")
+
+
 def validate_plan(root, plan, current=True):
     validate_document(root, "plan", plan)
     if _timestamp(plan["created_at"]) > time.time() + 300:
@@ -486,10 +551,17 @@ def resolve_assignment(root, mission, binding, current=False):
     validate_document(root, "binding", binding)
     if not binding["plan_path"].startswith(f".factory/missions/{mission['id']}/models/"):
         raise FactoryError("Model plan belongs outside this mission")
-    data = safe_path(root, binding["plan_path"]).read_bytes()
+    try:
+        data = safe_path(root, binding["plan_path"]).read_bytes()
+    except OSError as exc:
+        raise FactoryError(f"Cannot read model plan {binding['plan_path']}: {exc.strerror or exc}") from None
     if sha256(data) != binding["plan_hash"]:
         raise FactoryError("Model plan content hash changed")
-    plan = validate_plan(root, json.loads(data), current=current)
+    try:
+        value = json.loads(data, parse_constant=_reject_constant)
+    except ValueError as exc:
+        raise FactoryError(f"Cannot read model plan {binding['plan_path']}: {exc}") from None
+    plan = validate_plan(root, value, current=current)
     assignment = next((a for a in plan["assignments"] if a["id"] == binding["assignment_id"]), None)
     if not assignment or model_hash(assignment) != binding["assignment_hash"]:
         raise FactoryError("Model assignment content hash mismatch")
@@ -500,15 +572,22 @@ def dispatch_assignment(root, plan, assignment_id, catalog):
     validate_plan(root, plan)
     validate_document(root, "catalog", catalog)
     assignment = next((a for a in plan["assignments"] if a["id"] == assignment_id), None)
-    if not assignment or assignment["status"] != "selected":
-        raise FactoryError("Assignment is missing or unresolved")
+    if not assignment:
+        raise FactoryError(
+            f"Assignment {assignment_id!r} is missing from the plan; use one of: "
+            + ", ".join(a["id"] for a in plan["assignments"])
+        )
+    if assignment["status"] != "selected":
+        raise FactoryError(f"Assignment {assignment_id} is unresolved; revise the request and plan again")
     if catalog["profile"] != plan["request"]["profile"] or catalog["harness"] != plan["request"]["harness"]:
         raise FactoryError("Dispatch client/harness differs from plan")
     if catalog["billing_context"] != plan["catalog"]["billing_context"]:
         raise FactoryError("Dispatch billing context differs from plan; regenerate it")
     controls = model_controls(root)
     policy, recommendations = controls["policy"], controls["recommendations"]
-    reasons = freshness(catalog, {**plan["request"], "session_id": catalog["session_id"]}, policy)
+    # The dispatch catalog must be current and belong to the plan's session: a new
+    # session revalidates availability by planning again.
+    reasons = freshness(catalog, plan["request"], policy)
     actual = next((m for m in catalog["models"] if m["id"] == assignment["model"]["id"]), None)
     if actual is None:
         reasons.append("Selected model is no longer advertised")
@@ -526,12 +605,7 @@ def dispatch_assignment(root, plan, assignment_id, catalog):
             reasons.append(
                 "Observed parent tier differs from planned delegation; select/revalidate the main model first"
             )
-    research = plan["request"]["research"] + [
-        e
-        for e in recommendations["entries"]
-        if e["key"] not in {r["key"] for r in plan["request"]["research"]}
-    ]
-    guidance = _guidance_for(assignment["model"], catalog, research)
+    guidance = _guidance_for(assignment["model"], catalog, guidance_entries(plan["request"], recommendations))
     for prerequisite in _identity_guidance(
         assignment["model"],
         catalog,
@@ -581,6 +655,11 @@ def validate_task_observation(root, mission, task, observation):
         if observation is not None:
             raise FactoryError("Unbound task cannot claim a model assignment")
         return
+    if observation is None:
+        raise FactoryError(
+            f"Task {task['id']} is bound to a model assignment; its result needs a model_observation for "
+            "attempt " + str(task["attempts"]) + ' (use provenance "unknown" when identity was not observed)'
+        )
     validate_document(root, "observation", observation)
     resolved = resolve_assignment(root, mission, task["model_assignment"])
     assignment, plan = resolved["assignment"], resolved["plan"]
@@ -634,6 +713,18 @@ def validate_task_observation(root, mission, task, observation):
             raise FactoryError("Observed fallback violates model constraints")
 
 
+# Environment variables never passed to the Codex metadata child: factory secrets
+# the client has no use for.
+DISCOVERY_SCRUBBED_ENV = ("TYPESAFE_API_KEY",)
+STDERR_TAIL_BYTES = 1024
+CODEX_MODALITIES = ("text", "image")
+CODEX_ENRICHMENT_WARNING = (
+    "Codex model/list reports no tool support, lifecycle or subagent availability, so planning rejects "
+    "these models until the catalog is enriched: add tools to capabilities, set lifecycle and operations "
+    "from official research, and record the source in provenance.reference"
+)
+
+
 def discover_codex(
     root,
     binary,
@@ -642,26 +733,51 @@ def discover_codex(
     billing_context="unknown",
     timeout_ms=15000,
 ):
-    """Read only initialize/model-list metadata; bounded protocol, time and memory."""
+    """Read only initialize/model-list metadata; bounded protocol, time and memory.
+
+    Returns {"catalog": ..., "warnings": [...]}.
+    """
     if not binary or not Path(binary).is_absolute():
         raise FactoryError("Codex discovery requires the actual absolute client binary")
     if type(timeout_ms) is not int or not 50 <= timeout_ms <= 60000:
         raise FactoryError("Invalid discovery timeout")
+    env = {key: value for key, value in os.environ.items() if key not in DISCOVERY_SCRUBBED_ENV}
     try:
         child = subprocess.Popen(
             [str(binary), "app-server"],
             cwd=root,
+            env=env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             bufsize=0,
         )
     except OSError as exc:
         raise FactoryError("Codex metadata process could not start") from exc
     selector = selectors.DefaultSelector()
     selector.register(child.stdout, selectors.EVENT_READ)
+    selector.register(child.stderr, selectors.EVENT_READ)
+    os.set_blocking(child.stderr.fileno(), False)
     buffer, total, seq = b"", 0, 0
+    stderr_tail = bytearray()
     deadline = time.monotonic() + timeout_ms * 2 / 1000
+
+    def read_stderr():
+        # Keep only a bounded tail; a chatty client cannot fill the pipe and stall.
+        for _ in range(64):
+            try:
+                data = os.read(child.stderr.fileno(), 65536)
+            except (BlockingIOError, OSError):
+                return
+            if not data:
+                # Closed stderr stays readable; stop selecting it to avoid a busy loop.
+                try:
+                    selector.unregister(child.stderr)
+                except (KeyError, ValueError):
+                    pass
+                return
+            stderr_tail.extend(data)
+            del stderr_tail[:-STDERR_TAIL_BYTES]
 
     def write(value, end=None):
         # A client can stop reading while supplying a large opaque pagination
@@ -706,8 +822,13 @@ def discover_codex(
                     raise FactoryError("Codex metadata request failed; inspect the client connection locally")
                 return value.get("result")
             remaining = end - time.monotonic()
-            if remaining <= 0 or not selector.select(remaining):
+            events = selector.select(remaining) if remaining > 0 else []
+            if not events:
                 raise FactoryError(f"Codex metadata timeout or deadline: {method}")
+            if any(key.fileobj is child.stderr for key, _ in events):
+                read_stderr()
+            if not any(key.fileobj is child.stdout for key, _ in events):
+                continue
             data = os.read(child.stdout.fileno(), 65536)
             if not data:
                 raise FactoryError("Codex metadata process exited before completing discovery")
@@ -716,6 +837,7 @@ def discover_codex(
                 raise FactoryError("Codex metadata response exceeded size limit")
             buffer += data
 
+    warnings, dropped = [], set()
     try:
         initialized = request(
             "initialize",
@@ -742,20 +864,28 @@ def discover_codex(
                     raise FactoryError("Invalid Codex catalog model")
                 if item.get("hidden"):
                     continue
+                if not isinstance(item.get("model"), str):
+                    raise FactoryError("Invalid Codex catalog model: model/list item has no string model ID")
                 efforts = item.get("supportedReasoningEfforts", [])
                 if not isinstance(efforts, list) or any(
                     not isinstance(e, dict) or "reasoningEffort" not in e for e in efforts
                 ):
                     raise FactoryError("Invalid Codex effort metadata")
+                modalities = item.get("inputModalities", [])
+                if not isinstance(modalities, list):
+                    raise FactoryError(f"Invalid Codex input modalities for {item['model']}")
+                for modality in modalities:
+                    if modality not in CODEX_MODALITIES:
+                        dropped.add(str(modality)[:40])
                 models.append(
                     {
-                        "id": item.get("model"),
+                        "id": item["model"],
                         "provider": provider,
                         "identity": "exact",
                         "resolved_model": None,
                         "availability": "visible",
                         "operations": ["main"],
-                        "capabilities": item.get("inputModalities", []),
+                        "capabilities": [m for m in dict.fromkeys(modalities) if m in CODEX_MODALITIES],
                         "context_tokens": None,
                         "efforts": [e["reasoningEffort"] for e in efforts],
                         "default_effort": item.get("defaultReasoningEffort"),
@@ -765,9 +895,10 @@ def discover_codex(
                     }
                 )
             cursor = response.get("nextCursor")
-            if cursor is None:
+            # Codex ends pagination with null; an empty cursor also means no next page.
+            if cursor is None or cursor == "":
                 break
-            if not isinstance(cursor, str) or not cursor or cursor in cursors or page == 19:
+            if not isinstance(cursor, str) or cursor in cursors or page == 19:
                 raise FactoryError("Codex catalog pagination did not complete")
             cursors.add(cursor)
         catalog = catalog_template(profile="codex", harness="codex-native", session_id=session_id)
@@ -782,11 +913,26 @@ def discover_codex(
             },
             models=models,
         )
-        return validate_document(root, "catalog", catalog)
+        if dropped:
+            warnings.append(
+                "Ignored input modalities the catalog does not model: " + ", ".join(sorted(dropped))
+            )
+        if models:
+            warnings.append(CODEX_ENRICHMENT_WARNING)
+        return {"catalog": validate_document(root, "catalog", catalog), "warnings": warnings}
+    except FactoryError as exc:
+        read_stderr()
+        if not stderr_tail:
+            raise
+        from .redaction import redact
+
+        tail = redact(stderr_tail.decode("utf-8", "replace").strip())[0][-STDERR_TAIL_BYTES:]
+        raise FactoryError(f"{exc}; client stderr tail: {tail}", exc.exit_code) from None
     finally:
         selector.close()
         child.stdin.close()
         child.stdout.close()
+        child.stderr.close()
         if child.poll() is None:
             child.terminate()
             try:
@@ -844,52 +990,86 @@ def _guidance_model(entry, availability):
 
 
 def _picker_entry(token, entries):
-    lowered = token.lower()
-    exact = next((e for e in entries if lowered in (i.lower() for i in e["model_ids"])), None)
-    if exact or not re.fullmatch(r"[a-z]+", lowered):
+    """Guidance for one picker name: a native ID, display name, family alias or family and version."""
+    lowered = " ".join(token.lower().split())
+    exact = next(
+        (e for e in entries if lowered in (i.lower() for i in e["model_ids"] + e.get("display_names", []))),
+        None,
+    )
+    match = re.fullmatch(r"(?:claude[\s-]+)?([a-z]+)(?:[\s-]+v?(\d+(?:[.-]\d+)*))?", lowered)
+    if exact or not match:
         return exact
-    family = re.compile(rf"claude-{re.escape(lowered)}(-.+)?")
-    return next((e for e in entries if any(family.fullmatch(i.lower()) for i in e["model_ids"])), None)
+    family, version = match.groups()
+    if version:
+        # "Opus 5.5" or "claude-opus-5-5" names exactly that native ID.
+        target = f"claude-{family}-{version.replace('.', '-')}"
+        return next((e for e in entries if target in (i.lower() for i in e["model_ids"])), None)
+    pattern = re.compile(rf"claude-{re.escape(family)}(-.+)?")
+    return next((e for e in entries if any(pattern.fullmatch(i.lower()) for i in e["model_ids"])), None)
 
 
 def parse_claude_picker(text, entries):
     """Map a Claude Code /model "Available:" list to reviewed guidance entries.
 
+    Accepts comma, semicolon, newline or space separated names, an optional
+    "Available:" or "Available models:" prefix, list markers, parenthetical
+    notes such as "(default)" or "(claude-opus-5-5)" and "[1m]" suffixes.
     Returns (matched entries in picker order, skipped entries with reasons, notes).
     """
-    body = re.sub(r"^\s*available\s*:\s*", "", text.strip(), flags=re.IGNORECASE)
+    body = re.sub(r"^\s*available(?:\s+models)?\s*:\s*", "", text.strip(), flags=re.IGNORECASE)
     matched, skipped, notes = [], [], []
-    for raw in re.split(r"[,;\n]", body):
-        token = re.sub(r"^or\s+", "", raw.strip().rstrip(".").strip(), flags=re.IGNORECASE).strip()
-        if not token:
-            continue
-        match = re.fullmatch(r"(.*?)\s*(\[[^\]]*\])?", token)
-        base, suffix = match.group(1), match.group(2)
-        entry = _picker_entry(base, entries)
-        if entry is None and " " in base:
-            # Prose such as "a full model ID" is picker help text, not a model.
-            continue
+
+    def consider(token, split=True):
+        found = re.fullmatch(r"(.*?)\s*(\[[^\]]*\])?", token)
+        base, suffix = found.group(1), found.group(2)
+        inner = [part.strip() for part in re.findall(r"\(([^()]*)\)", base) if part.strip()]
+        # Parentheses, including empty ones, never form part of a model name.
+        base = " ".join(re.sub(r"\([^()]*\)", " ", base).split())
+        label = " ".join(f"{base}{suffix or ''}".split()) or token
+        if not base and not inner:
+            return
         if base.lower() in CLAUDE_STRATEGY_ALIASES:
             skipped.append(
-                {"entry": token, "reason": "Selection strategy or default alias, not a single model"}
+                {"entry": label, "reason": "Selection strategy or default alias, not a single model"}
             )
-            continue
+            return
+        entry = _picker_entry(base, entries) if base else None
+        entry = entry or next(filter(None, (_picker_entry(part, entries) for part in inner)), None)
+        # "Sonnet 4.5" names one version; never split it into a family alias.
+        versioned = re.fullmatch(r"(?:claude[\s-]+)?[a-z]+[\s-]+v?\d+(?:[.-]\d+)*", base.lower())
+        if entry is None and " " in base and not versioned:
+            words = base.split()
+            if split and any(
+                w.lower() in CLAUDE_STRATEGY_ALIASES or _picker_entry(re.sub(r"\[.*", "", w), entries)
+                for w in words
+            ):
+                # A space-separated list such as "sonnet opus haiku".
+                for word in words:
+                    consider(word, split=False)
+            # Otherwise prose such as "a full model ID" is picker help text, not a model.
+            return
         if entry is None:
             skipped.append(
                 {
-                    "entry": token,
+                    "entry": label,
                     "reason": "No reviewed factory guidance for this alias or model ID; research it and "
                     "fill the catalog manually",
                 }
             )
-            continue
+            return
         if suffix:
             notes.append(
-                f"{token} maps to {entry['model_ids'][0]}; its extended context is not recorded because "
+                f"{label} maps to {entry['model_ids'][0]}; its extended context is not recorded because "
                 "reviewed guidance does not state context capacity"
             )
         if entry not in matched:
             matched.append(entry)
+
+    for raw in re.split(r"[,;\n]", body):
+        token = re.sub(r"^(?:[-*\u2022>\u276f]\s*|\d+[.)]\s+)+", "", raw.strip())
+        token = re.sub(r"^or\s+", "", token.rstrip(".").strip(), flags=re.IGNORECASE).strip()
+        if token:
+            consider(token)
     return matched, skipped, notes
 
 
@@ -900,10 +1080,6 @@ def discover_claude(root, session_id, picker=None, client_version="unknown", bil
     (planning rejects those models). With the operator's /model list, only matched
     models are listed as visible under user_report provenance.
     """
-    if billing_context not in BILLING_CONTEXTS:
-        raise FactoryError(
-            f"Invalid --billing {billing_context!r}; use one of: {', '.join(BILLING_CONTEXTS)}"
-        )
     entries = _claude_guidance(model_controls(root)["recommendations"]["entries"])
     catalog = catalog_template(profile="claude", harness="claude-code-native", session_id=session_id)
     catalog.update(client_version=client_version or "unknown", billing_context=billing_context)
@@ -922,10 +1098,11 @@ def discover_claude(root, session_id, picker=None, client_version="unknown", bil
             raise FactoryError('--picker needs the Claude Code /model "Available:" list text')
         matched, skipped, notes = parse_claude_picker(picker, entries)
         if not matched:
+            listed = ", ".join(s["entry"] for s in skipped)
             raise FactoryError(
-                "No --picker entry matched reviewed factory guidance ("
-                + ", ".join(s["entry"] for s in skipped)
-                + '); paste the /model list, e.g. "sonnet, opus, haiku, fable", or fill the catalog manually'
+                "No --picker entry matched reviewed factory guidance"
+                + (f" ({listed})" if listed else "")
+                + '; paste the /model list, e.g. "sonnet, opus, haiku, fable", or fill the catalog manually'
             )
         quoted = " ".join(picker.split())
         if len(quoted) > PICKER_REFERENCE_LIMIT:
@@ -971,6 +1148,28 @@ def plan_warnings(plan):
     ]
 
 
+STDIN_INPUTS = ("input", "catalog", "plan")
+
+
+def _stdin_json(root, name):
+    from .workflow import read_text_input
+
+    text = read_text_input(root, "-", f"--{name} JSON")[1]
+    try:
+        return json.loads(text, parse_constant=_reject_constant)
+    except ValueError as exc:
+        raise FactoryError(f"Cannot read --{name} JSON from stdin: {exc}") from None
+
+
+def _provenance(kind, value):
+    """The trust of one validated document, stated per kind."""
+    if kind == "catalog":
+        return value["provenance"]["kind"]
+    if kind == "observation":
+        return value["provenance"]
+    return "local-unattested"
+
+
 def handler(args):
     from .calibration import (
         assert_private_directory,
@@ -1002,8 +1201,18 @@ def handler(args):
         assert_private_directory(root, ".factory/local/models", create=False)
 
     validate_output()
+    stdin = [name for name in STDIN_INPUTS if getattr(args, name, None) == "-"]
+    if len(stdin) > 1:
+        raise FactoryError(
+            "Only one input can read stdin; " + " and ".join(f"--{n}" for n in stdin) + " both use -"
+        )
+    if args.billing is not None and args.billing not in BILLING_CONTEXTS:
+        raise FactoryError(f"Invalid --billing {args.billing!r}; use one of: {', '.join(BILLING_CONTEXTS)}")
+    if type(args.timeout_ms) is not int or not 50 <= args.timeout_ms <= 60000:
+        raise FactoryError(f"Invalid --timeout-ms {args.timeout_ms!r}; use 50-60000")
     controls = model_controls(root)
-    available_profiles = profiles(load_config(root))
+    # sources and template need no project; other commands validate their own inputs.
+    available_profiles = profiles(load_config(root)) if safe_path(root, "factory.json").is_file() else []
     if args.profile is not None and args.profile not in MODEL_HARNESSES:
         raise FactoryError(f"Invalid --profile {args.profile!r}; use one of: {', '.join(MODEL_HARNESSES)}")
     profile = args.profile or (available_profiles[0] if len(available_profiles) == 1 else None)
@@ -1016,23 +1225,31 @@ def handler(args):
             f"Invalid --harness {args.harness!r} for profile {profile}; use "
             + " or ".join(MODEL_HARNESSES[profile])
         )
-    picker = getattr(args, "picker", None)
-    client_version = getattr(args, "client_version", None)
-    if (picker is not None or client_version is not None) and not (
-        command == "discover" and profile == "claude"
-    ):
-        raise FactoryError("--picker and --client-version apply only to models discover --profile claude")
 
     def require(extra=()):
+        hint = (
+            "one of this project's profiles: " + ", ".join(available_profiles)
+            if len(available_profiles) > 1
+            else "claude, codex or copilot"
+        )
         flags = (
-            ("--profile", profile, "claude, codex or copilot"),
-            ("--harness", harness, "copilot-local or copilot-agent-host"),
+            ("--profile", profile, hint),
+            # The harness is derivable once the profile is known, so only then is it asked for.
+            *((("--harness", harness, "copilot-local or copilot-agent-host"),) if profile else ()),
             ("--session", args.session, "a non-sensitive label such as WORK-20260926-A"),
             *extra,
         )
         missing = [f"{flag} ({hint})" for flag, value, hint in flags if not value]
         if missing:
             raise FactoryError(f"models {command} is missing required " + ", ".join(missing))
+
+    picker = getattr(args, "picker", None)
+    client_version = getattr(args, "client_version", None)
+    if picker is not None or client_version is not None:
+        if command == "discover" and profile is None:
+            require()
+        if not (command == "discover" and profile == "claude"):
+            raise FactoryError("--picker and --client-version apply only to models discover --profile claude")
 
     def context(extra=()):
         require(extra)
@@ -1041,7 +1258,9 @@ def handler(args):
     def read_input(name):
         path = getattr(args, name)
         if not path:
-            raise FactoryError(f"--{name} requires a repository path")
+            raise FactoryError(f"--{name} requires a repository path, or - for stdin")
+        if path == "-":
+            return _stdin_json(root, name)
         return read_json(root, path)
 
     extra = {}
@@ -1069,25 +1288,24 @@ def handler(args):
         validate_document(root, args.kind, result)
     elif command == "discover":
         ctx = context()
-        if profile == "codex":
-            if harness != "codex-native":
-                raise FactoryError("Model profile/harness mismatch")
-            result = discover_codex(
-                root,
-                args.client,
-                args.session,
-                args.provider or "unknown",
-                args.billing or "unknown",
-                args.timeout_ms,
-            )
-        elif profile == "claude":
-            discovered = discover_claude(
-                root,
-                args.session,
-                picker=picker,
-                client_version=client_version or "unknown",
-                billing_context=args.billing or "unknown",
-            )
+        if profile in ("codex", "claude"):
+            if profile == "codex":
+                discovered = discover_codex(
+                    root,
+                    args.client,
+                    args.session,
+                    args.provider or "unknown",
+                    args.billing or "unknown",
+                    args.timeout_ms,
+                )
+            else:
+                discovered = discover_claude(
+                    root,
+                    args.session,
+                    picker=picker,
+                    client_version=client_version or "unknown",
+                    billing_context=args.billing or "unknown",
+                )
             result = discovered.pop("catalog")
             extra = {
                 "models": [m["id"] for m in result["models"]],
@@ -1104,7 +1322,8 @@ def handler(args):
         result = {
             "valid": True,
             "kind": args.kind,
-            "provenance": value.get("provenance", "local-unattested"),
+            "provenance": _provenance(args.kind, value),
+            **({"catalog_provenance": value["catalog"]["provenance"]["kind"]} if args.kind == "plan" else {}),
             "inference_tested": False,
         }
     elif command == "plan":
@@ -1117,12 +1336,20 @@ def handler(args):
             root,
             request,
             catalog,
-            input_paths={"request": args.input, "catalog": args.catalog},
+            # Files are re-read around each provider request; stdin cannot change.
+            input_paths={
+                "request": None if args.input == "-" else args.input,
+                "catalog": None if args.catalog == "-" else args.catalog,
+            },
         )
         warnings = plan_warnings(result)
         if warnings:
             extra = {"warnings": warnings}
     elif command == "dispatch":
+        if not args.assignment:
+            raise FactoryError(
+                "models dispatch is missing required --assignment (a plan assignment ID such as implementer)"
+            )
         result = dispatch_assignment(root, read_input("plan"), args.assignment, read_input("catalog"))
     elif command == "outcome-template":
         result = outcome_template()
@@ -1151,7 +1378,7 @@ MODEL_COMMANDS = {
     "sources": "List reviewed model guidance and policy (default)",
     "template": "Print a catalog or request template (--kind catalog|request)",
     "discover": "Build a catalog: Codex app-server, Claude /model picker or guidance, Copilot template",
-    "validate": "Validate a catalog, request, plan or observation JSON file",
+    "validate": "Validate a catalog, request, plan or observation JSON file (- reads stdin)",
     "plan": "Choose models for a request from a catalog (JEV when jev.enabled, else factory-models)",
     "dispatch": "Revalidate one plan assignment and print native settings to apply (applied: false)",
     "outcome-template": "Print a model outcome record template",
@@ -1169,9 +1396,9 @@ MODEL_OPTIONS = (
     ("objective", "TEXT", "Task objective (template --kind request); JEV planning sends it to TypeSafe"),
     ("id", "ID", "Plan ID such as PLAN-001 (template --kind request)"),
     ("kind", "KIND", "template: catalog or request; validate: catalog, request, plan or observation"),
-    ("input", "PATH", "JSON to validate, request to plan, or outcome to record"),
-    ("catalog", "PATH", "Model catalog JSON (plan, dispatch)"),
-    ("plan", "PATH", "Saved plan JSON (dispatch)"),
+    ("input", "PATH", "JSON to validate, request to plan, or outcome to record; - reads stdin"),
+    ("catalog", "PATH", "Model catalog JSON (plan, dispatch); - reads stdin"),
+    ("plan", "PATH", "Saved plan JSON (dispatch); - reads stdin"),
     ("assignment", "ID", "Plan assignment to dispatch, such as implementer"),
     ("client", "PATH", "Absolute path of the Codex client binary (discover --profile codex)"),
     ("provider", "NAME", "Provider recorded for Codex models, such as openai (discover)"),
@@ -1194,7 +1421,8 @@ Claude Code example (Claude Code has no machine-readable model list):
 
 Without --picker, Claude discovery lists reviewed guidance with unknown availability,
 which planning rejects. Only models plan calls JEV, and only when jev.enabled is true.
-No command changes native model settings.
+No command changes native model settings. One of --input, --catalog or --plan may be -
+to read that JSON (UTF-8, at most 256 KiB) from stdin, for example with <<'JSON'.
 """
 
 

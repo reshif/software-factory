@@ -535,8 +535,43 @@ class JevTests(unittest.TestCase):
         with self.assertRaisesRegex(JevError, "invalid_response"):
             self.request(MockResponse(raw, length=str(len(raw) + 1)))
 
+    def test_permanent_server_statuses_are_not_retried(self):
+        pauses = []
+        with mock.patch.object(jev, "_pause", lambda seconds, _cancel: pauses.append(seconds)):
+            for status in (501, 505):
+                with self.subTest(status=status), self.assertRaisesRegex(JevError, f"^http_{status}$"):
+                    self.request([MockResponse(b"", status=status), self.ok()])
+                self.assertEqual(len(self.calls), 1)
+            for status in (502, 504):
+                with self.subTest(status=status):
+                    self.request([MockResponse(b"", status=status), self.ok()])
+                self.assertEqual(len(self.calls), 2)
+        self.assertEqual(len(pauses), 2)
+        self.assertEqual(jev.RETRY_STATUSES, {408, 429, 500, 502, 503, 504, 529})
+
+    def test_retry_after_is_strict_delay_seconds(self):
+        for value in ("1e1", " 2", "2 ", "+2", "1_0", "inf", "0x10", "\u0662", "", None, 3):
+            with self.subTest(value=value):
+                self.assertIsNone(jev._retry_after(value))
+        self.assertEqual(jev._retry_after("7"), 7.0)
+        self.assertEqual(jev._retry_after("0.25"), 0.25)
+
+    def test_content_length_is_plain_digits(self):
+        raw = json.dumps(response_for(self.body)).encode()
+        self.assertEqual(
+            self.request(MockResponse(raw, length=str(len(raw))))["answers"]["q0"]["choice"], "supports"
+        )
+        for length in (
+            f"+{len(raw)}",
+            f" {len(raw)}",
+            f"{len(raw)} ",
+            "0_" + str(len(raw)),
+        ):
+            with self.subTest(length=length), self.assertRaisesRegex(JevError, "invalid_response"):
+                self.request(MockResponse(raw, length=length))
+
     def test_bounded_header_length(self):
-        for length in ("-1", "private", "2.5"):
+        for length in ("-1", "private", "2.5", "+2", " 2", "1_0", "\u0662"):
             with (
                 self.subTest(length=length),
                 self.assertRaisesRegex(JevError, "invalid_response"),

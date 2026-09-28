@@ -467,7 +467,7 @@
             },
             "attempt": {
               "type": "integer",
-              "minimum": 0,
+              "minimum": 1,
               "maximum": 9007199254740991
             },
             "observed_model": {

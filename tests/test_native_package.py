@@ -113,5 +113,5 @@ def test_payload_ships_the_orchestrator_guard_and_starter_defaults():
             "blocking_hooks",
             "orchestrator_enforcement",
         }
-        assert capabilities["blocking_hooks"] in ("none", "guardrail", "fail_closed")
+        assert capabilities["blocking_hooks"] in ("none", "guardrail", "fail_closed_when_run")
         assert capabilities["orchestrator_enforcement"] in ("hook", "tool_allowlist", "instructions")

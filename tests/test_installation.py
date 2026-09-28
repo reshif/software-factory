@@ -903,9 +903,9 @@ def _codex_toggle(tmp_path, old, new):
 
 def test_conflicting_codex_key_after_uninstall_refuses_init(tmp_path):
     install(tmp_path, selected="codex", skip_sync=True)
-    c = _codex_toggle(tmp_path, "enabled = true", "enabled = false")
-    result = uninstall(tmp_path)
-    assert ".codex/config.toml" in result["preserved"]
+    # 0.3.2 no longer writes agents.enabled; a user-set false still refuses init.
+    c = _codex_toggle(tmp_path, "[agents]\n", "[agents]\nenabled = false\n")
+    uninstall(tmp_path)
     assert "enabled = false" in c.read_text()
     before = files(tmp_path)
     with pytest.raises(FactoryError) as caught:
@@ -928,7 +928,7 @@ def test_compatible_codex_key_reinstalls(tmp_path, changed):
     import tomllib
 
     agents = tomllib.loads((tmp_path / ".codex/config.toml").read_text())["agents"]
-    assert agents["enabled"] is True
+    assert "enabled" not in agents
     assert agents["max_concurrent_threads_per_session"] == (5 if changed else 3)
     render(tmp_path, check=True)
 
@@ -1000,7 +1000,8 @@ def test_orchestrator_agent_export(tmp_path):
     header = frontmatter(tmp_path / ORCHESTRATOR)
     assert header["name"] == "factory-orchestrator"
     assert header["tools"] == (
-        "Agent(factory-planner, factory-implementer, factory-verifier, factory-reviewer), Read, Glob, Grep, Bash"
+        "Agent(factory-planner, factory-implementer, factory-verifier, factory-reviewer), Read, Glob, Grep, Bash, "
+        "AskUserQuestion, TodoWrite"
     )
     [entry] = header["hooks"]["PreToolUse"]
     assert entry["matcher"] == "*"
@@ -1175,7 +1176,7 @@ def test_doctor_reports_enforcement_read_only(tmp_path):
     report = doctor(tmp_path)
     assert files(tmp_path) == before
     assert report["enforcement"]["claude"]["layer"] == "hook" and report["enforcement"]["claude"]["enabled"]
-    assert report["enforcement"]["claude"]["capabilities"]["blocking_hooks"] == "fail_closed"
+    assert report["enforcement"]["claude"]["capabilities"]["blocking_hooks"] == "fail_closed_when_run"
     assert report["enforcement"]["codex"]["layer"] == "instructions"
     assert report["enforcement"]["codex"]["opt_in"] is None
     assert report["enforcement"]["copilot"]["layer"] == "tool_allowlist"

@@ -84,3 +84,25 @@ def test_payload_has_no_unreferenced_installed_templates():
     paths = kernel_payload()
     assert not any(p.startswith(".factory/templates/installed-") for p in paths)
     assert b"--no-dev" in paths[".factory/README.md"]
+
+
+def test_payload_ships_the_orchestrator_guard_and_starter_defaults():
+    paths = kernel_payload()
+    assert ".factory/hooks/orchestrator_guard.py" in paths
+    assert not any("__pycache__" in p or p.endswith(".pyc") for p in paths)
+    config = starter("product", "claude")
+    assert config["model_selection"] == {"mode": "inherit"}
+    assert config["enforcement"] == {"claude_orchestrator_agent": False}
+    assert config["limits"]["high_risk_lines"] == 400
+    policy = json.loads(paths[".factory/policy.json"])
+    assert "tests/**" in policy["test_paths"] and ".factory/hooks/**" in policy["protected_paths"]
+    for profile in ("claude", "codex", "copilot"):
+        capabilities = json.loads(paths[f".factory/vendors/{profile}.json"])["capabilities"]
+        assert set(capabilities) == {
+            "subagents",
+            "tool_allowlists",
+            "blocking_hooks",
+            "orchestrator_enforcement",
+        }
+        assert capabilities["blocking_hooks"] in ("none", "guardrail", "fail_closed")
+        assert capabilities["orchestrator_enforcement"] in ("hook", "tool_allowlist", "instructions")

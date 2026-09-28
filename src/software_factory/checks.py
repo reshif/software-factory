@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import signal
 import subprocess
 import threading
@@ -22,7 +23,7 @@ from .core import (
     validate,
     write_json,
 )
-from .evidence import CandidateMonitor, candidate_snapshot, fingerprint
+from .evidence import CandidateMonitor, candidate_snapshot, changed_paths_reason, fingerprint
 
 
 def successful_check(record):
@@ -256,6 +257,21 @@ def _execute_suite(root, config, selected, log_root=None, record_root=None):
     return setup, results, setup_pass
 
 
+def fingerprint_change_reasons(before, after, monitoring):
+    """Explain a pre/post candidate fingerprint difference with the paths that account for it."""
+    if before["fingerprint"] == after["fingerprint"]:
+        return []
+    paths = set()
+    for key in ("source_paths", "dirty_paths", "changed_paths"):
+        paths |= set(before.get(key, [])) ^ set(after.get(key, []))
+    if paths:
+        return [changed_paths_reason("between the pre- and post-check fingerprints", paths)]
+    return [
+        "Candidate fingerprint changed during checks"
+        + ("" if monitoring["source_changed"] else "; the changed paths could not be attributed")
+    ]
+
+
 def run_checks(root, only=None, require_clean=False):
     # Observe configuration reads as well as candidate collection.
     with CandidateMonitor(root) as monitor:
@@ -273,6 +289,7 @@ def run_checks(root, only=None, require_clean=False):
         monitor.close()
         after = candidate_snapshot(root)
         monitoring = monitor.report()
+        monitoring["monitoring_reasons"] += fingerprint_change_reasons(before, after, monitoring)
         changed = monitoring["source_changed"] or before["fingerprint"] != after["fingerprint"]
         required = [c["id"] for c in selected if only is not None or c["required"]]
         passed = (
@@ -298,7 +315,19 @@ def run_checks(root, only=None, require_clean=False):
         }
 
 
+def next_run_label(directory, label):
+    """A suggested unused evidence run label after label (R-1 -> R-2, other -> other-2)."""
+    match = re.fullmatch(r"(.*?)(\d+)", label)
+    stem, number = (match.group(1), int(match.group(2))) if match else (label + "-", 1)
+    while True:
+        number += 1
+        candidate = f"{stem}{number}"
+        if not (directory / candidate).exists():
+            return candidate
+
+
 def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=False, resolution=None):
+
     from .workflow import (
         HOLD_STATES,
         POST_MERGE_STATES,
@@ -329,7 +358,10 @@ def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=Fa
     try:
         run_dir.mkdir()
     except FileExistsError as exc:
-        raise FactoryError(f"Evidence revision already exists: {revision}") from exc
+        raise FactoryError(
+            f"Evidence revision already exists: {revision}; --revision is a unique run label, not a git"
+            f" revision: pass a new one such as {next_run_label(run_dir.parent, revision)}"
+        ) from exc
     logs = f".factory/local/runs/{mission_id}/{revision}"
     try:
         safe_path(root, logs).mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -381,6 +413,11 @@ def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=Fa
             monitoring["source_changed"] |= records["source_changed"]
             monitoring["monitoring_uncertain"] |= records["monitoring_uncertain"]
             monitoring["monitoring_reasons"] += records["monitoring_reasons"]
+        monitoring["monitoring_reasons"] += fingerprint_change_reasons(before, after, monitoring)
+        if current != mission:
+            monitoring["monitoring_reasons"].append(
+                f"Mission record {mission_id} changed during verification"
+            )
         evidence = {
             "schema_version": 1,
             "id": revision,
@@ -425,7 +462,7 @@ def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=Fa
                     "Mission changed during verification; evidence was saved but not registered"
                 )
             value["evidence"].append(reference)
-            # Repair budget (constitution rule 15): failing a task's checks after it
+            # Repair budget (constitution: Deliberate repair): failing a task's checks after it
             # left RUNNING consumes its attempt. It cannot become DONE again until it
             # re-enters RUNNING, which counts a new attempt. Failures while RUNNING
             # belong to the attempt in progress; setup/monitoring failures flag nothing.

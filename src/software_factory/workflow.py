@@ -6,12 +6,16 @@ module does not publish a PR, merge a branch, or execute deployment commands.
 
 from __future__ import annotations
 
+import argparse
 import copy
+import difflib
 import json
 import os
+import posixpath
 import re
 import shutil
 import socket
+import sys
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -31,12 +35,14 @@ from .core import (
     profiles,
     read_json,
     safe_path,
+    sha256,
     validate,
     write_bytes,
     write_json,
 )
 from .evidence import (
     CandidateMonitor,
+    candidate_diff,
     candidate_snapshot,
     capture_local_governance,
     fingerprint,
@@ -88,6 +94,7 @@ PROTECTED_FLOOR = (
     ".factory/prompts/**",
     ".factory/models/**",
     ".factory/vendors/**",
+    ".factory/hooks/**",
     ".factory/templates/**",
     ".factory/docs/**",
     ".claude/**",
@@ -127,10 +134,109 @@ DELIVERY_FIELDS = {
 }
 
 
+REQUEST_LIMIT = 256 * 1024
+MIN_EXCERPT = 8
+REVIEW_KINDS = ("code", "acceptance", "adversarial")
+BRIEF_KINDS = ("context", "research", "code", "acceptance", "adversarial")
+DIFF_BRIEFS = {"code", "acceptance", "adversarial"}
+MERMAID_DIAGRAMS = (
+    "flowchart",
+    "graph",
+    "sequenceDiagram",
+    "classDiagram",
+    "stateDiagram",
+    "stateDiagram-v2",
+    "erDiagram",
+    "C4Context",
+    "C4Container",
+    "C4Component",
+    "architecture-beta",
+    "block-beta",
+)
+DEFAULT_TEST_PATHS = ("tests/**", "test/**", "**/*_test.*", "**/test_*.*", "**/*.test.*", "**/*.spec.*")
+LOCKFILES = (
+    "uv.lock",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "go.sum",
+    "Cargo.lock",
+    "Gemfile.lock",
+    "poetry.lock",
+)
+DEPENDENCY_FILES = ("pyproject.toml", "requirements*.txt", "package.json", "go.mod", "Cargo.toml", *LOCKFILES)
+CI_PATHS = (".github/workflows/**", ".gitlab-ci.yml", "azure-pipelines.yml", "Jenkinsfile")
+CLARIFICATIONS_TITLE = "# Clarifications\n\n"
+LEGACY_WARNING = "legacy mission without recorded request"
+REQUEST_REMOVED = (
+    "request.md exists but mission.json has no request record (request record removed); "
+    "restore the request record or the mission cannot proceed"
+)
+REQUEST_UNACCEPTED = (
+    "Request or clarifications changed since scope acceptance (request chain not accepted); "
+    "run mission accept-scope again"
+)
+REQUEST_REQUIRED = (
+    "mission create requires --request-file PATH (or request_file in --input JSON): "
+    "a repository file with the verbatim user request"
+)
+
+SCOPE_RECORDS = ("plan.md", "recovery.md", "context.md", "request.md", "clarifications.md")
+
+
 def require_text(value, label):
     if not isinstance(value, str) or not value.strip():
         raise FactoryError(f"{label} requires concrete text")
     return value.strip()
+
+
+TASK_MANAGED_FIELDS = (
+    "status",
+    "attempts",
+    "attempt_base",
+    "budget_resets",
+    "repair_required",
+    "model_attempts",
+)
+
+
+def schema_fields(root, kind, *pointer):
+    """Property names of a (sub)schema, in schema order."""
+    try:
+        node = json.loads(asset_path(root, f"schemas/{kind}.schema.json").read_text())
+    except (OSError, ValueError) as exc:
+        raise FactoryError(f"Cannot load {kind} schema: {exc}") from exc
+    for key in pointer:
+        node = node[key]
+    return tuple(node["properties"])
+
+
+def task_input_fields(root):
+    return tuple(
+        f
+        for f in schema_fields(root, "mission", "properties", "tasks", "items")
+        if f not in TASK_MANAGED_FIELDS
+    )
+
+
+def reject_unknown_fields(record, allowed, label, aliases=None):
+    """Reject keys outside allowed with a hint and the full list of accepted keys."""
+    if not isinstance(record, dict):
+        raise FactoryError(f"{label[0].upper() + label[1:]} input must be a JSON object")
+    unknown = [key for key in record if key not in allowed]
+    if not unknown:
+        return
+    key = unknown[0]
+    hint = (aliases or {}).get(key)
+    if hint is None:
+        matches = [a for a in allowed if a.endswith("_" + key)] or difflib.get_close_matches(key, allowed, 1)
+        hint = f"did you mean {matches[0]}?" if matches else None
+    raise FactoryError(
+        f"Unknown {label} field '{key}'"
+        + (f" ({hint})" if hint else "")
+        + "; allowed fields: "
+        + ", ".join(allowed)
+    )
 
 
 def control_json(root, name):
@@ -216,7 +322,7 @@ class Assessment:
     def __init__(self, root, mission, observe_mission=True):
         self.root, self.mission = root, copy.deepcopy(mission)
         directory = f".factory/missions/{mission['id']}"
-        paths = [f"{directory}/{name}" for name in ("spec.md", "plan.md", "recovery.md")]
+        paths = [f"{directory}/{name}" for name in ("spec.md", *SCOPE_RECORDS)]
         if observe_mission:
             paths.append(f"{directory}/mission.json")
         self.monitor = CandidateMonitor(
@@ -254,7 +360,7 @@ class Assessment:
                     if item.is_file():
                         relative = item.relative_to(self.root).as_posix()
                         files[relative] = hash_file(self.root, relative)
-        for name in ("plan.md", "recovery.md"):
+        for name in SCOPE_RECORDS:
             relative = f".factory/missions/{id}/{name}"
             path = safe_path(self.root, relative)
             files[relative] = hash_file(self.root, relative) if path.exists() else None
@@ -356,12 +462,43 @@ def mission_template(root, name, id):
     return target.read_text() if target.exists() else f"# {name.removesuffix('.md')}\n\nMission: {id}\n"
 
 
-def create_mission(root, input):
-    id = assert_id(input["id"])
+def read_text_input(root, relative, label):
+    """A root-relative regular UTF-8 file (or "-" for stdin) of at most 256 KiB, as exact bytes and text."""
+    if not isinstance(relative, str) or not relative:
+        raise FactoryError(f"{label} requires a repository-relative file path or - for stdin")
+    if relative == "-":
+        data = sys.stdin.buffer.read(REQUEST_LIMIT + 1)
+        relative = "<stdin>"
+    else:
+        target = safe_path(root, relative)
+        if not target.is_file():
+            raise FactoryError(f"{label} must be an existing regular file: {relative}")
+        data = target.read_bytes()
+    if len(data) > REQUEST_LIMIT:
+        raise FactoryError(f"{label} exceeds {REQUEST_LIMIT // 1024} KiB: {relative}")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise FactoryError(f"{label} is not valid UTF-8: {relative}") from exc
+    if not text.strip():
+        raise FactoryError(f"{label} is empty: {relative}")
+    return data, text
+
+
+def create_mission(root, input, require_request=False):
+    """Create a mission; the CLI always passes require_request (a request-less mission is legacy)."""
+    if not isinstance(input, dict):
+        raise FactoryError("Mission input must be a JSON object")
+    if require_request and input.get("request_file") in (None, ""):
+        raise FactoryError(REQUEST_REQUIRED)
+    id = assert_id(input.get("id"))
     config = load_config(root)
     kind = input.get("kind") or "feature"
     if kind not in config["work_types"]:
         raise FactoryError("Unsupported work type")
+    request = None
+    if input.get("request_file") is not None:
+        request = read_text_input(root, input["request_file"], "Request file")[0]
     try:
         base = git(root, "rev-parse", "--verify", f"{input.get('base') or 'HEAD'}^{{commit}}")
     except FactoryError as exc:
@@ -392,6 +529,7 @@ def create_mission(root, input):
             "branch": branch,
             "spec_hash": None,
             "constitution_hash": hash_file(root, CONSTITUTION_PATH),
+            **_constitution_version_field(root),
             "governance_snapshot": capture_local_governance(root),
             "tasks": [],
             "decisions": [],
@@ -400,12 +538,25 @@ def create_mission(root, input):
             "blockers": [],
             "delivery": {},
         }
+        if request is not None:
+            digest_ = sha256(request)
+            mission["request"] = {
+                "path": "request.md",
+                "sha256": digest_,
+                "clarifications": [],
+                "chain": digest_,
+                "accepted_chain": None,
+            }
+            mission["criteria_hash"] = None
         validate(root, "mission", mission)
         path.mkdir(parents=True)
         try:
+            if request is not None:
+                write_bytes(root, f".factory/missions/{id}/request.md", request)
             for name in (
                 "spec.md",
                 "plan.md",
+                "context.md",
                 "decisions.md",
                 "handoff.md",
                 "recovery.md",
@@ -422,17 +573,430 @@ def create_mission(root, input):
         return mission
 
 
+def _normalized(text):
+    return " ".join(text.split())
+
+
+def _clarification_heading(number, at):
+    return f"## Clarification {number} ({at})\n\n"
+
+
+def request_texts(root, mission):
+    """Verify request.md and clarifications.md against the recorded chain; return their texts."""
+    request = mission["request"]
+    directory = f".factory/missions/{mission['id']}"
+    target = safe_path(root, f"{directory}/request.md")
+    if not target.is_file():
+        raise FactoryError("request.md is missing for a request-bearing mission")
+    data = target.read_bytes()
+    if sha256(data) != request["sha256"]:
+        raise FactoryError("request.md does not match the recorded request hash")
+    texts, head = [data.decode("utf-8", errors="replace")], request["sha256"]
+    entries = request["clarifications"]
+    target = safe_path(root, f"{directory}/clarifications.md")
+    if not entries:
+        if target.exists():
+            raise FactoryError("clarifications.md exists but no clarification is recorded")
+    else:
+        if not target.is_file():
+            raise FactoryError("clarifications.md is missing for recorded clarifications")
+        try:
+            content = target.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise FactoryError("clarifications.md is not valid UTF-8") from exc
+        if not content.startswith(CLARIFICATIONS_TITLE):
+            raise FactoryError("clarifications.md does not match the recorded clarification chain")
+        position = len(CLARIFICATIONS_TITLE)
+        for number, entry in enumerate(entries, 1):
+            heading = _clarification_heading(number, entry["at"])
+            if not content.startswith(heading, position):
+                raise FactoryError(f"clarifications.md does not contain recorded clarification {number}")
+            start = position + len(heading)
+            end = (
+                content.find(_clarification_heading(number + 1, entries[number]["at"]), start)
+                if number < len(entries)
+                else len(content)
+            )
+            body = content[start:end] if end >= 0 else ""
+            if not body.endswith("\n\n") or sha256(body[:-2]) != entry["sha256"] or entry["prev"] != head:
+                raise FactoryError(f"Clarification {number} does not match the recorded clarification chain")
+            head = sha256(f"{head}:{entry['sha256']}")
+            texts.append(body[:-2])
+            position = end
+    if head != request["chain"]:
+        raise FactoryError("Request clarification chain does not match mission.request.chain")
+    return texts
+
+
+def criterion_ids(mission):
+    return [item["id"] for item in mission.get("criteria", {}).get("items", [])]
+
+
+EXCLUSION_DECISION_KINDS = ("exclusion", "exception", "decline")
+
+
+def exclusion_subject_problem(mission, subject_hash):
+    """Why an exclusion decision's subject_hash does not bind the current request chain, or None."""
+    chain = (mission.get("request") or {}).get("chain")
+    if not chain:
+        return "an exclusion decision requires a request-bearing mission (mission.request.chain)"
+    if subject_hash != chain:
+        return (
+            "an exclusion decision's subject_hash must equal the current request chain head "
+            f"(mission.request.chain): expected {chain}, got {subject_hash}"
+        )
+    return None
+
+
+def exclusion_decision_problem(mission, decision_id):
+    """Raise unless decision_id names a decision that can support an exclusion.
+
+    Kind "exclusion" binds the current request chain; "exception" and "decline"
+    decisions remain accepted for exclusions recorded before 0.3.0.
+    """
+    decision = next(d for d in mission["decisions"] if d["id"] == decision_id)
+    if decision["kind"] not in EXCLUSION_DECISION_KINDS:
+        raise FactoryError(
+            f"Exclusion decision {decision_id} has kind {decision['kind']}; use one of: "
+            + ", ".join(EXCLUSION_DECISION_KINDS)
+        )
+    if decision["kind"] == "exclusion":
+        problem = exclusion_subject_problem(mission, decision["subject_hash"])
+        if problem:
+            raise FactoryError(f"Exclusion decision {decision_id} is stale: {problem}")
+
+
+def validate_criteria(root, mission, value, config, texts=None):
+    """Validate criteria against the verbatim request, clarifications, checks and decisions."""
+    if not mission.get("request"):
+        raise FactoryError(
+            "Acceptance criteria require a recorded request; create the mission with --request-file"
+        )
+    if not isinstance(value, dict):
+        raise FactoryError("Criteria input must be an object with items, exclusions and ambiguities")
+    value = {"exclusions": [], "ambiguities": [], **value}
+    validate(root, "mission", {**mission, "criteria": value})
+    sources = [_normalized(t) for t in (texts if texts is not None else request_texts(root, mission))]
+
+    def cited(excerpt, label):
+        text = _normalized(excerpt)
+        if len(text) < MIN_EXCERPT:
+            raise FactoryError(
+                f"{label} excerpt must be at least {MIN_EXCERPT} characters after whitespace"
+                f" normalisation; quote more of the request: {excerpt!r}"
+            )
+        if not any(text in source for source in sources):
+            raise FactoryError(
+                f"{label} excerpt matches nothing in the request or clarifications: {excerpt!r}"
+            )
+
+    ids = [item["id"] for item in value["items"]]
+    if len(set(ids)) != len(ids):
+        raise FactoryError("Criterion IDs must be unique")
+    configured = {c["id"] for c in config["checks"]}
+    for item in value["items"]:
+        for excerpt in item["excerpts"]:
+            cited(excerpt, f"Criterion {item['id']}")
+        unknown = [c for c in item.get("checks", []) if c not in configured]
+        if unknown:
+            raise FactoryError(f"Criterion {item['id']} names unconfigured checks: " + ", ".join(unknown))
+        if item["route"] == "check" and not item.get("checks"):
+            raise FactoryError(f"Criterion {item['id']} uses route check and needs at least one check ID")
+    decisions = {d["id"] for d in mission["decisions"]}
+    for exclusion in value["exclusions"]:
+        cited(exclusion["excerpt"], "Exclusion")
+        if exclusion["decision"] not in decisions:
+            raise FactoryError(f"Exclusion needs an existing decision: {exclusion['decision']}")
+        exclusion_decision_problem(mission, exclusion["decision"])
+    questions = [a["id"] for a in value["ambiguities"]]
+    if len(set(questions)) != len(questions):
+        raise FactoryError("Ambiguity IDs must be unique")
+    for ambiguity in value["ambiguities"]:
+        if ambiguity["status"] == "waived" and not ambiguity["decision"]:
+            raise FactoryError(f"Waived ambiguity {ambiguity['id']} needs a decision")
+        if ambiguity["decision"] and ambiguity["decision"] not in decisions:
+            raise FactoryError(
+                f"Ambiguity {ambiguity['id']} names an unknown decision: {ambiguity['decision']}"
+            )
+    return value
+
+
+def _section(markdown, title):
+    lines = markdown.splitlines()
+    for position, line in enumerate(lines):
+        if re.fullmatch(r"#{2,3}\s+" + re.escape(title) + r"\s*", line, re.IGNORECASE):
+            level = len(line.split(" ")[0])
+            end = next(
+                (
+                    n
+                    for n in range(position + 1, len(lines))
+                    if re.match(r"^#{1," + str(level) + r"}\s", lines[n])
+                ),
+                len(lines),
+            )
+            return "\n".join(lines[position + 1 : end]).strip()
+    return ""
+
+
+FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
+
+
+def _fence_close(line, fence):
+    return re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(len(fence)) + r",}\s*", line)
+
+
+def _architecture_section(markdown):
+    """Lines of the level-2 "## Architecture" section; headings inside fenced code do not count."""
+    lines, fence, start = markdown.splitlines(), None, None
+    for position, line in enumerate(lines):
+        if fence:
+            if _fence_close(line, fence):
+                fence = None
+            continue
+        opening = FENCE.fullmatch(line)
+        if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
+            fence = opening.group(1)
+            continue
+        if start is None and re.fullmatch(r" {0,3}##\s+Architecture\s*#*\s*", line, re.IGNORECASE):
+            start = position + 1
+        elif start is not None and re.match(r" {0,3}#{1,2}(\s|$)", line):
+            return lines[start:position]
+    return lines[start:] if start is not None else None
+
+
+def _mermaid_blocks(lines):
+    blocks, position = [], 0
+    while position < len(lines):
+        opening = re.fullmatch(r" {0,3}(`{3,}|~{3,})\s*mermaid\s*", lines[position])
+        position += 1
+        if not opening:
+            continue
+        fence, body = opening.group(1), []
+        while position < len(lines) and not _fence_close(lines[position], fence):
+            body.append(lines[position])
+            position += 1
+        if position >= len(lines):
+            break
+        position += 1
+        blocks.append(body)
+    return blocks
+
+
+def _diagram_problem(body):
+    """None for a diagram with a known type and content; otherwise the reason it is rejected."""
+    rest = [line.strip() for line in body]
+    while rest and (not rest[0] or rest[0].startswith("%%")):
+        rest.pop(0)
+    if rest and rest[0] == "---":
+        closing = next((n for n in range(1, len(rest)) if rest[n] == "---"), None)
+        if closing is None:
+            return "its YAML front matter has no closing ---"
+        rest = rest[closing + 1 :]
+        while rest and (not rest[0] or rest[0].startswith("%%")):
+            rest.pop(0)
+    if not rest:
+        return "it is empty"
+    kind = re.split(r"[\s;]", rest[0], maxsplit=1)[0]
+    if kind not in MERMAID_DIAGRAMS:
+        return f"unknown diagram type '{kind}'; use one of: " + ", ".join(MERMAID_DIAGRAMS)
+    if not any(line and not line.startswith("%%") for line in rest[1:]):
+        return f"the diagram is empty: add nodes or edges after '{rest[0]}'"
+    return None
+
+
+def architecture_report(markdown):
+    """(valid mermaid diagrams in the ## Architecture section, reason when there is none)."""
+    section = _architecture_section(markdown)
+    if section is None:
+        return [], "plan.md has no '## Architecture' section (a level-2 heading outside fenced code)"
+    blocks = _mermaid_blocks(section)
+    if not blocks:
+        return [], "plan.md '## Architecture' section has no fenced ```mermaid block"
+    diagrams, problems = [], []
+    for body in blocks:
+        problem = _diagram_problem(body)
+        if problem:
+            problems.append(problem)
+        else:
+            diagrams.append("\n".join(body).strip("\n"))
+    if diagrams:
+        return diagrams, None
+    return [], "plan.md Architecture mermaid block is invalid: " + problems[0]
+
+
+def architecture_diagrams(markdown):
+    """Valid fenced mermaid diagrams of the ## Architecture section (copied into the PR packet)."""
+    return architecture_report(markdown)[0]
+
+
+def _template_lines(text):
+    return {_normalized(line) for line in text.splitlines() if line.strip()}
+
+
+def _authored(root, mission, name):
+    target = safe_path(root, f".factory/missions/{mission['id']}/{name}")
+    text = target.read_bytes().decode("utf-8", errors="replace") if target.is_file() else ""
+    template = mission_template(root, name, mission["id"])
+    return text if text.strip() and _normalized(text) != _normalized(template) else None
+
+
+def _adds_content(text, template):
+    """True when text has a nonempty line that is neither a heading nor a template line."""
+    known = _template_lines(template)
+    return any(
+        line.strip() and not line.lstrip().startswith("#") and _normalized(line) not in known
+        for line in text.splitlines()
+    )
+
+
+def scope_reasons(root, mission, config):
+    """Accept-scope prerequisites of a request-bearing mission (empty when satisfied)."""
+    reasons, texts = [], None
+    try:
+        texts = request_texts(root, mission)
+    except (FactoryError, OSError) as exc:
+        reasons.append(str(exc))
+    criteria = mission.get("criteria")
+    if not criteria:
+        reasons.append("Acceptance criteria are required; record them with mission criteria")
+    else:
+        if texts is not None:
+            try:
+                validate_criteria(root, mission, criteria, config, texts)
+            except FactoryError as exc:
+                reasons.append(f"Acceptance criteria are invalid: {exc}")
+        unresolved = [a["id"] for a in criteria["ambiguities"] if a["status"] == "open"]
+        if unresolved:
+            reasons.append("Open ambiguities need a clarification or decision: " + ", ".join(unresolved))
+        known = set(criterion_ids(mission))
+        for task in mission["tasks"]:
+            unknown = [c for c in task.get("criteria", []) if c not in known]
+            if unknown:
+                reasons.append(f"Task {task['id']} maps unknown criteria: " + ", ".join(unknown))
+    context = _authored(root, mission, "context.md")
+    if context is None:
+        reasons.append("context.md is missing or still the unedited template; record the gathered context")
+    elif not _adds_content(context, mission_template(root, "context.md", mission["id"])):
+        reasons.append(
+            "context.md adds no content beyond headings and template text; record the gathered context"
+        )
+    plan = _authored(root, mission, "plan.md")
+    if plan is None:
+        reasons.append("plan.md is missing or still the unedited template")
+    else:
+        diagrams, problem = architecture_report(plan)
+        template = mission_template(root, "plan.md", mission["id"])
+        examples = {_normalized(d) for d in architecture_report(template)[0]}
+        if problem:
+            reasons.append(problem)
+        elif all(_normalized(d) in examples for d in diagrams):
+            reasons.append("plan.md Architecture diagram is still the template example")
+    return reasons
+
+
+def _bind_request_scope(root, mission, config):
+    if not mission.get("request"):
+        if request_record_removed(root, mission):
+            raise FactoryError(REQUEST_REMOVED)
+        return
+    reasons = scope_reasons(root, mission, config)
+    if reasons:
+        raise FactoryError("Scope cannot be accepted: " + "; ".join(reasons))
+    mission["criteria_hash"] = digest(mission["criteria"])
+    mission["request"]["accepted_chain"] = mission["request"]["chain"]
+
+
+def request_record_removed(root, mission):
+    return safe_path(root, f".factory/missions/{mission['id']}/request.md").exists()
+
+
+def scope_decision_hint(id, spec_hash):
+    record = {
+        "id": f"D-SCOPE-{spec_hash[:8]}",
+        "kind": "scope",
+        "subject_hash": spec_hash,
+        "reference": "<who accepted the specification, and where>",
+    }
+    return (
+        f"record it with: software-factory mission decision --mission {id} --input - <<'EOF'\n"
+        f"{json.dumps(record)}\nEOF"
+    )
+
+
+CONSTITUTION_VERSION = re.compile(r"^Version:\s*(\d+\.\d+\.\d+)\b", re.MULTILINE)
+
+
+def constitution_version(text):
+    """Return the X.Y.Z from a constitution's "Version:" line, or None."""
+    match = CONSTITUTION_VERSION.search(text)
+    return match.group(1) if match else None
+
+
+def _constitution_version_field(root):
+    try:
+        text = safe_path(root, CONSTITUTION_PATH).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    version = constitution_version(text)
+    return {"constitution_version": version} if version else {}
+
+
+def constitution_reconcile_hint(id, constitution):
+    """Exact commands that rebind a mission of any kind to a changed constitution."""
+    record = {
+        "id": f"D-CONST-{constitution[:8]}",
+        "kind": "exception",
+        "subject_hash": constitution,
+        "reference": "<who approved the constitution change, and where>",
+    }
+    return (
+        f"reconcile with: software-factory mission block --mission {id} "
+        "--reason 'Constitution changed; reconcile before continuing'; then "
+        f"software-factory mission decision --mission {id} --input - <<'EOF'\n"
+        f"{json.dumps(record)}\nEOF\n"
+        f"then software-factory mission accept-scope --mission {id} "
+        "(returns to PLANNED; tasks restart from TODO and must be re-verified and re-reviewed)"
+    )
+
+
+def constitution_changed_message(root, mission, constitution=None):
+    constitution = constitution or hash_file(root, CONSTITUTION_PATH)
+    version = _constitution_version_field(root).get("constitution_version")
+    return (
+        f"Constitution changed (mission bound to sha256 {mission['constitution_hash']}"
+        + (f", version {mission['constitution_version']}" if mission.get("constitution_version") else "")
+        + f"; {CONSTITUTION_PATH} is now sha256 {constitution}"
+        + (f", version {version}" if version else "")
+        + "); "
+        + constitution_reconcile_hint(mission["id"], constitution)
+    )
+
+
 def assert_current_scope(root, mission):
     actual = hash_file(root, f".factory/missions/{mission['id']}/spec.md")
     if mission["spec_hash"] != actual:
         raise FactoryError("Specification changed; accept a new scope before continuing")
-    if mission["constitution_hash"] != hash_file(root, CONSTITUTION_PATH):
-        raise FactoryError("Constitution changed; reconcile mission before continuing")
+    constitution = hash_file(root, CONSTITUTION_PATH)
+    if mission["constitution_hash"] != constitution:
+        raise FactoryError(constitution_changed_message(root, mission, constitution))
     if not any(
         d["kind"] == "scope" and d["subject_hash"] == actual and d["reference"].strip()
         for d in mission["decisions"]
     ):
-        raise FactoryError("A scope decision reference bound to the current specification is required")
+        raise FactoryError(
+            f"A scope decision reference bound to the current specification (sha256 {actual}) is required; "
+            + scope_decision_hint(mission["id"], actual)
+        )
+    if not mission.get("request") and request_record_removed(root, mission):
+        raise FactoryError(REQUEST_REMOVED)
+    if mission.get("request"):
+        request_texts(root, mission)
+        if not mission.get("criteria") or mission.get("criteria_hash") != digest(mission["criteria"]):
+            raise FactoryError(
+                "Acceptance criteria changed or are unaccepted; accept a new scope before continuing"
+            )
+        if mission["request"].get("accepted_chain") != mission["request"]["chain"]:
+            raise FactoryError(REQUEST_UNACCEPTED)
 
 
 def _resolve_blockers(mission, resolution):
@@ -444,6 +1008,8 @@ def _resolve_blockers(mission, resolution):
 
 
 def accept_scope(root, id):
+    config = load_config(root)
+
     def mutate(mission):
         if effective_state(mission) not in PRE_MERGE_STATES:
             raise FactoryError("Scope can only be accepted before merge")
@@ -451,14 +1017,20 @@ def accept_scope(root, id):
             raise FactoryError("Stop active tasks before changing scope")
         constitution = hash_file(root, CONSTITUTION_PATH)
         if constitution != mission["constitution_hash"]:
-            if mission["kind"] != "maintenance" or not any(
-                d["kind"] == "exception" and d["subject_hash"] == constitution and d["reference"].strip()
+            if not any(
+                d["kind"] == "exception"
+                and d["subject_hash"] == constitution
+                and str(d.get("reference") or "").strip()
                 for d in mission["decisions"]
             ):
                 raise FactoryError(
-                    "Constitution changes require maintenance and an exception decision for its exact new hash"
+                    "Constitution changes require an exception decision bound to the exact new "
+                    f"constitution sha256 {constitution}; " + constitution_reconcile_hint(id, constitution)
                 )
             mission["constitution_hash"] = constitution
+            mission.pop("constitution_version", None)
+            mission.update(_constitution_version_field(root))
+        _bind_request_scope(root, mission, config)
         mission["spec_hash"] = hash_file(root, f".factory/missions/{id}/spec.md")
         assert_current_scope(root, mission)
         mission["state"], mission["previous_state"] = "PLANNED", None
@@ -468,6 +1040,414 @@ def accept_scope(root, id):
         _resolve_blockers(mission, "Scope re-accepted for the current specification")
 
     return update_mission(root, id, mutate)
+
+
+def _reset_scope(mission, resolution):
+    """Return a premerge mission to PROPOSED; tasks restart from TODO and keep their attempts."""
+    mission["state"], mission["previous_state"] = "PROPOSED", None
+    mission.pop("suspended_tasks", None)
+    for task in mission["tasks"]:
+        task["status"] = "TODO"
+    mission["criteria_hash"] = None
+    if mission.get("request"):
+        mission["request"]["accepted_chain"] = None
+    _resolve_blockers(mission, resolution)
+
+
+def clarify_mission(root, id, relative):
+    data = read_text_input(root, relative, "Clarification")[0]
+    target = f".factory/missions/{assert_id(id)}/clarifications.md"
+    saved = {}
+
+    def mutate(mission):
+        if not mission.get("request"):
+            raise FactoryError("Clarifications require a recorded request; this is a legacy mission")
+        state = effective_state(mission)
+        if state not in PRE_MERGE_STATES:
+            raise FactoryError("Clarifications can only be recorded before merge")
+        if any(t["status"] in ACTIVE_TASK_STATES for t in mission["tasks"]):
+            raise FactoryError("Stop active tasks before clarifying the request")
+        request_texts(root, mission)
+        request, at = mission["request"], now()
+        entry = {"sha256": sha256(data), "prev": request["chain"], "at": at}
+        path = safe_path(root, target)
+        saved["before"] = path.read_bytes() if path.exists() else None
+        heading = _clarification_heading(len(request["clarifications"]) + 1, at).encode()
+        prefix = saved["before"] if saved["before"] is not None else CLARIFICATIONS_TITLE.encode()
+        write_bytes(root, target, prefix + heading + data + b"\n\n")
+        request["clarifications"].append(entry)
+        request["chain"] = sha256(f"{entry['prev']}:{entry['sha256']}")
+        if state != "PROPOSED" or mission["state"] in HOLD_STATES:
+            _reset_scope(mission, "Request clarified; scope must be accepted again")
+
+    try:
+        return update_mission(root, id, mutate)
+    except BaseException:
+        if "before" in saved:
+            if saved["before"] is None:
+                safe_path(root, target).unlink(missing_ok=True)
+            else:
+                write_bytes(root, target, saved["before"])
+        raise
+
+
+def record_criteria(root, id, value):
+    config = load_config(root)
+
+    def mutate(mission):
+        state = effective_state(mission)
+        if state not in PRE_MERGE_STATES:
+            raise FactoryError("Acceptance criteria can only change before merge")
+        if any(t["status"] in ACTIVE_TASK_STATES for t in mission["tasks"]):
+            raise FactoryError("Stop active tasks before changing acceptance criteria")
+        # Changed criteria no longer match the accepted criteria_hash, so work
+        # beyond PROPOSED needs a new accept-scope, exactly like a spec change.
+        mission["criteria"] = validate_criteria(root, mission, copy.deepcopy(value), config)
+        # After PLANNED, criteria change like a clarification: back to PROPOSED.
+        if state not in {"PROPOSED", "PLANNED"}:
+            _reset_scope(mission, "Acceptance criteria changed; scope must be accepted again")
+
+    return update_mission(root, id, mutate)
+
+
+def mission_lane(mission):
+    return "small" if mission["kind"] == "patch" else "feature"
+
+
+def _policy_paths(value, key, default=()):
+    items = value.get(key, list(default))
+    if not isinstance(items, list) or any(not isinstance(item, str) for item in items):
+        raise FactoryError(f"Invalid policy {key}")
+    return set(items)
+
+
+ASSERTION_MARKERS = re.compile(
+    r"\bassert\b|expect\(|\.should|assertEqual|assertTrue|assertRaises|pytest\.raises"
+    r"|t\.Error|t\.Fatal|require\."
+)
+
+
+def _patch_path(token):
+    """A path from a ---/+++ patch header (C-quoted when Git quotes it), without its a/ or b/ prefix."""
+    if token.startswith('"') and token.endswith('"'):
+        import codecs
+
+        token = codecs.escape_decode(token[1:-1].encode())[0].decode("utf-8", "replace")
+    return None if token == "/dev/null" else token[2:]
+
+
+def removed_lines(patch):
+    """Removed content lines of a unified patch, per repository path."""
+    removed, path, old = {}, None, None
+    for raw in patch.decode("utf-8", "replace").splitlines():
+        if raw.startswith("diff --git "):
+            path = old = None
+        elif path is None and raw.startswith("--- "):
+            old = _patch_path(raw[4:].rstrip("\t"))
+        elif path is None and raw.startswith("+++ "):
+            path = _patch_path(raw[4:].rstrip("\t")) or old
+        elif path and raw.startswith("-"):
+            removed.setdefault(path, []).append(raw[1:])
+    return removed
+
+
+def check_scripts(root, mission, config):
+    """Repository files named as argv elements of configured (current or baseline) check commands."""
+    commands = [c for c in [*config["checks"], *config.get("setup", [])] if isinstance(c, dict)]
+    try:
+        baseline = json.loads(git(root, "show", f"{mission['base_commit']}:factory.json"))
+        commands += [
+            c for c in [*baseline.get("checks", []), *baseline.get("setup", [])] if isinstance(c, dict)
+        ]
+    except (FactoryError, ValueError, AttributeError, TypeError):
+        pass
+    scripts = set()
+    for check in commands:
+        cwd = check.get("cwd", ".") if isinstance(check.get("cwd", "."), str) else "."
+        for arg in check.get("command", []) if isinstance(check.get("command"), list) else []:
+            if not isinstance(arg, str) or not arg or arg.startswith("/"):
+                continue
+            value = arg.split("=", 1)[1] if arg.startswith("-") and "=" in arg else arg
+            if value.startswith("-") or not value:
+                continue
+            for base in dict.fromkeys((cwd, ".")):
+                path = posixpath.normpath(posixpath.join(base, value))
+                if not path.startswith("../") and path not in {".", ".."}:
+                    scripts.add(path)
+    return scripts
+
+
+def assess_risk(root, mission, candidate=None, config=None):
+    """Live risk tier of the candidate against base_commit; reads only."""
+    config = config or load_config(root)
+    candidate = candidate or fingerprint(root, mission)
+    current, baseline = _policy(root, mission)
+    tests = _policy_paths(current, "test_paths", DEFAULT_TEST_PATHS) | _policy_paths(baseline, "test_paths")
+    protected = set(PROTECTED_FLOOR) | _policy_paths(current, "protected_paths")
+    protected |= _policy_paths(baseline, "protected_paths")
+    sensitive = _policy_paths(current, "sensitive_paths") | _policy_paths(baseline, "sensitive_paths")
+    changed = [p for p in candidate["changed_paths"] if not is_metadata(p)]
+    diff = candidate_diff(root, mission["base_commit"], changed)
+    removed_by_path = removed_lines(diff["patch"])
+    scripts = check_scripts(root, mission, config)
+    reasons, size = [], 0
+    for path in changed:
+        name = path.rsplit("/", 1)[-1]
+        is_test = any(matches_path(path, p) for p in tests)
+        added, removed, _ = diff["stats"].get(path, (0, 0, False))
+        if any(matches_path(path, p) for p in sensitive):
+            reasons.append(f"Sensitive path changed: {path}")
+        if any(matches_path(path, p) for p in protected):
+            reasons.append(f"Protected path changed: {path}")
+        if any(matches_path(name, p) for p in DEPENDENCY_FILES):
+            reasons.append(f"Dependency manifest or lockfile changed: {path}")
+        if any(matches_path(path, p) for p in CI_PATHS):
+            reasons.append(f"CI/workflow path changed: {path}")
+        if is_test and path in diff["deleted"]:
+            reasons.append(f"Test file deleted: {path}")
+        elif is_test and removed > added:
+            reasons.append(f"Test file has net removed lines: {path} (+{added} -{removed})")
+        if is_test and any(ASSERTION_MARKERS.search(line) for line in removed_by_path.get(path, [])):
+            reasons.append(f"Test assertions removed: {path}")
+        if path in scripts:
+            reasons.append(f"Check command script changed: {path}")
+
+        if not is_test and name not in LOCKFILES:
+            size += added + removed
+    limit = config["limits"].get("high_risk_lines", 400)
+    if size > limit:
+        reasons.append(f"Diff size {size} lines exceeds limits.high_risk_lines {limit}")
+    try:
+        reasons += [f"Check definition changed: {c}" for c in check_definition_changes(root, mission, config)]
+    except FactoryError as exc:
+        reasons.append(f"Cannot compare check definitions with the mission base: {exc}")
+    for task in mission["tasks"]:
+        # A first attempt alone never counts; a budget reset records an earlier exhaustion.
+        spent = attempts_used(task) > 1 or task.get("repair_required") or task["status"] == "BLOCKED"
+        if task.get("budget_resets") or (exhausted(task, config) and spent):
+            reasons.append(f"Task {task['id']} exhausted its repair budget")
+    return {"tier": "high" if reasons else "low", "reasons": reasons}
+
+
+def mission_risk(root, id):
+    mission = load_mission(root, id)
+    candidate = fingerprint(root, mission)
+    return {
+        **assess_risk(root, mission, candidate),
+        "lane": mission_lane(mission),
+        "fingerprint": candidate["fingerprint"],
+        "trust": "local-unattested",
+    }
+
+
+def required_reviews(mission, risk):
+    """Review kinds the gate requires, and the kind whose criteria verdicts decide acceptance."""
+    kinds = ["code"]
+    if mission_lane(mission) == "feature" or risk["tier"] == "high":
+        kinds.append("acceptance")
+    if risk["tier"] == "high":
+        kinds.append("adversarial")
+    return kinds, "acceptance" if "acceptance" in kinds else "code"
+
+
+def _fenced(text):
+    runs = [len(run) for run in re.findall(r"`{3,}", text)]
+    fence = "`" * max([3, *(n + 1 for n in runs)])
+    return [fence + "text", text.rstrip("\n"), fence]
+
+
+def brief_paths(id):
+    directory = f".factory/local/briefs/{assert_id(id)}"
+    return directory, f"{directory}/diff.patch"
+
+
+def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
+    """Deterministic Markdown brief: the same records and candidate give the same bytes."""
+    if not mission.get("request"):
+        raise FactoryError("Briefs require a recorded request; this is a legacy mission")
+    config = config or load_config(root)
+    texts = request_texts(root, mission)
+    criteria = mission.get("criteria") or {"items": [], "exclusions": [], "ambiguities": []}
+    id, (_, diff_path) = mission["id"], brief_paths(mission["id"])
+    title = f"Task {task_id}" if task_id else kind.title()
+    lines = [f"# {title} brief: {id}", "", f"Mission: {id}", f"Lane: {mission_lane(mission)}"]
+
+    def request_section():
+        lines.extend(["", "## Request (verbatim)", "", *_fenced(texts[0])])
+        for number, text in enumerate(texts[1:], 1):
+            lines.extend(["", f"## Clarification {number} (verbatim)", "", *_fenced(text)])
+
+    def criteria_section(items):
+        lines.extend(["", "## Acceptance criteria", ""])
+        for item in items:
+            checks = f"; checks: {', '.join(item.get('checks', []))}" if item.get("checks") else ""
+            lines.append(f"- {item['id']} (route: {item['route']}{checks}): {item['text']}")
+            lines.extend(f"  - Request excerpt: {_normalized(e)}" for e in item["excerpts"])
+        if not items:
+            lines.append("- None recorded yet.")
+
+    def diff_section():
+        lines.extend(
+            [
+                "",
+                "## Candidate",
+                "",
+                f"Base commit: {mission['base_commit']}",
+                f"Diff: {diff_path} (sha256 {sha256(diff['patch'])})",
+                "The diff includes untracked files as additions and excludes factory metadata.",
+            ]
+        )
+
+    if task_id:
+        task = next((t for t in mission["tasks"] if t["id"] == task_id), None)
+        if not task:
+            raise FactoryError(f"Unknown task: {task_id}")
+        items = [i for i in criteria["items"] if i["id"] in task.get("criteria", [])]
+        lines += [
+            f"Constitution hash: {mission['constitution_hash']}",
+            f"Base commit: {mission['base_commit']}",
+            "",
+            "## Task",
+            "",
+            f"- ID: {task['id']}",
+            f"- Title: {task['title']}",
+            f"- Owned paths: {', '.join(task['owned_paths'])}",
+            f"- Dependencies: {', '.join(task['depends_on']) or 'none'}",
+            f"- Checks: {', '.join(task['checks'])}",
+            f"- Attempts used: {attempts_used(task)} of {1 + config['limits']['repair_attempts']}",
+        ]
+        criteria_section(items)
+        notes = []
+        for other in [task["id"], *task["depends_on"]]:
+            try:
+                result = load_result(root, id, other)
+            except (FactoryError, OSError):
+                continue
+            notes.append(f"- {other} (attempt {result['execution_attempt']}): {result.get('summary', '')}")
+            notes.extend(f"  - Unresolved: {u}" for u in result.get("unresolved", []))
+        lines.extend(["", "## Notes from earlier results", "", *(notes or ["- None."])])
+        lines += [
+            "",
+            "## Rules",
+            "",
+            "- Change only the owned paths; preserve unrelated user changes.",
+            "- Do not start nested agents or delegate this task.",
+            (
+                "- Return one result JSON matching .factory/schemas/result.schema.json, including"
+                " criteria_evidence for every criterion above (check:<id>, evidence:<path> or note:<text>)."
+                " A route check criterion needs check:<id> naming one of its checks that passed."
+            ),
+            (
+                f"- The result's evidence[] must include the current verification record"
+                f" .factory/missions/{id}/evidence/<run>/checks.json written by software-factory verify."
+            ),
+            (
+                f"- Before READY_PR, recovery.md must state recovery implications (software-factory mission"
+                f" record-doc --mission {id} --doc recovery --input -)."
+            ),
+            "- Do not edit mission records; the orchestrator records state.",
+        ]
+    elif kind in {"context", "research"}:
+        request_section()
+        open_questions = [a for a in criteria["ambiguities"] if a["status"] == "open"]
+        lines.extend(["", "## Open ambiguities", ""])
+        lines.extend([f"- {a['id']}: {a['text']}" for a in open_questions] or ["- None recorded."])
+        lines += [
+            "",
+            "## Return",
+            "",
+            "Return the content for context.md with these sections: Codebase map; Conventions; Affected files"
+            " and tests; Dependencies; External documentation; Open questions."
+            if kind == "context"
+            else "Return research findings for context.md: each question, the answer, its sources and the"
+            " remaining uncertainty.",
+            "",
+            "## Citation rules",
+            "",
+            "- Cite repository evidence as path and line range.",
+            "- Cite external documentation with its URL and access date; prefer official sources.",
+            "- Mark assumptions and unknowns explicitly; never invent references.",
+            "- Do not change files and do not start nested agents.",
+        ]
+    elif kind == "code":
+        criteria_section(criteria["items"])
+        diff_section()
+        lines += [
+            "",
+            "## Rubric",
+            "",
+            "- Follow .factory/templates/review.md. Read the code and diff first; the implementer report last.",
+            "- For each criterion ask: what verification gap could let this pass while behaviour is wrong?",
+            "- Record criteria_verdicts for every criterion: pass, fail or needs_human.",
+            "- Blocking findings need an id; mark each finding verified true only when you reproduced it.",
+            "- No finding quotas: report real defects only. Do not start nested agents.",
+            '- Record the review with kind "code" and the brief_hash reported by mission brief.',
+        ]
+    elif kind == "acceptance":
+        request_section()
+        criteria_section(criteria["items"])
+        lines.extend(["", "## Exclusions", ""])
+        lines.extend(
+            [f"- {_normalized(e['excerpt'])} (decision {e['decision']})" for e in criteria["exclusions"]]
+            or ["- None."]
+        )
+        diff_section()
+        lines += [
+            "",
+            "## Instructions",
+            "",
+            "- Judge only whether the candidate satisfies the request and each criterion.",
+            "- Record criteria_verdicts for every criterion: pass, fail or needs_human.",
+            '- Record the review with kind "acceptance" and the brief_hash reported by mission brief.',
+            "- Do not start nested agents.",
+        ]
+    elif kind == "adversarial":
+        criteria_section(criteria["items"])
+        diff_section()
+        lines += ["", "## Try to break", ""]
+        lines.extend(
+            f"- Try to break {i['id']}: find an input, state or sequence where it fails."
+            for i in criteria["items"]
+        )
+        lines += [
+            "",
+            "- Record reproduced failures as findings with verified true; record criteria_verdicts.",
+            '- Record the review with kind "adversarial". Do not start nested agents.',
+        ]
+    else:
+        raise FactoryError("Brief kind must be one of: " + ", ".join(BRIEF_KINDS))
+    return "\n".join(lines) + "\n"
+
+
+def mission_brief(root, id, kind=None, task=None):
+    if (kind is None) == (task is None):
+        raise FactoryError("mission brief needs exactly one of --task or --kind")
+    if kind is not None and kind not in BRIEF_KINDS:
+        raise FactoryError("Brief kind must be one of: " + ", ".join(BRIEF_KINDS))
+    mission = load_mission(root, id)
+    candidate = fingerprint(root, mission)
+    diff = (
+        candidate_diff(root, mission["base_commit"], candidate["changed_paths"])
+        if kind in DIFF_BRIEFS
+        else None
+    )
+    text = render_brief(root, mission, kind, assert_id(task) if task else None, diff)
+    directory, diff_path = brief_paths(id)
+    from .calibration import assert_private_directory
+
+    assert_private_directory(root, directory)
+    path = f"{directory}/{'task-' + task if task else kind}.md"
+    write_bytes(root, path, text.encode())
+    if diff is not None:
+        write_bytes(root, diff_path, diff["patch"])
+    return {
+        "path": path,
+        "sha256": sha256(text),
+        "diff_path": diff_path if diff is not None else None,
+        "diff_sha256": sha256(diff["patch"]) if diff is not None else None,
+        "base_commit": mission["base_commit"],
+        "fingerprint": candidate["fingerprint"],
+    }
 
 
 def _validate_tasks(mission, config):
@@ -497,8 +1477,23 @@ def _validate_tasks(mission, config):
         visit(task)
 
 
+def _task_criteria(mission, value):
+    if (
+        not isinstance(value, list)
+        or any(not isinstance(item, str) for item in value)
+        or len(set(value)) != len(value)
+    ):
+        raise FactoryError("Task criteria must be a list of unique criterion IDs")
+    known = set(criterion_ids(mission))
+    unknown = [item for item in value if item not in known]
+    if unknown:
+        raise FactoryError("Task criteria name unknown acceptance criteria: " + ", ".join(unknown))
+    return list(value)
+
+
 def add_task(root, id, input):
     config = load_config(root)
+    reject_unknown_fields(input, task_input_fields(root), "task")
 
     def mutate(mission):
         if mission["state"] not in {"PROPOSED", "PLANNED", "IMPLEMENTING"}:
@@ -512,6 +1507,8 @@ def add_task(root, id, input):
             "checks": input.get("checks", [c["id"] for c in config["checks"] if c["required"]]),
             "attempts": 0,
         }
+        if "criteria" in input:
+            task["criteria"] = _task_criteria(mission, input["criteria"])
         if input.get("model_assignment"):
             from .models import resolve_assignment
 
@@ -525,6 +1522,14 @@ def add_task(root, id, input):
 
 def edit_task(root, id, task_id, patch):
     config = load_config(root)
+    if not isinstance(patch, dict):
+        raise FactoryError("Task update input must be a JSON object")
+    managed = [k for k in patch if k == "id" or k in TASK_MANAGED_FIELDS]
+    if managed:
+        raise FactoryError("Task identity, status and attempts cannot be edited: " + ", ".join(managed))
+    reject_unknown_fields(
+        patch, tuple(f for f in task_input_fields(root) if f != "id") + ("reason",), "task update"
+    )
 
     def mutate(mission):
         held = mission["state"] in HOLD_STATES and effective_state(mission) in {
@@ -549,19 +1554,12 @@ def edit_task(root, id, task_id, patch):
         history = [h for h in mission.get("task_history", []) if h["task"]["id"] == task_id]
         if any(h["reason"] == reason for h in history):
             raise FactoryError("Task update reason must differ from earlier updates")
-        if set(patch) - {
-            "title",
-            "depends_on",
-            "owned_paths",
-            "checks",
-            "reason",
-            "model_assignment",
-        }:
-            raise FactoryError("Task identity, status and attempts cannot be edited")
         prior = copy.deepcopy(task)
         for key in ("title", "depends_on", "owned_paths", "checks"):
             if key in patch:
                 task[key] = patch[key]
+        if "criteria" in patch:
+            task["criteria"] = _task_criteria(mission, patch["criteria"])
         if "model_assignment" in patch:
             if patch["model_assignment"] is None:
                 task.pop("model_assignment", None)
@@ -736,6 +1734,13 @@ def transition_mission(root, id, to, reason=None, next=None, decision=None):
     workflow = control_json(root, "workflow.json")
     if to in HOLD_STATES | {"CANCELED"}:
         reason = require_text(reason, f"{to} transition reason")
+    else:
+        for flag, value in (("--reason", reason), ("--next", next)):
+            if value is not None:
+                raise FactoryError(
+                    f"{flag} is recorded only for PAUSED, BLOCKED or CANCELED transitions; "
+                    f"omit it when moving to {to}"
+                )
     if next is not None:
         next = require_text(next, "Next action")
 
@@ -743,6 +1748,7 @@ def transition_mission(root, id, to, reason=None, next=None, decision=None):
         if to not in workflow["mission_transitions"].get(mission["state"], []):
             raise FactoryError(f"Invalid transition {mission['state']} -> {to}")
         if to == "PLANNED":
+            _bind_request_scope(root, mission, config)
             mission["spec_hash"] = hash_file(root, f".factory/missions/{id}/spec.md")
             assert_current_scope(root, mission)
         if to in {"IMPLEMENTING", "VERIFYING", "REVIEWING", "READY_PR"}:
@@ -922,17 +1928,67 @@ def validate_completed_result(root, mission, task, candidate_fingerprint, refere
         raise FactoryError("Result is incomplete, stale, or belongs to another task")
     if result.get("execution_attempt") != task["attempts"]:
         raise FactoryError("Result execution attempt is stale for the current task")
-    if not reference or reference not in result["evidence"]:
-        raise FactoryError("Result does not reference current verification evidence")
+    if not reference:
+        raise FactoryError("No current verification evidence; run software-factory verify first")
+    if reference not in result["evidence"]:
+        raise FactoryError(
+            f"Result does not reference current verification evidence; include {reference} in its evidence[]"
+        )
     if any(c not in result["checks"] for c in task["checks"]):
         raise FactoryError("Result omits assigned checks")
     return result
 
 
+RESULT_ALIASES = {"task": "use task_id", "mission": "use mission_id"}
+RESULT_EPILOG = """\
+Minimal accepted JSON (schema_version, mission_id, fingerprint and created_at
+default to 1, --mission, the current candidate fingerprint and now; an explicit
+fingerprint must equal the current one):
+
+  {
+    "task_id": "T-1",
+    "status": "complete",
+    "summary": "What changed and how it was checked",
+    "changed_files": ["src/app.py"],
+    "checks": ["unit"],
+    "evidence": [".factory/missions/M-1/evidence/R-1/checks.json"],
+    "unresolved": []
+  }
+
+Every evidence[] entry must be an existing repository file outside .git/,
+.factory/local/ and other mission records (this mission's evidence/ directory
+is allowed). A completed task's result must include the current verification
+evidence (the latest `software-factory verify` checks.json); the gate enforces
+this and record-result warns when it is missing. Request-bearing missions also
+map criteria with "criteria_evidence": {"AC-1": ["check:unit"]}. Print a
+skeleton with: software-factory mission template --kind result
+"""
+
+
+def _result_evidence_problem(root, id, path):
+    problem = evidence_path_problem(path)
+    if problem:
+        return problem
+    normalized = posixpath.normpath(path)
+    if normalized.startswith(".factory/missions/") and not normalized.startswith(
+        f".factory/missions/{id}/evidence/"
+    ):
+        return f"another mission's record as evidence, which cannot count as evidence: {path}"
+    try:
+        exists = safe_path(root, normalized).is_file()
+    except FactoryError as exc:
+        return f"an unsafe evidence path: {path} ({exc})"
+    return None if exists else f"a missing evidence file: {path}"
+
+
 def record_results(root, id, records):
     if not isinstance(records, list) or not records:
         raise FactoryError("Results must be a nonempty array")
+    allowed = schema_fields(root, "result")
+    for record in records:
+        reject_unknown_fields(record, allowed, "result", RESULT_ALIASES)
     records = copy.deepcopy(records)
+    warnings = []
     with state_lock(root):
         mission = load_mission(root, id)
         if effective_state(mission) in POST_MERGE_STATES | TERMINAL_STATES:
@@ -948,6 +2004,10 @@ def record_results(root, id, records):
             monitor.known.update(candidate["source_paths"])
             seen = set()
             for record in records:
+                record.setdefault("schema_version", 1)
+                record.setdefault("mission_id", id)
+                record.setdefault("fingerprint", candidate["fingerprint"])
+                record.setdefault("created_at", now())
                 validate(root, "result", record)
                 if record["mission_id"] != id or record["task_id"] in seen:
                     raise FactoryError("Result mission mismatch or duplicate task in batch")
@@ -960,9 +2020,31 @@ def record_results(root, id, records):
                 if record.get("execution_attempt", task["attempts"]) != task["attempts"]:
                     raise FactoryError("Result execution attempt does not match current task attempt")
                 record["execution_attempt"] = task["attempts"]
+                unknown = [c for c in record.get("criteria_evidence", {}) if c not in criterion_ids(mission)]
+                if unknown:
+                    raise FactoryError(
+                        "Result criteria_evidence names unknown criteria: " + ", ".join(unknown)
+                    )
+                for refs in record.get("criteria_evidence", {}).values():
+                    for ref in refs:
+                        problem = ref.startswith("evidence:") and evidence_path_problem(ref[9:])
+                        if problem:
+                            raise FactoryError(f"Result criteria_evidence cites {problem}")
+
                 _validate_observation(root, mission, task, record.get("model_observation"))
                 if record["fingerprint"] != candidate["fingerprint"]:
                     raise FactoryError("Result fingerprint is stale")
+                for path in record["evidence"]:
+                    problem = _result_evidence_problem(root, id, path)
+                    if problem:
+                        raise FactoryError(f"Result {record['task_id']} evidence[] cites {problem}")
+                current = next(iter(mission["evidence"][-1:]), None)
+                if record["status"] == "complete" and current not in record["evidence"]:
+                    warnings.append(
+                        f"Result {record['task_id']} does not include the current verification evidence"
+                        + (f" {current}" if current else " (none registered; run software-factory verify)")
+                        + "; the readiness gate will reject it until it does"
+                    )
             index = result_index(root, id)
             before_index = copy.deepcopy(index)
             created = []
@@ -992,6 +2074,7 @@ def record_results(root, id, records):
                     "recorded": created,
                     "fingerprint": candidate["fingerprint"],
                     "trust": "local-unattested",
+                    **({"warnings": warnings} if warnings else {}),
                 }
             except BaseException:
                 for path in created:
@@ -1000,8 +2083,14 @@ def record_results(root, id, records):
 
 
 def record_result(root, id, record):
+    if not isinstance(record, dict):
+        raise FactoryError("Result input must be a JSON object")
     result = record_results(root, id, [record])
-    return {"recorded": result["recorded"][0], "trust": result["trust"]}
+    return {
+        "recorded": result["recorded"][0],
+        "trust": result["trust"],
+        **({"warnings": result["warnings"]} if "warnings" in result else {}),
+    }
 
 
 def register_model_plan(root, id, plan):
@@ -1079,17 +2168,205 @@ def review_reasons(
     return reasons
 
 
+def latest_reviews(mission):
+    latest = {}
+    for review in mission["reviews"]:
+        latest[review.get("kind", "code")] = review
+    return latest
+
+
+def kind_review_reasons(mission, fingerprint, required, verdict_kind, brief_hash=None, maintainer=None):
+    """Latest review of each kind: required kinds must pass this candidate; no kind may stand rejected."""
+    criteria, reasons = criterion_ids(mission), []
+    for kind, review in [(k, latest_reviews(mission).get(k)) for k in REVIEW_KINDS]:
+        blocking = bool(review) and any(f["severity"] == "blocking" for f in review["findings"])
+        if kind in required and (
+            not review or review["fingerprint"] != fingerprint or review["status"] != "pass" or blocking
+        ):
+            reasons.append(
+                f"A current passing independent {kind} review without blocking findings is required"
+            )
+        elif kind not in required and review and (review["status"] != "pass" or blocking):
+            reasons.append(
+                f"Latest {kind} review {review['id']} requests changes; record a passing {kind} review"
+            )
+        if not review:
+            continue
+        verdicts = review.get("criteria_verdicts", {})
+        for criterion in dict.fromkeys([*(criteria if kind == verdict_kind else []), *verdicts]):
+            if criterion not in criteria:
+                reasons.append(f"{kind} review {review['id']} judges unknown criterion {criterion}")
+            elif verdicts.get(criterion) != "pass":
+                reasons.append(
+                    f"{kind} review {review['id']} verdict for {criterion} is "
+                    f"{verdicts.get(criterion) or 'missing'}; every criterion needs pass"
+                )
+        if kind in required and maintainer and review["author"] == maintainer:
+            reasons.append(f"Independent {kind} reviewer must differ from implementing maintainer")
+        if brief_hash is not None and kind in required:
+            if kind == "acceptance" and not review.get("brief_hash"):
+                reasons.append("Acceptance review must record brief_hash of the current acceptance brief")
+            elif review.get("brief_hash") and review["brief_hash"] != brief_hash(kind):
+                reasons.append(
+                    f"{kind} review {review['id']} brief_hash does not match the current {kind} brief"
+                )
+    reasons += [
+        f"Blocking finding {finding} from review {origin} has no recorded resolution in a later review"
+        for finding, origin in outstanding_findings(mission["reviews"]).items()
+    ]
+    return reasons
+
+
+def evidence_path_problem(value):
+    """Why an evidence:<path> reference cannot count as evidence, or None."""
+    path = posixpath.normpath(value)
+    parts = path.split("/")
+    if path.startswith("/") or parts[0] == "..":
+        return f"evidence outside the repository: {value}"
+    if parts[0].lower() == ".git" or path.startswith(".factory/local/") or path == ".factory/local":
+        return f"evidence under .git/ or .factory/local/, which cannot count as evidence: {value}"
+    if path.startswith(".factory/missions/") and not re.fullmatch(
+        r"\.factory/missions/[^/]+/evidence/.+", path
+    ):
+        return f"a mission record as evidence, which cannot count as evidence: {value}"
+    return None
+
+
+def _criteria_reasons(root, mission, checked, results):
+    """Every criterion mapped to a task and evidenced by DONE results; check refs must have passed."""
+    from .checks import successful_check
+
+    reasons, items = [], mission.get("criteria", {}).get("items", [])
+    passed = {c["id"] for c in (checked.get("evidence") or {}).get("checks", []) if successful_check(c)}
+    evidence = {item["id"]: [] for item in items}
+    for task in mission["tasks"]:
+        result = results.get(task["id"])
+        if task["status"] != "DONE" or result is None:
+            continue
+        for criterion, refs in result.get("criteria_evidence", {}).items():
+            if criterion not in evidence:
+                reasons.append(f"Task {task['id']} result cites unknown criterion {criterion}")
+                continue
+            for ref in refs:
+                kind, _, value = ref.partition(":")
+                if kind == "check" and value not in passed:
+                    reasons.append(
+                        f"Criterion {criterion} cites check {value}, which did not pass in current verification"
+                    )
+                if kind == "evidence":
+                    problem = evidence_path_problem(value)
+                    if problem:
+                        reasons.append(f"Criterion {criterion} cites {problem}")
+                    else:
+                        try:
+                            present = safe_path(root, value).is_file()
+                        except FactoryError:
+                            present = False
+                        if not present:
+                            reasons.append(f"Criterion {criterion} cites missing evidence file: {value}")
+                if ref not in evidence[criterion]:
+                    evidence[criterion].append(ref)
+    for item in items:
+        if not any(item["id"] in t.get("criteria", []) for t in mission["tasks"]):
+            reasons.append(f"Criterion {item['id']} is not mapped to any task")
+        if not evidence[item["id"]]:
+            reasons.append(f"Criterion {item['id']} has no criteria_evidence in a DONE task result")
+        elif item["route"] == "check" and not any(
+            ref.partition(":")[2] in passed and ref.partition(":")[2] in item.get("checks", [])
+            for ref in evidence[item["id"]]
+            if ref.startswith("check:")
+        ):
+            reasons.append(
+                f"Criterion {item['id']} uses route check and needs check:<id> evidence naming a passed check"
+                f" of its own ({', '.join(item.get('checks', []))}); note: or evidence: alone is insufficient"
+            )
+        for check in item.get("checks", []) if item["route"] == "check" else []:
+            if check not in passed:
+                reasons.append(f"Criterion {item['id']} check {check} did not pass in current verification")
+    return reasons, evidence
+
+
+def _request_gate(root, mission, candidate, config, checked, results):
+    """Request-bearing gate: records, bound criteria, evidence, risk and review kinds."""
+    reasons = scope_reasons(root, mission, config)
+    if mission.get("criteria") and mission.get("criteria_hash") != digest(mission["criteria"]):
+        reasons.append("Acceptance criteria changed since scope acceptance; accept a new scope")
+    if mission["request"].get("accepted_chain") != mission["request"]["chain"]:
+        reasons.append(REQUEST_UNACCEPTED)
+    try:
+        risk = assess_risk(root, mission, candidate, config)
+    except (FactoryError, OSError) as exc:
+        reasons.append(f"Risk could not be assessed: {exc}")
+        risk = {"tier": "high", "reasons": [f"Risk could not be assessed: {exc}"]}
+    evidenced, evidence = _criteria_reasons(root, mission, checked, results)
+    reasons += evidenced
+    required, verdict_kind = required_reviews(mission, risk)
+    cache = {}
+
+    def brief_hash(kind):
+        if kind not in cache:
+            try:
+                if "diff" not in cache:
+                    cache["diff"] = candidate_diff(root, mission["base_commit"], candidate["changed_paths"])
+                cache[kind] = sha256(render_brief(root, mission, kind, diff=cache["diff"], config=config))
+            except (FactoryError, OSError) as exc:
+                cache[kind] = f"unavailable: {exc}"
+        return cache[kind]
+
+    reasons += kind_review_reasons(
+        mission,
+        candidate["fingerprint"],
+        required,
+        verdict_kind,
+        brief_hash,
+        config.get("owners", {}).get("maintainer"),
+    )
+    verdicts = latest_reviews(mission).get(verdict_kind, {}).get("criteria_verdicts", {})
+    trace = [
+        {
+            "id": item["id"],
+            "text": item["text"],
+            "excerpts": item["excerpts"],
+            "evidence": evidence.get(item["id"], []),
+            "verdict": verdicts.get(item["id"]),
+        }
+        for item in mission.get("criteria", {}).get("items", [])
+    ]
+    return reasons, {
+        "lane": mission_lane(mission),
+        "risk": risk,
+        "required_reviews": required,
+        "criteria_trace": trace,
+    }
+
+
 def record_decision(root, id, record):
+    if not isinstance(record, dict):
+        raise FactoryError("Decision input must be a JSON object")
+
     def mutate(mission):
         if any(d["id"] == record.get("id") for d in mission["decisions"]):
             raise FactoryError("Duplicate decision ID")
         require_text(record.get("reference"), "Decision external reference")
+        if record.get("kind") == "exclusion":
+            problem = exclusion_subject_problem(mission, record.get("subject_hash"))
+            if problem:
+                raise FactoryError(problem[0].upper() + problem[1:])
         mission["decisions"].append({**record, "recorded_at": now()})
 
     return update_mission(root, id, mutate)
 
 
+REVIEW_AUTHOR_REQUIRED = "Review author is required (the reviewer's actual agent/session or human name)"
+
+
 def record_review(root, id, record):
+    if not isinstance(record, dict):
+        raise FactoryError("Review input must be an object with a new review ID")
+    reject_unknown_fields(record, schema_fields(root, "mission", "properties", "reviews", "items"), "review")
+    if not isinstance(record.get("author"), str) or not record["author"].strip():
+        raise FactoryError(REVIEW_AUTHOR_REQUIRED)
+
     def mutate(mission):
         # Review belongs to REVIEWING; READY_PR also accepts a review so a reviewer
         # can still reject (or re-pass) the candidate before merge.
@@ -1097,10 +2374,14 @@ def record_review(root, id, record):
             raise FactoryError(
                 f"Reviews can only be recorded in REVIEWING or READY_PR, not {mission['state']}"
             )
-        if not isinstance(record, dict) or any(r["id"] == record.get("id") for r in mission["reviews"]):
+        if any(r["id"] == record.get("id") for r in mission["reviews"]):
             raise FactoryError("Review input must be an object with a new review ID")
         earlier = copy.deepcopy(mission["reviews"])
-        mission["reviews"].append({**record, "created_at": now()})
+        # The recorded time is the factory's; an omitted fingerprint names the current candidate.
+        defaults = (
+            {} if "fingerprint" in record else {"fingerprint": fingerprint(root, mission)["fingerprint"]}
+        )
+        mission["reviews"].append({**defaults, **record, "created_at": now()})
         validate(root, "mission", mission)
         known = {finding_id(r, n) for r in earlier for n in range(len(r["findings"]))}
         for finding in record["findings"]:
@@ -1121,7 +2402,9 @@ def record_review(root, id, record):
                 )
             require_text(resolution["reason"], "Finding resolution reason")
             resolved.add(resolution["finding"])
-        require_text(record.get("author"), "Independent reviewer identity")
+        unknown = [c for c in record.get("criteria_verdicts", {}) if c not in criterion_ids(mission)]
+        if unknown:
+            raise FactoryError("Review criteria_verdicts name unknown criteria: " + ", ".join(unknown))
         config = load_config(root)
         if config.get("owners", {}).get("maintainer") and record["author"] == config["owners"]["maintainer"]:
             raise FactoryError("Independent reviewer must differ from the configured implementing maintainer")
@@ -1136,20 +2419,7 @@ def record_delivery(root, id, record):
 
 
 def risks_section(markdown):
-    lines = markdown.splitlines()
-    for position, line in enumerate(lines):
-        if re.fullmatch(r"#{2,3}\s+Risks\s*", line, re.IGNORECASE):
-            level = len(line.split(" ")[0])
-            end = next(
-                (
-                    n
-                    for n in range(position + 1, len(lines))
-                    if re.match(r"^#{1," + str(level) + r"}\s", lines[n])
-                ),
-                len(lines),
-            )
-            return "\n".join(lines[position + 1 : end]).strip()
-    return ""
+    return _section(markdown, "Risks")
 
 
 def pr_prerequisites(root, id):
@@ -1273,7 +2543,9 @@ def _assess_gate_snapshot(root, mission, candidate, resuming_to=None):
     if mission["spec_hash"] != candidate["spec_hash"]:
         reasons.append("Specification is unaccepted or changed since scope acceptance")
     if mission["constitution_hash"] != hash_file(root, CONSTITUTION_PATH):
-        reasons.append("Constitution changed since mission acceptance")
+        reasons.append(
+            "Constitution changed since mission acceptance: " + constitution_changed_message(root, mission)
+        )
     for kind in (
         {"scope"} | set(current.get("required_decisions", [])) | set(baseline.get("required_decisions", []))
     ):
@@ -1339,17 +2611,22 @@ def _assess_gate_snapshot(root, mission, candidate, resuming_to=None):
             )
     checked = validate_verification(root, mission, config, candidate)
     reasons += checked["reasons"]
-    review = next(iter(mission["reviews"][-1:]), None)
-    reviewed = review_reasons(mission, candidate["fingerprint"])
-    reasons += reviewed
-    if not reviewed and config.get("owners", {}).get("maintainer") == review["author"]:
-        reasons.append("Independent reviewer must differ from implementing maintainer")
-    reported = set()
+    request = bool(mission.get("request"))
+    if not request:
+        if request_record_removed(root, mission):
+            reasons.append(REQUEST_REMOVED)
+        review = next(iter(mission["reviews"][-1:]), None)
+        reviewed = review_reasons(mission, candidate["fingerprint"])
+        reasons += reviewed
+        if not reviewed and config.get("owners", {}).get("maintainer") == review["author"]:
+            reasons.append("Independent reviewer must differ from implementing maintainer")
+    reported, results = set(), {}
     for task in mission["tasks"]:
         try:
             result = validate_completed_result(
                 root, mission, task, candidate["fingerprint"], checked["reference"]
             )
+            results[task["id"]] = result
             for file in result["changed_files"]:
                 if file not in candidate["changed_paths"] or not any(
                     matches_path(file, pattern) for pattern in task["owned_paths"]
@@ -1361,14 +2638,20 @@ def _assess_gate_snapshot(root, mission, candidate, resuming_to=None):
     for file in candidate["changed_paths"]:
         if file not in reported:
             reasons.append(f"Changed file has no current task result: {file}")
+    extra = {}
+    if request:
+        requested, extra = _request_gate(root, mission, candidate, config, checked, results)
+        reasons += requested
     return {
         "pass": not reasons,
         "reasons": reasons,
+        "warnings": [] if request else [LEGACY_WARNING],
         "fingerprint": candidate["fingerprint"],
         "changed_paths": candidate["changed_paths"],
         "check_changes": check_changes,
         "evidence": checked["reference"],
         "trust": "local-unattested",
+        **extra,
     }
 
 
@@ -1577,9 +2860,19 @@ def assess_merged(root, id, mission=None):
                     reasons.append(f"Task {task['id']} result invalid for CI candidate: {exc}")
         except (FactoryError, OSError, ValueError) as exc:
             reasons.append(f"Invalid CI candidate verification: {exc}")
-        reasons += review_reasons(
-            mission, ci["fingerprint"], "Latest independent review does not pass the CI candidate"
-        )
+        if mission.get("request"):
+            recorded = {
+                r.get("kind", "code") for r in mission["reviews"] if r["fingerprint"] == ci["fingerprint"]
+            }
+            lane = ["code"] if mission_lane(mission) == "small" else ["code", "acceptance"]
+            required = [k for k in REVIEW_KINDS if k in set(lane) | recorded]
+            reasons += kind_review_reasons(
+                mission, ci["fingerprint"], required, "acceptance" if "acceptance" in required else "code"
+            )
+        else:
+            reasons += review_reasons(
+                mission, ci["fingerprint"], "Latest independent review does not pass the CI candidate"
+            )
         if not ci.get("branch") or not ci.get("trunk") or same_branch(ci["branch"], ci["trunk"]):
             reasons.append("CI result must come from a work branch other than trunk")
         try:
@@ -1769,11 +3062,60 @@ def create_packet(root, id, kind="pr"):
                 *[f"- Suspended: {line(s)}" for s in mission.get("suspended_tasks", [])],
                 "",
             ]
+        cell = lambda value: line(value).replace("|", "\\|")
+        content += ["## Scope", "", "See [accepted specification](spec.md) and [plan](plan.md).", ""]
+        if gate.get("warnings"):
+            content += ["## Warnings", "", *[f"- {line(w)}" for w in gate["warnings"]], ""]
+        if mission.get("request"):
+            plan = safe_path(root, f".factory/missions/{id}/plan.md")
+            diagrams = (
+                architecture_diagrams(plan.read_bytes().decode("utf-8", "replace")) if plan.is_file() else []
+            )
+            content += ["## Architecture", ""]
+            for diagram in diagrams:
+                fence = "`" * max([3, *(len(r) + 1 for r in re.findall(r"`{3,}", diagram))])
+                content += [fence + "mermaid", diagram, fence, ""]
+            if not diagrams:
+                content += ["No valid architecture diagram in plan.md.", ""]
+        if gate.get("criteria_trace") is not None:
+            decisions = {d["id"]: d for d in mission["decisions"]}
+            exclusions = mission.get("criteria", {}).get("exclusions", [])
+            content += [
+                "## Request to evidence",
+                "",
+                "| Request | Criterion | Evidence | Verdict |",
+                "| --- | --- | --- | --- |",
+                *[
+                    f"| {cell('; '.join(_normalized(e) for e in t['excerpts']))} | {cell(t['id'] + ': ' + t['text'])}"
+                    f" | {cell(', '.join(t['evidence']) or 'none')} | {cell(t['verdict'] or 'missing')} |"
+                    for t in gate["criteria_trace"]
+                ],
+                "",
+                "Exclusions:",
+                "",
+                *[
+                    f"- Excluded: {line(_normalized(e['excerpt']))} — decision {line(e['decision'])}"
+                    + (
+                        f" ({decisions[e['decision']]['kind']}: {line(decisions[e['decision']]['reference'])})"
+                        if e["decision"] in decisions
+                        else " (decision not found)"
+                    )
+                    for e in exclusions
+                ],
+                *([] if exclusions else ["- None."]),
+                "",
+            ]
+
+        if gate.get("risk"):
+            content += [
+                "## Risk tier",
+                "",
+                f"Lane: {gate['lane']}; tier: {gate['risk']['tier']}; required reviews: "
+                + ", ".join(gate["required_reviews"]),
+                *[f"- {line(r)}" for r in gate["risk"]["reasons"]],
+                "",
+            ]
         content += [
-            "## Scope",
-            "",
-            "See [accepted specification](spec.md) and [plan](plan.md).",
-            "",
             "## Tasks",
             "",
             *[
@@ -1803,17 +3145,25 @@ def create_packet(root, id, kind="pr"):
                 for c in evidence["checks"]
             ] + [""]
         if mission["reviews"]:
-            review = mission["reviews"][-1]
-            content += [
-                "## Review",
-                "",
-                f"{line(review['id'])} by {line(review['author'])}: {review['status']} for {review['fingerprint']}",
-                *[
-                    f"- Resolved {line(r['finding'])}: {line(r['reason'])}"
-                    for r in review.get("resolutions", [])
-                ],
-                "",
-            ]
+            shown = (
+                [latest_reviews(mission)[k] for k in REVIEW_KINDS if k in latest_reviews(mission)]
+                if mission.get("request")
+                else mission["reviews"][-1:]
+            )
+            content += ["## Review", ""]
+            for review in shown:
+                label = f"{review.get('kind', 'code')} review " if mission.get("request") else ""
+                content += [
+                    (
+                        f"{label}{line(review['id'])} by {line(review['author'])}: {review['status']} for "
+                        f"{review['fingerprint']}"
+                    ),
+                    *[
+                        f"- Resolved {line(r['finding'])}: {line(r['reason'])}"
+                        for r in review.get("resolutions", [])
+                    ],
+                ]
+            content += [""]
         if kind == "pr":
             risks = pr_prerequisites(root, id)["risks"]
             content += ["## Risks", "", risks["body"], ""]
@@ -1857,9 +3207,95 @@ def create_packet(root, id, kind="pr"):
 
 def _input(args):
     if not getattr(args, "input", None):
-        raise FactoryError("--input requires a JSON file path")
+        raise FactoryError("--input requires a JSON file path or - for stdin")
+    if args.input == "-":
+        text = read_text_input(args.root, "-", "--input JSON")[1]
+        try:
+            return json.loads(text, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
+        except ValueError as exc:
+            raise FactoryError(f"Cannot read JSON from stdin: {exc}") from exc
     # Like models --input: a root-relative path read without following symlinks.
     return read_json(args.root, args.input)
+
+
+MISSION_DOCS = ("context", "spec", "plan", "recovery", "handoff")
+# Minimal --input skeletons; every "<...>" is a placeholder the orchestrator replaces.
+INPUT_TEMPLATES = {
+    "task": {
+        "id": "<task id, e.g. T-1>",
+        "title": "<what the task delivers>",
+        "depends_on": [],
+        "owned_paths": ["<owned path or glob, e.g. src/**>"],
+        "checks": ["<configured check id>"],
+        "criteria": ["<acceptance criterion id, e.g. AC-1>"],
+    },
+    "result": {
+        "task_id": "<task id>",
+        "status": "complete",
+        "summary": "<what changed and how it was checked>",
+        "changed_files": ["<changed repository path>"],
+        "checks": ["<configured check id>"],
+        "evidence": [".factory/missions/<mission-id>/evidence/<run-label>/checks.json"],
+        "unresolved": [],
+        "criteria_evidence": {"<acceptance criterion id, e.g. AC-1>": ["check:<configured check id>"]},
+    },
+    "review": {
+        "id": "<review id, e.g. V-1>",
+        "kind": "<code|acceptance|adversarial>",
+        "status": "<pass|changes_requested>",
+        "author": "<the reviewer's actual agent/session or human name>",
+        "brief_hash": "<brief_hash printed by mission brief --kind KIND>",
+        "findings": [],
+        "criteria_verdicts": {"<acceptance criterion id, e.g. AC-1>": "<pass|fail|needs_human>"},
+    },
+    "decision": {
+        "id": "<decision id, e.g. D-1>",
+        "kind": "<scope|merge|release|recovery|exception|decline|exclusion>",
+        "reference": "<who decided, and where: link or quoted authorization>",
+        "subject_hash": "<sha256 the decision binds: spec.md for scope, mission.request.chain for exclusion>",
+    },
+    "criteria": {
+        "items": [
+            {
+                "id": "<acceptance criterion id, e.g. AC-1>",
+                "text": "<observable acceptance criterion>",
+                "excerpts": ["<verbatim request excerpt, at least 8 characters>"],
+                "route": "<check|e2e|property|manual|review>",
+                "checks": ["<configured check id>"],
+            }
+        ],
+        "exclusions": [],
+        "ambiguities": [],
+    },
+}
+
+
+def input_template(kind, mission=None):
+    """A deterministic minimal --input skeleton for kind, with the mission ID filled when given."""
+    if kind not in INPUT_TEMPLATES:
+        raise FactoryError("Template kind must be one of: " + ", ".join(INPUT_TEMPLATES))
+    text = json.dumps(INPUT_TEMPLATES[kind])
+    if mission is not None:
+        text = text.replace("<mission-id>", assert_id(mission))
+    return json.loads(text)
+
+
+def record_doc(root, id, doc, relative):
+    """Write a specialist-produced mission document verbatim; scope checks still run at accept-scope."""
+    if doc not in MISSION_DOCS:
+        raise FactoryError("Document must be one of: " + ", ".join(MISSION_DOCS))
+    data = read_text_input(root, relative, f"{doc}.md input")[0]
+    path = f".factory/missions/{assert_id(id)}/{doc}.md"
+    with state_lock(root):
+        mission = load_mission(root, id)
+        if mission["state"] in TERMINAL_STATES:
+            raise FactoryError(f"Mission records are immutable in terminal state {mission['state']}")
+        if doc in {"context", "spec", "plan"} and effective_state(mission) not in {"PROPOSED", "PLANNED"}:
+            raise FactoryError(
+                f"{doc}.md can only be recorded in PROPOSED or PLANNED; run accept-scope to return to PLANNED first"
+            )
+        write_bytes(root, path, data)
+    return {"path": path, "sha256": sha256(data)}
 
 
 def _mission_handler(args):
@@ -1867,17 +3303,37 @@ def _mission_handler(args):
     id = getattr(args, "mission", None)
     catalog = read_json(root, args.model_catalog) if getattr(args, "model_catalog", None) else None
     if command == "create":
-        return create_mission(
-            root,
-            _input(args)
-            if args.input
-            else {
+        request_file = getattr(args, "request_file", None)
+        if args.input == "-" and request_file == "-":
+            raise FactoryError("Only one of --input and --request-file can read stdin")
+        if args.input:
+            value = _input(args)
+            if request_file and isinstance(value, dict):
+                value = {**value, "request_file": request_file}
+        elif not request_file:
+            raise FactoryError(REQUEST_REQUIRED)
+        else:
+            value = {
                 "id": args.id,
                 "title": args.title,
                 "kind": args.kind,
                 "base": args.base,
-            },
-        )
+                "request_file": request_file,
+            }
+        return create_mission(root, value, require_request=True)
+
+    if command == "clarify":
+        return clarify_mission(root, id, args.input)
+    if command == "criteria":
+        return record_criteria(root, id, _input(args))
+    if command == "record-doc":
+        return record_doc(root, id, args.doc, args.input)
+    if command == "brief":
+        return mission_brief(root, id, args.kind, args.task)
+    if command == "template":
+        return input_template(args.kind, id)
+    if command == "risk":
+        return mission_risk(root, id)
     if command == "list":
         return list_missions(root)
     if command == "recover-lock":
@@ -1926,7 +3382,7 @@ def add_parser(subparsers):
     mission = subparsers.add_parser("mission", help="Manage recoverable mission records")
     actions = mission.add_subparsers(dest="mission_command", required=True, metavar="<action>")
     summaries = {
-        "create": "Create a mission from --input JSON or --id/--title/--kind/--base",
+        "create": "Create a mission from --request-file with --id/--title/--kind/--base or --input JSON",
         "list": "List missions and their states",
         "status": "Show one mission's state, tasks and next action",
         "recover-lock": "Remove a stale state lock whose owner process has exited",
@@ -1937,6 +3393,11 @@ def add_parser(subparsers):
         "block": "Block the mission with a reason and next step",
         "resume": "Resume a blocked mission with a recorded resolution",
         "accept-scope": "Record acceptance of the mission scope",
+        "clarify": "Append a verbatim clarification from a --input text file",
+        "criteria": "Record acceptance criteria, exclusions and ambiguities from --input JSON",
+        "brief": "Write a deterministic subagent brief for a --task or --kind",
+        "risk": "Assess the candidate's live risk tier without changing records",
+        "record-doc": "Record a mission document verbatim from --input PATH or - for stdin",
         "decision": "Record a decision from --input JSON",
         "review": "Record a review from --input JSON",
         "record-result": "Record one task result from --input JSON",
@@ -1944,6 +3405,7 @@ def add_parser(subparsers):
         "model-plan": "Register a validated model plan from --input",
         "ci-result": "Record an external CI result for a revision",
         "record-delivery": "Record delivery evidence from --input JSON",
+        "template": "Print a minimal --input JSON skeleton (task, result, review, decision or criteria)",
     }
     options = {
         "mission": ("ID", "Mission ID"),
@@ -1951,7 +3413,7 @@ def add_parser(subparsers):
         "title": ("TEXT", "Mission title"),
         "kind": ("KIND", "Mission work type"),
         "base": ("REV", "Baseline Git revision"),
-        "input": ("PATH", "Repository path of the input JSON"),
+        "input": ("PATH", "Repository path of the input JSON, or - for stdin"),
         "task": ("ID", "Task ID"),
         "to": ("STATE", "Target state"),
         "model-catalog": ("PATH", "Current model catalog JSON for model-bound tasks"),
@@ -1963,11 +3425,12 @@ def add_parser(subparsers):
         "head": ("SHA", "Full candidate commit SHA the CI run tested"),
         "conclusion": ("RESULT", "CI conclusion, such as success"),
         "trunk": ("BRANCH", "Trunk branch (default: detected)"),
+        "request-file": ("PATH", "Repository path of the verbatim user request, or - for stdin (required)"),
     }
 
-    def option(parser, name, **kwargs):
+    def option(parser, name, help=None, **kwargs):
         metavar, summary = options[name]
-        parser.add_argument("--" + name, metavar=metavar, help=summary, **kwargs)
+        parser.add_argument("--" + name, metavar=metavar, help=help or summary, **kwargs)
 
     for command in (
         "create",
@@ -1981,6 +3444,11 @@ def add_parser(subparsers):
         "block",
         "resume",
         "accept-scope",
+        "clarify",
+        "criteria",
+        "brief",
+        "risk",
+        "record-doc",
         "decision",
         "review",
         "record-result",
@@ -1988,17 +3456,53 @@ def add_parser(subparsers):
         "model-plan",
         "ci-result",
         "record-delivery",
+        "template",
     ):
-        parser = actions.add_parser(command, help=summaries[command], description=summaries[command])
+        parser = actions.add_parser(
+            command,
+            help=summaries[command],
+            description=summaries[command],
+            **(
+                {"epilog": RESULT_EPILOG, "formatter_class": argparse.RawDescriptionHelpFormatter}
+                if command == "record-result"
+                else {}
+            ),
+        )
         parser.set_defaults(handler=_mission_handler)
-        if command not in {"create", "list", "recover-lock"}:
+        if command not in {"create", "list", "recover-lock", "template"}:
             option(parser, "mission", required=True)
+        if command == "template":
+            option(parser, "mission", help="Mission ID to fill into the skeleton (optional)")
+            parser.add_argument(
+                "--kind",
+                required=True,
+                choices=tuple(INPUT_TEMPLATES),
+                help="Input kind: " + ", ".join(INPUT_TEMPLATES),
+            )
         if command == "create":
-            for name in ("id", "title", "kind", "base", "input"):
+            for name in ("id", "title", "kind", "base", "input", "request-file"):
                 option(parser, name)
+        if command == "clarify":
+            option(
+                parser,
+                "input",
+                help="Repository path of the clarification text, or - for stdin",
+                required=True,
+            )
+        if command == "record-doc":
+            parser.add_argument(
+                "--doc", required=True, choices=MISSION_DOCS, help="Document: " + ", ".join(MISSION_DOCS)
+            )
+            option(
+                parser, "input", help="Repository path of the document text, or - for stdin", required=True
+            )
+        if command == "brief":
+            option(parser, "task", help="Task ID for a task brief")
+            option(parser, "kind", help="Brief kind: " + ", ".join(BRIEF_KINDS), choices=BRIEF_KINDS)
         if command in {
             "task-add",
             "task-update",
+            "criteria",
             "decision",
             "review",
             "record-result",
@@ -2041,7 +3545,13 @@ def add_parser(subparsers):
     checks.set_defaults(handler=lambda a: run_checks(a.root, a.only, a.require_clean))
     verify = subparsers.add_parser("verify", help="Run checks and record mission verification evidence")
     verify.add_argument("--mission", required=True, metavar="ID", help="Mission ID")
-    verify.add_argument("--revision", required=True, metavar="REV", help="Git revision to verify")
+    verify.add_argument(
+        "--revision",
+        required=True,
+        metavar="LABEL",
+        help="Evidence run label (unique per run, e.g. R-2); not a git revision",
+    )
+
     verify.add_argument(
         "--candidate-root", metavar="PATH", help="Worktree of a recorded postmerge CI candidate"
     )

@@ -20,6 +20,7 @@ Record each scenario as `pass`, `fail`, `blocked` or `not_run`, with actual obse
 8. Start a task with contradictory implementation evidence. Observe whether the orchestrator investigates/replans instead of blindly advancing stages. Inspect the eventual corrected result and revised rationale.
 9. Exercise the configured repair limit with a deliberately unsatisfied fixture dependency. Confirm a useful blocked handoff and preserved attempts; the agent must not reset counters or silently claim completion.
 10. Stop after partial work, save a handoff and resume in a fresh session. Confirm it preserves existing user edits and reconciles unfinished operations before writing.
+11. 0.3.0 flow: confirm the request is stored verbatim before anything else, the context phase and all clarifying questions precede the spec, plan.md carries a `## Architecture` mermaid diagram, children receive generated briefs, no specialist spawns its own agent, and the orchestrator writes no product files. With `enforcement.claude_orchestrator_agent`, start `claude --agent factory-orchestrator` and confirm Edit/Write, WebFetch, output redirection and a disallowed Bash command are denied by the hook while `--input -` heredoc recording works. In Copilot, confirm the `factory` agent has no edit tool. Record "not run" for any client not exercised.
 
 ## Entry prompt boundaries
 

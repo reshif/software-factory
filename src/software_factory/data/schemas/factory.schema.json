@@ -81,6 +81,12 @@
           "type": "integer",
           "minimum": 1024,
           "maximum": 67108864
+        },
+        "high_risk_lines": {
+          "description": "Changed-line count (excluding test paths and lockfiles) above which mission risk is high (default 400).",
+          "type": "integer",
+          "minimum": 50,
+          "default": 400
         }
       }
     },
@@ -205,6 +211,18 @@
             "recommend",
             "required"
           ]
+        }
+      }
+    },
+    "enforcement": {
+      "description": "Opt-in client enforcement of the orchestrator role. Local guardrail only; live behaviour is not verified by the factory.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "claude_orchestrator_agent": {
+          "description": "Export .claude/agents/factory-orchestrator.md (launch with claude --agent factory-orchestrator) with a PreToolUse guard hook.",
+          "type": "boolean",
+          "default": false
         }
       }
     },

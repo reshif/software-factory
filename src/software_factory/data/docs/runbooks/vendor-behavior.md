@@ -1,6 +1,6 @@
 # Verified vendor behavior
 
-Official pages opened on **2026-09-26** before authoring the roles, skills and runbooks. This record describes documented behavior, not a claim that three installed clients or accounts were exercised. Recheck documentation and the live smoke tests after client upgrades.
+Official pages opened on **2026-09-28** before authoring the roles, skills and runbooks. This record describes documented behavior, not a claim that three installed clients or accounts were exercised. Recheck documentation and the live smoke tests after client upgrades.
 
 ## Supported client and harness map
 
@@ -51,10 +51,22 @@ Copilot CLI and the Copilot cloud agent are unsupported targets. Copilot CLI non
 
 ## Shared implementation decisions and limits
 
-The architecture uses one main session orchestrator, four specialist roles and file-based handoff between vendors. One or more vendor profiles can be exported at once; the shared `AGENTS.md` lists each active client's entry invocation. The renderer no longer writes `.claude/settings.json`, so an existing user settings file is left alone. It does not automate a call from one extension into another. Model choices remain with the session/account; no model identifiers or paid invocation are assumed.
+The architecture uses one main session orchestrator that briefs, inspects and records but does not produce, four specialist roles and file-based handoff between vendors. One or more vendor profiles can be exported at once; the shared `AGENTS.md` lists each active client's entry invocation. The renderer no longer writes `.claude/settings.json`, so an existing user settings file is left alone. It does not automate a call from one extension into another. Model choices remain with the session/account; no model identifiers or paid invocation are assumed.
 
 Role instructions constrain intended behavior. Tool/runtime controls constrain capabilities only to the extent the installed client enforces them. The local verifier runs configured processes using the host environment; terminal access can write files and reach available credentials. Keep the account's actual permission configuration under operator control.
 
-Hooks are not needed for core execution. Verification is invoked explicitly, and CI is the independent remote check. Adding hooks later requires documented event semantics plus a test in every selected client; sharing a file format does not prove equivalent runtime behavior.
+Hooks are not needed for core execution. Verification is invoked explicitly, and CI is the independent remote check. Hooks and agent tool lists add opt-in guardrails for the constitution's *The orchestrator never produces* rule (below; all rules are mapped in the [enforcement map](constitution-enforcement.md)); sharing a file format does not prove equivalent runtime behavior, and each needs a live test in the selected client.
+
+## Enforcement per client
+
+The orchestrator must not write product files and specialists must not spawn nested agents. Exported Claude and Copilot specialists never receive an agent tool; Codex agent files carry no tool list, so there the no-nesting rule is instruction-only. How far the orchestrator rule is enforced differs:
+
+| Client | Orchestrator enforcement | Opt-in setting | Limits |
+| --- | --- | --- | --- |
+| Claude Code | Optional orchestrator agent `.claude/agents/factory-orchestrator.md`, started with `claude --agent factory-orchestrator`: tools `Agent(factory-planner, factory-implementer, factory-verifier, factory-reviewer), Read, Glob, Grep, Bash` and a frontmatter `PreToolUse` hook running `.factory/hooks/orchestrator_guard.py`, which denies Edit/Write/MultiEdit/NotebookEdit, WebFetch/WebSearch (research is delegated), spawning any agent other than the four factory specialists, and any Bash command outside a read-only and `software-factory` allowlist, including output redirection. The `software-factory` setup and admin commands (`init`, `upgrade`, `uninstall`, `recover`, `render`, `auth`) and `--root` are denied: a human runs setup. The orchestrator records state through `--input -` heredocs | `enforcement.claude_orchestrator_agent: true` | The `Agent(...)` allowlist applies only when the agent runs as the main thread with `claude --agent factory-orchestrator`; frontmatter hooks of a project agent run only after the workspace trust dialog is accepted, and `claude -p` sessions are not trusted. A plain `/factory-build` session is instruction-only. Live behavior: not run |
+| GitHub Copilot | The `factory` agent is exported without the `edit` tool (read, search, web, execute, agent), plus instructions | None | Shell writes through `execute` remain instruction-only. The factory ships no Copilot hooks: `preToolUse` input carries no agent identity, so a guard would also block the implementer, and hook files are loaded outside the orchestrator too. Live behavior: not run |
+| Native Codex | Instructions only | None | Codex asks users to "treat tool hooks as a useful guardrail, not a complete enforcement boundary"; the factory exports none |
+
+Sources, opened 2026-09-28: [Claude subagents](https://code.claude.com/docs/en/sub-agents), [Claude hooks](https://code.claude.com/docs/en/hooks), [Copilot hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference) (why none are shipped), [Codex hooks](https://learn.chatgpt.com/docs/hooks). The guard itself is unit-tested offline; that is not a live client test. Inspect the rendered agent and hook configuration against these limits before relying on them.
 
 Local render/schema/unit tests establish file generation and utility behavior. They do not prove authenticated vendor access, model reasoning quality, GUI discovery, GitHub branch protection, deployment authority or production recovery. Record those separately in [vendor smoke tests](../vendor-smoke-tests.md).

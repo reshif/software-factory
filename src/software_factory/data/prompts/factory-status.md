@@ -7,12 +7,10 @@ default-prompt: "Use $factory-status to inspect the mission I identify and repor
 
 # Report status without changing work
 
-Use the supplied mission ID or an unambiguous current mission context. If several missions could match, list their IDs and ask the user to choose; do not silently select one. Resolve the repository root. The constitution in AGENTS.md applies; read `.factory/CONSTITUTION.md` only if it is not in your context. Read `factory.json`, the relevant mission record, specification, handoff, results, checks and reviews.
+Use the supplied mission ID or an unambiguous current context. If several missions match, list their IDs and ask; do not silently select one. The constitution in AGENTS.md applies. Read `factory.json` and the mission's records.
 
-This is a read-only request. Do not call the start/resume workflow, create or transition a mission, edit files, render profiles, launch verification or implementation, restart operations, or write a status report artifact. Use read-only inspection and the state tool's status command as needed. Inspect current Git identity and available evidence rather than trusting a saved status label.
+This is read-only. Do not start or resume the workflow, create or transition a mission, edit files, render profiles, generate briefs, run verification or implementation, restart operations or write a report artifact. Use `software-factory mission status --mission ID`, `software-factory gate --mission ID`, `software-factory mission risk --mission ID` and read-only Git inspection. Trust current Git identity over a saved label.
 
-Summarize the accepted outcome, completed criteria supported by evidence, remaining work, active or unknown operations, blockers and the next useful action. Distinguish recorded state from current readiness. Identify stale candidate fingerprints, missing logs, missing independent review and unperformed checks when observable; say what could not be determined without execution.
+Report from the gate's `lane`, `risk`, `required_reviews`, `criteria_trace` and `warnings`: lane and risk tier with reasons; each acceptance criterion with its mapped task, recorded evidence and latest review verdict; review kinds present versus required; open ambiguities; remaining work, active or unknown operations, blockers and the next useful action. Distinguish recorded state from current readiness (`live_gate`). Name stale fingerprints, missing logs, missing reviews and unperformed checks; say what cannot be determined without execution. Report any recorded model assignment and unknowns without refreshing catalogs or plans.
 
-Return the status in chat with relevant existing paths. Do not claim a new successful verification, authenticated approval, remote CI result or delivery. The instruction to remain read-only is a task boundary, not a new runtime sandbox or permission setting.
-
-Report any recorded model assignment, requested/observed identity and unknowns. Do not refresh catalogs, create model plans or change selection during this read-only status request.
+Answer in chat with relevant paths. Do not claim new verification, authenticated approval, remote CI or delivery. Remaining read-only is a task boundary, not a sandbox.

@@ -100,7 +100,7 @@ def inspect_project(root: Path) -> dict:
 
 def doctor(root: Path) -> dict:
     from .installation import jev_summary
-    from .rendering import render
+    from .rendering import ENFORCEMENT_FLAGS, enforcement_settings, enforcement_summary, render
     from .transactions import JOURNAL
 
     report = inspect_project(root)
@@ -144,6 +144,16 @@ def doctor(root: Path) -> dict:
             "credential": "not_checked",
             "network": "not_checked",
         }
+        report["enforcement"] = enforcement_summary(root, config)
+        for profile, flag in ENFORCEMENT_FLAGS.items():
+            if enforcement_settings(config)[flag] and profile not in report["enforcement"]:
+                issues.append(
+                    {
+                        "severity": "warning",
+                        "code": "enforcement_inactive",
+                        "message": f"enforcement.{flag} has no effect without the {profile} profile",
+                    }
+                )
         if skew or uninstalled:
             report["exports"] = "not_checked"
         else:

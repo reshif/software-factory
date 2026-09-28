@@ -13,13 +13,21 @@ The constitution in AGENTS.md applies; read [the constitution](../../../.factory
 
 Optionally, before retrying a failed check, run `uv run --locked --project .factory software-factory triage --mission ID --revision REV` ([check triage](../../../.factory/docs/runbooks/check-triage.md)); use the category to choose diagnosis, never to skip diagnosis or retry blindly.
 
-Reproduce or narrow the failure with the smallest useful investigation. State the hypothesis and what evidence would discriminate it. Make a scoped correction or return a concrete replan request; do not repeat equivalent actions without new evidence.
+Reproduce or narrow the failure with the smallest useful investigation. State the hypothesis and what evidence would discriminate it. The orchestrator diagnoses and briefs; the fix itself goes to an implementer through a fresh `mission brief --task TASK`, whose notes carry earlier results (*Deliberate repair*).
 
 Use the task state commands so retry attempts are recorded. Check `factory.json` limits before another attempt. Changes to accepted behavior, protected factory rules or required checks follow the actual scope policy; a failure does not grant new authority.
 
-Run relevant focused validation, then obtain a new verification run and review for the changed candidate. Explain how each blocking finding is resolved with file/evidence references. Prior passing evidence does not automatically apply after repair.
+After the repair the orchestrator runs a new `software-factory verify` and obtains fresh reviews of the required kinds for the changed candidate. Explain how each blocking finding is resolved with file/evidence references. Prior passing evidence does not automatically apply after repair.
 
 Diagnose context, tooling and code defects before model escalation. Reassignment requires a validated new plan and pending-task update with rationale; preserve attempts and existing constraints. Record runtime substitutions and refuse incompatible fallbacks.
+
+## Escalate
+
+Per *Escalate instead of guessing*, stop repairing and escalate to the user, with the mission BLOCKED (`mission block --reason TEXT --next TEXT`) and one concrete question, when:
+
+- the task's repair budget is exhausted;
+- the fix needs a high-risk action: protected factory paths, check definitions, test removal, dependency or CI changes, destructive Git, or anything outside authorization;
+- the spec, tests and code conflict, so any fix would change the definition of success.
 
 ## Outputs and verification
 

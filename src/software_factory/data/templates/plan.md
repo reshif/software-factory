@@ -6,9 +6,19 @@ This template guides planning; the actual task records live in `mission.json`.
 
 Explain the chosen implementation and material tradeoffs using current repository evidence. Match detail to the task's uncertainty.
 
+## Architecture
+
+Show the components this change touches and how data or control flows between them. `mission accept-scope` requires this section with at least one fenced `mermaid` block whose first line names a diagram type (flowchart, graph, sequenceDiagram, classDiagram, stateDiagram, stateDiagram-v2, erDiagram, C4Context, C4Container, C4Component, architecture-beta or block-beta), followed by at least one real node or edge line (leading `%%` comments and front matter are allowed), and refuses the unedited example below. The PR packet copies the diagram.
+
+```mermaid
+flowchart LR
+  request[User request] --> change[Changed component]
+  change --> checks[Configured checks]
+```
+
 ## Task contracts
 
-For each task record its ID, inspectable outcome, dependencies, permitted paths, assigned role, acceptance criteria, required check IDs and expected result. Add tasks through the state tool so dependency and scope rules apply.
+For each task record its ID, inspectable outcome, dependencies, permitted paths (explicit globs such as `tests/**`), assigned role, acceptance criteria IDs (`criteria`, every `AC-<n>` mapped to at least one task), required check IDs and expected result. Add tasks through the state tool so dependency and scope rules apply.
 
 ## Integration and verification
 

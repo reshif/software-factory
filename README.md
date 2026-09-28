@@ -35,17 +35,39 @@ Replace the deliberately failing `configure-me` check in `factory.json` with rea
 
 ```json
 "checks": [
-  {"id": "tests", "command": ["uv", "run", "--locked", "pytest"], "cwd": ".", "required": true}
+  {"id": "tests", "command": ["uv", "run", "--locked", "pytest"], "cwd": ".", "required": true, "timeout_seconds": 600}
 ]
 ```
 
-After editing checks, run `software-factory render`: `factory.lock.json` pins the `factory.json` hash, and the gate reports stale exports until it is refreshed. `software-factory inspect` suggests commands without running them. Set `owners.maintainer` and `owners.reviewer` (the maintainer is what blocks self-review; use a separate reviewer context), review the generated configuration, and establish a normal Git baseline before creating missions. Checks use argv arrays, without shell expansion.
+After any `factory.json` edit (checks, enforcement, limits), run `software-factory render`: `factory.lock.json` pins the `factory.json` hash, and `doctor` and the gate report stale exports until it is refreshed. `software-factory inspect` suggests commands without running them. Set `owners.maintainer` and `owners.reviewer` (the maintainer is what blocks self-review; use a separate reviewer context), review the generated configuration, and establish a normal Git baseline before creating missions. Checks use argv arrays, without shell expansion.
 
 Open the selected native client and start with `factory-blueprint` for planning or `factory-build` for implementation. Claude Code and Copilot use `/factory-build`; native Codex uses `$factory-build`. The factory prepares instructions and deterministic workflow tools; your authenticated coding client runs the agent work.
 
-The complete sequence is: intake and model checkpoint → specification → task plan → implementation → recorded task results → configured checks → independent review → local readiness gate. Resume, repair budgets, handoffs, CI and delivery records are included. `READY_PR` means local evidence is consistent (local-unattested); it does not create a PR, merge or deploy. Evidence JSON, decisions, reviews and `mission ci-result` URLs/conclusions are caller-supplied and unauthenticated, and a CI URL is not checked. Authoritative assurance needs branch protection and remote CI that re-runs `software-factory checks --require-clean` (or the product checks) itself.
+Every new mission starts from the user's verbatim request: `software-factory mission create --id ID --title TITLE --kind feature --request-file PATH` copies it byte for byte into the mission record (`--request-file` is required for new missions). Later clarifications, acceptance criteria quoting the request, the context gathered up front and a plan with an architecture diagram are recorded through the same CLI before scope is accepted; `patch` missions follow a smaller lane.
+
+The complete sequence is: intake and model checkpoint → specification → task plan → implementation → recorded task results → configured checks → independent review → local readiness gate. Mission states move PROPOSED → PLANNED (`mission accept-scope`) → IMPLEMENTING → VERIFYING → REVIEWING → READY_PR through explicit `mission transition` and `mission task-transition` commands (listed in the orchestrator role), and `software-factory mission template --kind task|result|review|decision|criteria` prints a minimal valid JSON skeleton for each record. Resume, repair budgets, handoffs, CI and delivery records are included. `READY_PR` means local evidence is consistent (local-unattested); it does not create a PR, merge or deploy. Evidence JSON, decisions, reviews and `mission ci-result` URLs/conclusions are caller-supplied and unauthenticated, and a CI URL is not checked. Authoritative assurance needs branch protection and remote CI that re-runs `software-factory checks --require-clean` (or the product checks) itself.
 
 Installed details live in `.factory/docs/runbooks/factory-setup.md`, `prompts.md`, `runtime-contract.md`, and `resume-and-switch.md`. Use `software-factory --help` and each subcommand's `--help` for CLI arguments.
+
+## Constitution
+
+Every factory session follows `.factory/CONSTITUTION.md` (2.0.0), copied into the managed AGENTS.md section. It ranks below the host's instruction hierarchy, organization controls and the user's current authorization, and above roles, skills and briefs; it grants no permission. The [enforcement map](src/software_factory/data/docs/runbooks/constitution-enforcement.md) (installed as `.factory/docs/runbooks/constitution-enforcement.md`) maps each rule to the gate check, guard or tool restriction that enforces it, or marks it instruction-only. Commit an upgrade that changes the constitution on its own, outside any product mission's diff; `upgrade` then lists pre-merge missions under `missions_needing_constitution_reconcile` without blocking. Reconcile each with an `exception` decision for the new constitution hash and `mission accept-scope`, then re-verify and re-review.
+
+## Enforcement per client
+
+Factory roles are instructions first. Optional Claude Code enforcement is off by default and is enabled in `factory.json`, followed by `software-factory render`:
+
+```json
+"enforcement": {"claude_orchestrator_agent": true}
+```
+
+| Client | What applies |
+| --- | --- |
+| Claude Code | Opt-in `claude_orchestrator_agent` exports `.claude/agents/factory-orchestrator.md`. Start it with `claude --agent factory-orchestrator` in a trusted workspace: it may only spawn the four factory specialists (the `Agent(...)` allowlist applies only to `--agent` sessions) and has Read, Glob, Grep and Bash. Its PreToolUse hook runs `.factory/hooks/orchestrator_guard.py` with the project runtime (falling back to `python3`, 3.11+), which denies Edit/Write/MultiEdit/NotebookEdit, spawning anything other than the four factory specialists, unknown tools and any shell command outside a read-only allowlist (software-factory CLI with stdin from `< file` or a heredoc, read-only git, ls/cat/head/tail/wc/grep/rg/find). Setup and admin commands (`init`, `upgrade`, `uninstall`, `recover`, `render`, `auth`) and `--root` are denied too: a human runs setup. Launch or guard errors deny; a hook timeout does not block. Frontmatter hooks are skipped in untrusted folders and `-p` sessions. |
+| Copilot | The `factory` orchestrator agent has no `edit` tool set; it keeps `execute`, so avoiding shell writes relies on instructions. No hooks are generated: Copilot's `preToolUse` input carries no agent identity and repository hooks (which VS Code also loads) apply to every agent, so an orchestrator guard would also block implementers. |
+| Codex | Instructions only; the factory generates no Codex hooks. |
+
+`software-factory doctor` reports the layer in effect per selected profile under `enforcement`. These are local guardrails: mission records remain local-unattested, and live client behaviour has not been exercised by this build.
 
 ## JEV is included
 

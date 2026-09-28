@@ -6,13 +6,13 @@
     "schema_version": {"const": 1}, "id": {"$ref": "#/definitions/id"}, "title": {"type": "string", "minLength": 1},
     "kind": {"enum": ["feature", "patch", "maintenance"]}, "state": {"$ref": "#/definitions/state"}, "previous_state": {"anyOf": [{"$ref": "#/definitions/state"}, {"type": "null"}]}, "version": {"type": "integer", "minimum": 0},
     "created_at": {"type": "string", "minLength": 1}, "updated_at": {"type": "string", "minLength": 1},
-    "profile": {"anyOf": [{"$ref": "#/definitions/profile"}, {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/profile"}}]}, "base_commit": {"type": "string", "pattern": "^[a-f0-9]{40,64}$"}, "branch": {"type": "string", "minLength": 1},
+    "profile": {"anyOf": [{"$ref": "#/definitions/profile"}, {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/profile"}}]}, "base_commit": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"}, "branch": {"type": "string", "minLength": 1},
     "spec_hash": {"anyOf": [{"$ref": "#/definitions/hash"}, {"type": "null"}]}, "constitution_hash": {"$ref": "#/definitions/hash"}, "constitution_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
     "governance_snapshot": {"type": "object", "additionalProperties": {"$ref": "#/definitions/hash"}},
     "suspended_tasks": {"type": "array", "maxItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["id", "status"], "properties": {"id": {"$ref": "#/definitions/id"}, "status": {"enum": ["RUNNING", "VERIFYING"]}}}},
     "tasks": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["id", "title", "status", "depends_on", "owned_paths", "checks", "attempts"], "properties": {
       "id": {"$ref": "#/definitions/id"}, "title": {"type": "string", "minLength": 1}, "status": {"enum": ["TODO", "RUNNING", "VERIFYING", "DONE", "BLOCKED"]},
-      "depends_on": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/definitions/id"}}, "owned_paths": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}, "checks": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/definitions/id"}}, "attempts": {"type": "integer", "minimum": 0}, "attempt_base": {"type": "integer", "minimum": 0}, "budget_resets": {"type": "integer", "minimum": 0}, "repair_required": {"type": "string", "minLength": 1},
+      "depends_on": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/definitions/id"}}, "owned_paths": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}, "checks": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/definitions/id"}}, "attempts": {"type": "integer", "minimum": 0}, "attempt_base": {"type": "integer", "minimum": 0}, "budget_resets": {"type": "integer", "minimum": 0}, "repair_required": {"type": "string", "minLength": 1}, "blocked_reason": {"type": "string", "minLength": 1},
       "criteria": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/definitions/criterion_id"}},
       "model_assignment": {"$ref": "#/definitions/model_binding"},
       "model_attempts": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["attempt", "assignment_hash", "profile", "harness", "session_id", "catalog_hash"], "properties": {"attempt": {"type": "integer", "minimum": 1}, "assignment_hash": {"$ref": "#/definitions/hash"}, "profile": {"$ref": "#/definitions/profile"}, "harness": {"enum": ["codex-native", "claude-code-native", "copilot-local", "copilot-agent-host"]}, "session_id": {"$ref": "#/definitions/id"}, "catalog_hash": {"$ref": "#/definitions/hash"}}}}
@@ -22,6 +22,9 @@
       "id": {"$ref": "#/definitions/id"}, "kind": {"enum": ["scope", "merge", "release", "recovery", "exception", "decline", "exclusion"]}, "reference": {"type": "string", "minLength": 1}, "subject_hash": {"$ref": "#/definitions/hash"}, "recorded_at": {"type": "string", "minLength": 1}
     }}},
     "evidence": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "evidence_sha256": {"type": "object", "additionalProperties": {"$ref": "#/definitions/hash"}},
+    "base_history": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["from", "to", "decision", "at"], "properties": {"from": {"$ref": "#/definitions/commit"}, "to": {"$ref": "#/definitions/commit"}, "decision": {"$ref": "#/definitions/id"}, "at": {"type": "string", "minLength": 1}}}},
+    "scope_docs": {"type": "object", "additionalProperties": false, "properties": {"context.md": {"$ref": "#/definitions/hash"}, "plan.md": {"$ref": "#/definitions/hash"}}},
     "reviews": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["id", "fingerprint", "status", "findings", "author", "created_at"], "properties": {
       "id": {"$ref": "#/definitions/id"}, "fingerprint": {"$ref": "#/definitions/hash"}, "status": {"enum": ["pass", "changes_requested"]}, "author": {"type": "string", "minLength": 1}, "created_at": {"type": "string", "minLength": 1},
       "kind": {"enum": ["code", "acceptance", "adversarial"]}, "brief_hash": {"$ref": "#/definitions/hash"},
@@ -58,7 +61,7 @@
       "ambiguities": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["id", "text", "status", "decision"], "properties": {"id": {"type": "string", "pattern": "^Q-[0-9]{1,6}$"}, "text": {"type": "string", "minLength": 1, "maxLength": 4096}, "status": {"enum": ["open", "resolved", "waived"]}, "decision": {"anyOf": [{"$ref": "#/definitions/id"}, {"type": "null"}]}}}}
     }},
     "profile": {"enum": ["claude", "codex", "copilot"]},
-    "commit": {"type": "string", "pattern": "^[a-f0-9]{40,64}$"},
+    "commit": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"},
     "hold": {"type": "object", "additionalProperties": false, "required": ["reason", "at"], "properties": {"state": {"enum": ["PAUSED", "BLOCKED", "CANCELED"]}, "task": {"$ref": "#/definitions/id"}, "reason": {"type": "string", "minLength": 1}, "next": {"type": "string", "minLength": 1}, "at": {"type": "string", "minLength": 1}}},
     "observation": {"type": "object", "additionalProperties": false, "required": ["ref", "status"], "properties": {"ref": {"type": "string", "minLength": 1}, "status": {"enum": ["healthy", "unhealthy"]}}},
     "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},

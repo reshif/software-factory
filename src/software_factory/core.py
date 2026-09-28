@@ -28,6 +28,37 @@ def now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def process_alive(pid: int) -> bool:
+    """Whether a local process with ``pid`` may still exist; unknown answers count as alive.
+
+    ``os.kill(pid, 0)`` is only a liveness probe on POSIX: on Windows signal 0 is
+    CTRL_C_EVENT, so the process table is queried through the Win32 API instead.
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or not 0 < pid < 2**31:
+        raise FactoryError(f"Invalid process id: {pid!r}")
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER: no such process
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def canonical(value: Any) -> bytes:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False

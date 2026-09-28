@@ -20,7 +20,7 @@ Record each scenario as `pass`, `fail`, `blocked` or `not_run`, with actual obse
 8. Start a task with contradictory implementation evidence. Observe whether the orchestrator investigates/replans instead of blindly advancing stages. Inspect the eventual corrected result and revised rationale.
 9. Exercise the configured repair limit with a deliberately unsatisfied fixture dependency. Confirm a useful blocked handoff and preserved attempts; the agent must not reset counters or silently claim completion.
 10. Stop after partial work, save a handoff and resume in a fresh session. Confirm it preserves existing user edits and reconciles unfinished operations before writing.
-11. 0.3.0 flow: confirm the request is stored verbatim before anything else, the context phase and all clarifying questions precede the spec, plan.md carries a `## Architecture` mermaid diagram, children receive generated briefs, no specialist spawns its own agent, and the orchestrator writes no product files. With `enforcement.claude_orchestrator_agent`, start `claude --agent factory-orchestrator` and confirm Edit/Write, WebFetch, output redirection and a disallowed Bash command are denied by the hook while `--input -` heredoc recording works. In Copilot, confirm the `factory` agent has no edit tool. Record "not run" for any client not exercised.
+11. 0.3.0 flow: confirm the request is stored verbatim before anything else, the context phase and all clarifying questions precede the spec, plan.md carries a `## Architecture` mermaid diagram, children receive generated briefs, no specialist spawns its own agent, and the orchestrator writes no product files. With `enforcement.claude_orchestrator_agent`, start `claude --agent factory-orchestrator` and confirm Edit/Write, WebFetch, output redirection and a disallowed Bash command are denied by the hook while `--input -` heredoc recording works. Confirm the orchestrator's first action is the guard self-test (Bash `true` denied); in an untrusted folder or a `claude -p` session it must report that enforcement is inactive. In Copilot, confirm the `factory` agent has no edit or web tool. Record "not run" for any client not exercised.
 
 ## Entry prompt boundaries
 
@@ -51,7 +51,7 @@ Start the fixture mission in Claude, save its handoff, switch exports (or keep a
 
 Profile changes may change the candidate fingerprint because instructions/configuration are governing inputs. Reverify and rereview the final profile candidate as needed; the switch itself does not preserve a stale pass.
 
-The fixture baseline must include the intact renderer, canonical sources, ownership manifest and generated exports. The gate recognizes exact mechanical profile changes only with that committed provenance. Follow [the switching runbook](runbooks/resume-and-switch.md); a factory installation without a consistent baseline is not eligible for this exception.
+A profile switch changes `factory.json` and generated exports, which are protected factory paths: the gate has no exception for it inside a product mission. Commit the switch through a maintenance mission (or on the trunk, outside the fixture mission's diff) before continuing, as [the switching runbook](runbooks/resume-and-switch.md#switch-profiles) describes, or keep all three profiles rendered from the start so no switch is needed.
 
 ## External controls are separate
 

@@ -358,9 +358,11 @@ def test_packaged_schema_declares_threshold():
 
 def test_log_tail_is_bounded_and_starts_on_a_line():
     data = b"x" * 5000 + b"\nsecret-half-line api_key=abcd1234efgh5678\n" + b"y\n" * 4000
-    tail = triage._trim(data[-triage.TAIL_BYTES :], len(data), 3072)
-    assert len(tail) <= 3072 and data.endswith(tail) and tail.startswith(b"y\n")
-    assert triage._trim(b"short\n", 6, 3072) == b"short\n"
+    tail = triage._trim(data[-triage.TAIL_BYTES :], len(data))
+    assert len(tail) < triage.TAIL_BYTES and data.endswith(tail) and tail.startswith(b"y\n")
+    assert triage._trim(b"short\n", 6) == b"short\n"
+    text = triage._log_tail({"stdout": "", "stderr": tail.decode()}, 3072)["stderr"]
+    assert len(text.encode()) <= 3072 and text.startswith("y\n")
 
 
 LEAKS = {
@@ -431,9 +433,9 @@ def test_secret_straddling_the_final_tail_cut_is_masked_first(monkeypatch):
 
     monkeypatch.setattr(triage, "_read_log", read_log)
     item = {"id": "unit", "stdout_log": {"sha256": "0" * 64}, "stderr_log": {"sha256": "1" * 64}}
-    texts, masks, _ = triage._excerpts(Path("."), "M-ONE", "R-ONE", item)
+    masked, masks, _ = triage._excerpts(Path("."), "M-ONE", "R-ONE", item)
     assert masks == 2
-    assert texts == {"stdout": "", "stderr": trailer}
+    assert triage._log_tail(masked, triage.TAIL_BYTES) == {"stdout": "", "stderr": trailer}
 
 
 NEW_LEAKS = {
@@ -499,3 +501,105 @@ def test_triage_uses_saved_credential_and_reports_store_failure(project):
     (auth._directory() / auth.FILENAME).write_text("broken-store")
     result = triage.triage_checks(project, "M-ONE", "R-ONE", request=provider)
     assert result["reason"] == "credential_unavailable" and result["_exit_code"] == 2
+
+
+# --- 0.3.2 hardening ---
+
+
+def failing_checks(count):
+    script = "import sys; print('line ' * 2000, file=sys.stderr); sys.exit(1)"
+    return [
+        {
+            "id": f"extra{index}",
+            "command": [sys.executable, "-c", script],
+            "cwd": ".",
+            "required": True,
+            "timeout_seconds": 10,
+        }
+        for index in range(count)
+    ]
+
+
+def test_eight_failing_checks_fit_one_request_with_scaled_tails(project):
+    write_json(project, "factory.json", config_for(extra_checks=failing_checks(8)))
+    assert not verify_mission(project, "M-ONE", "R-TWO")["pass"]
+    provider = Provider("flaky", 0.9)
+    result = triage.triage_checks(
+        project, "M-ONE", "R-TWO", get_api_key=lambda: "test-key-not-real", request=provider
+    )
+    assert len(provider.bodies) == 1
+    assert len(provider.bodies[0].encode()) <= 24576
+    assert len(json.loads(provider.bodies[0])["state"]["checks"]) == triage.MAX_CHECKS
+    assert result["coverage"]["evaluated"] == triage.MAX_CHECKS and result["omitted_checks"] == ["extra7"]
+    assert result["status"] == "complete"
+    report = json.loads((project / result["record"]).read_text())
+    assert triage.MIN_TAIL_BYTES <= report["tail_bytes"] < triage.TAIL_BYTES
+
+
+def test_checks_that_do_not_fit_are_unresolved_and_the_rest_sent(project):
+    write_json(
+        project, "factory.json", config_for(jev={"max_request_bytes": 4096}, extra_checks=failing_checks(4))
+    )
+    assert not verify_mission(project, "M-ONE", "R-TWO")["pass"]
+    provider = Provider("flaky", 0.9)
+    result = triage.triage_checks(
+        project, "M-ONE", "R-TWO", get_api_key=lambda: "test-key-not-real", request=provider
+    )
+    sent = json.loads(provider.bodies[0])["state"]["checks"]
+    assert 0 < len(sent) < 5 and len(provider.bodies[0].encode()) <= 4096
+    reasons = [row.get("reason") for row in result["checks"]]
+    assert reasons[len(sent) :] == ["request_too_large"] * (5 - len(sent))
+    assert (result["status"], result["reason"]) == ("unresolved", "request_too_large")
+    assert "_exit_code" not in result
+
+
+def test_evidence_or_log_change_during_request_invalidates_answers(project):
+    log = project / ".factory/local/runs/M-ONE/R-ONE/unit.stderr.log"
+    original = log.read_bytes()
+
+    class Tamper(Provider):
+        def __call__(self, body, **options):
+            log.write_bytes(original + b"late\n")
+            return super().__call__(body, **options)
+
+    result = run(project, Tamper("flaky", 0.9))
+    assert (result["status"], result["reason"], result["_exit_code"]) == ("invalid", "inputs_changed", 2)
+    assert result["checks"][0]["category"] is None
+
+
+def test_triage_shares_the_semantic_request_lock(project):
+    from software_factory import semantic
+
+    lock = project / semantic.LOCK
+    lock.parent.mkdir(parents=True)
+    lock.write_text("{}")
+    provider = Provider()
+    result = run(project, provider)
+    assert (result["status"], result["reason"], result["lock"]) == (
+        "unavailable",
+        "local_request_busy",
+        semantic.LOCK,
+    )
+    assert result["_exit_code"] == 2 and not provider.bodies
+    lock.unlink()
+    result = run(project, provider)
+    assert result["status"] == "complete" and not lock.exists()
+    for relative in (semantic.LOCAL, triage.LOCAL):
+        assert (project / relative).stat().st_mode & 0o777 == 0o700
+
+
+def test_cancel_between_log_hashing_steps_stops_before_any_request(project, monkeypatch):
+    import threading
+
+    cancel, original = threading.Event(), triage._read_log
+
+    def read_then_cancel(*args, **kwargs):
+        value = original(*args, **kwargs)
+        cancel.set()
+        return value
+
+    monkeypatch.setattr(triage, "_read_log", read_then_cancel)
+    provider = Provider()
+    result = run(project, provider, cancel=cancel)
+    assert (result["status"], result["reason"]) == ("unavailable", "canceled")
+    assert not provider.bodies and not list((project / triage.LOCAL).glob("*.json"))

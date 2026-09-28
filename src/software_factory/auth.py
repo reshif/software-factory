@@ -36,9 +36,18 @@ def _key(value):
     if not isinstance(value, str):
         raise _error("TypeSafe API key must be nonempty printable ASCII without spaces")
     value = value.strip()
-    if not value or len(value) > MAX_KEY_BYTES or any(not 33 <= ord(c) <= 126 for c in value):
+    # Size first: an oversized value is reported as too long whatever else is wrong with it.
+    if len(value) > MAX_KEY_BYTES:
+        raise _error("API key input exceeds the size limit")
+    if not value or any(not 33 <= ord(c) <= 126 for c in value):
         raise _error("TypeSafe API key must be nonempty printable ASCII without spaces")
     return value
+
+
+def _override():
+    """The environment key when it overrides the store; blank or unset means no override."""
+    value = os.environ.get(KEY_ENV)
+    return value if value is not None and value.strip() else None
 
 
 def _directory_unchecked():
@@ -64,7 +73,7 @@ def _directory():
         raise _error("Cannot resolve the private credential directory") from None
 
 
-def _check(info, *, directory=False):
+def _check(info, *, directory=False, size=True):
     if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
         raise _error("Credential storage must not use symlinks or reparse points")
     if not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
@@ -74,12 +83,17 @@ def _check(info, *, directory=False):
     # Atomic rotation can make stat or fstat observe an unlinked old inode.
     # Zero links is safe; the descriptor is independently checked after opening.
     links_ok = info.st_nlink in (0, 1)
-    if not directory and (not links_ok or info.st_size > MAX_STORE_BYTES):
+    if not directory and (not links_ok or (size and info.st_size > MAX_STORE_BYTES)):
         raise _error("Credential file must have one link and fit the storage size limit")
 
 
 @contextmanager
 def _store(*, create=False):
+    """Open the checked store directory; yields None when it does not exist.
+
+    Only opening the directory is reported as a store access problem. Errors raised by the
+    caller's body propagate unchanged, so a read or write failure is not relabelled here.
+    """
     directory = _directory()
     descriptor = None
     try:
@@ -88,16 +102,20 @@ def _store(*, create=False):
         try:
             _check(directory.lstat(), directory=True)
         except FileNotFoundError:
-            yield None
-            return
-        if DIR_FD:
-            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            _check(os.fstat(descriptor), directory=True)
-        yield (directory, descriptor)
+            store = None
+        else:
+            if DIR_FD:
+                descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                _check(os.fstat(descriptor), directory=True)
+            store = (directory, descriptor)
     except OSError:
+        if descriptor is not None:
+            os.close(descriptor)
         raise _error(
             "Cannot access the private credential store; check its ownership and permissions"
         ) from None
+    try:
+        yield store
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -117,19 +135,30 @@ def _unique_object(pairs):
     return value
 
 
-def _read(store):
-    if store is None:
-        return None
+def _stat_file(store, *, size=True):
+    """Safety-check the credential file; False when it does not exist."""
     path, options = _path(store, FILENAME)
     try:
-        _check(os.stat(path, follow_symlinks=False, **options))
+        _check(os.stat(path, follow_symlinks=False, **options), size=size)
     except FileNotFoundError:
+        return False
+    except OSError:
+        raise _error("Cannot access the credential file; check its ownership and permissions") from None
+    return True
+
+
+def _read(store):
+    if store is None or not _stat_file(store):
         return None
+    path, options = _path(store, FILENAME)
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    descriptor = os.open(path, flags | getattr(os, "O_BINARY", 0), **options)
-    with os.fdopen(descriptor, "rb") as handle:
-        _check(os.fstat(handle.fileno()))
-        data = handle.read(MAX_STORE_BYTES + 1)
+    try:
+        descriptor = os.open(path, flags | getattr(os, "O_BINARY", 0), **options)
+        with os.fdopen(descriptor, "rb") as handle:
+            _check(os.fstat(handle.fileno()))
+            data = handle.read(MAX_STORE_BYTES + 1)
+    except OSError:
+        raise _error("Cannot read the credential file; check its ownership and permissions") from None
     if len(data) > MAX_STORE_BYTES:
         raise _error("Credential file exceeds the storage size limit")
     try:
@@ -192,12 +221,16 @@ def _dpapi(data: bytes, *, protect: bool) -> bytes:
 
 
 def get_typesafe_key():
-    """Explicit environment override, then user store. No network and no environment writes."""
+    """A nonblank environment override, then the user store. No network and no environment writes.
+
+    A blank TYPESAFE_API_KEY (unset in effect, as some shells and CI templates export it) is not
+    an override: the saved key is used.
+    """
     if os.environ.get(DISABLED_ENV) == "1":
         return None
-    override = os.environ.get(KEY_ENV)
+    override = _override()
     if override is not None:
-        return _key(override) if override.strip() else None
+        return _key(override)
     with _store() as store:
         return _read(store)
 
@@ -211,7 +244,7 @@ def request_credential(get_api_key=None):
         if not isinstance(value, str) or not value.strip():
             return None, "credential_missing"
         return _key(value), None
-    except CredentialError:
+    except (CredentialError, OSError):
         return None, "credential_unavailable"
 
 
@@ -233,31 +266,34 @@ def save_typesafe_key(value):
         _read(store)  # Never overwrite an unsafe or unrelated existing file.
         temporary = ".credentials-" + uuid.uuid4().hex
         path, options = _path(store, temporary)
-        descriptor = os.open(
-            path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600, **options
-        )
         try:
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            directory, directory_fd = store
-            if directory_fd is not None:
-                os.replace(temporary, FILENAME, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
-                os.fsync(directory_fd)
-            else:
-                os.replace(directory / temporary, directory / FILENAME)
-        finally:
+            descriptor = os.open(
+                path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600, **options
+            )
             try:
-                os.unlink(path, **options)
-            except FileNotFoundError:
-                pass
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                directory, directory_fd = store
+                if directory_fd is not None:
+                    os.replace(temporary, FILENAME, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+                    os.fsync(directory_fd)
+                else:
+                    os.replace(directory / temporary, directory / FILENAME)
+            finally:
+                try:
+                    os.unlink(path, **options)
+                except FileNotFoundError:
+                    pass
+        except OSError:
+            raise _error("Cannot write the credential file; the previous key, if any, is unchanged") from None
     return {
         "provider": "typesafe",
         "saved": True,
         "storage": record["storage"],
         "path": str(_directory() / FILENAME),
-        "environment_override_present": KEY_ENV in os.environ,
+        "environment_override_present": _override() is not None,
         "provider_validation": "not_checked",
     }
 
@@ -269,14 +305,14 @@ def auth_status():
             raise _error("Credential access is disabled in this process")
         key = get_typesafe_key()
         if key is not None:
-            source = "environment" if os.environ.get(KEY_ENV, "").strip() else "user_store"
+            source = "environment" if _override() is not None else "user_store"
         return {
             "provider": "typesafe",
             "configured": key is not None,
             "source": source,
             "path": str(_directory() / FILENAME) if source != "environment" else None,
             "provider_validation": "not_checked",
-            "environment_override_present": KEY_ENV in os.environ,
+            "environment_override_present": _override() is not None,
             "_exit_code": 0 if key is not None else 2,
         }
     except CredentialError as exc:
@@ -291,20 +327,33 @@ def auth_status():
 
 
 def logout():
+    """Remove the saved key file, even when its content is invalid.
+
+    The file must still pass the safety checks (no symlink or reparse point, a regular file
+    with one link, owned by you with mode 600); only its size and content are not required
+    to be valid, so a corrupt store can be cleared without moving it aside by hand.
+    """
     if os.environ.get(DISABLED_ENV) == "1":
         raise _error("Credential access is disabled in this process")
     removed = False
     with _store() as store:
-        if _read(store) is not None:
+        if store is not None and _stat_file(store, size=False):
             path, options = _path(store, FILENAME)
-            os.unlink(path, **options)
-            if store[1] is not None:
-                os.fsync(store[1])
+            try:
+                os.unlink(path, **options)
+                if store[1] is not None:
+                    os.fsync(store[1])
+            except FileNotFoundError:
+                pass
+            except OSError:
+                raise _error(
+                    "Cannot remove the credential file; check its ownership and permissions"
+                ) from None
             removed = True
     return {
         "provider": "typesafe",
         "removed": removed,
-        "environment_override_present": KEY_ENV in os.environ,
+        "environment_override_present": _override() is not None,
         "remote_key_revoked": False,
     }
 

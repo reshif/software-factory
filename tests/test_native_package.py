@@ -27,8 +27,17 @@ def test_payload_contains_only_native_factory_runtime():
 
 
 def test_constitution_has_one_canonical_location(tmp_path):
+    from software_factory.installation import install
+
+    # Besides the pinned runtime's own package data, the constitution has exactly one location.
+    payload = kernel_payload()
+    copies = [p for p in payload if p.endswith("CONSTITUTION.md") and not p.startswith(".factory/src/")]
+    assert copies == [CONSTITUTION_PATH]
     (tmp_path / "CONSTITUTION.md").write_text("product-owned document")
-    assert CONSTITUTION_PATH == ".factory/CONSTITUTION.md"
+    changed = install(tmp_path, selected="codex", skip_sync=True)["changed"]
+    assert CONSTITUTION_PATH in changed and "CONSTITUTION.md" not in changed
+    assert (tmp_path / "CONSTITUTION.md").read_text() == "product-owned document"
+    assert (tmp_path / CONSTITUTION_PATH).read_bytes() == payload[CONSTITUTION_PATH]
 
 
 def test_unindexed_flat_result_never_supplies_evidence(tmp_path):
@@ -104,5 +113,5 @@ def test_payload_ships_the_orchestrator_guard_and_starter_defaults():
             "blocking_hooks",
             "orchestrator_enforcement",
         }
-        assert capabilities["blocking_hooks"] in ("none", "guardrail", "fail_closed")
+        assert capabilities["blocking_hooks"] in ("none", "guardrail", "fail_closed_when_run")
         assert capabilities["orchestrator_enforcement"] in ("hook", "tool_allowlist", "instructions")

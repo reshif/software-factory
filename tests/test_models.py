@@ -2,6 +2,7 @@
 
 import argparse
 import copy
+import io
 import json
 import sys
 import time
@@ -110,17 +111,20 @@ def test_hard_constraints_fail_closed(root, patch, reason):
 
 
 @pytest.mark.parametrize(
-    "patch",
+    "patch,reason",
     [
-        {"observed_at": "2020-01-01T00:00:00Z"},
-        {"observed_at": "2099-01-01T00:00:00Z"},
-        {"session_id": "DIFFERENT"},
+        ({"observed_at": "2020-01-01T00:00:00Z"}, "stale"),
+        ({"observed_at": "2099-01-01T00:00:00Z"}, "future"),
+        ({"session_id": "DIFFERENT"}, "different session"),
     ],
 )
-def test_freshness_and_session(root, patch):
+def test_freshness_and_session(root, patch, reason):
+    # Intentional change (M-13): a stale, future or foreign-session catalog blocks
+    # planning instead of producing an all-unresolved plan with warnings.
     request, catalog = inputs(root)
     catalog.update(patch)
-    assert models.create_model_plan(root, request, catalog)["assignments"][0]["status"] == "unresolved"
+    with pytest.raises(FactoryError, match=f"Cannot plan with this catalog: .*{reason}"):
+        models.create_model_plan(root, request, catalog)
 
 
 def test_invalid_metadata_rejected(root):
@@ -151,8 +155,13 @@ def test_research_override_cannot_erase_client_prerequisite(root):
     guidance = next(e for e in controls["recommendations"]["entries"] if "claude-opus-5-5" in e["model_ids"])
     custom = copy.deepcopy(guidance)
     custom.pop("minimum_client_versions", None)
-    request["research"] = [custom]
     catalog["client_version"] = "0.0.1"
+    # Intentional change (M-1): the reviewed key itself can no longer be re-bound.
+    request["research"] = [custom]
+    with pytest.raises(FactoryError, match="re-binds reviewed guidance .minimum_client_versions"):
+        models.create_model_plan(root, request, catalog)
+    # A new research key naming the same model still cannot erase the prerequisite.
+    request["research"] = [{**custom, "key": "research-opus"}]
     assignment = models.create_model_plan(root, request, catalog)["assignments"][0]
     assert assignment["status"] == "unresolved"
     assert "Client version" in " ".join(assignment["rejected"][0]["reasons"])
@@ -187,12 +196,11 @@ def test_copilot_parent_cost_and_claude_alias_constraints(root):
 def test_dispatch_revalidates_metadata_billing_and_new_session(root):
     request, catalog = inputs(root)
     plan = models.create_model_plan(root, request, catalog)
-    assert (
-        models.dispatch_assignment(root, plan, "implementer", {**catalog, "session_id": "NEW"})["settings"][
-            "model"
-        ]
-        == "gpt-6-sol"
-    )
+    assert models.dispatch_assignment(root, plan, "implementer", catalog)["settings"]["model"] == "gpt-6-sol"
+    # Intentional change (item 13): the dispatch catalog's session is checked against
+    # the plan's instead of being copied over it; a new session plans again.
+    with pytest.raises(FactoryError, match="different session"):
+        models.dispatch_assignment(root, plan, "implementer", {**catalog, "session_id": "NEW"})
     with pytest.raises(FactoryError, match="billing"):
         models.dispatch_assignment(root, plan, "implementer", {**catalog, "billing_context": "api"})
     changed = copy.deepcopy(catalog)
@@ -284,7 +292,9 @@ def test_discovery_is_metadata_only_and_unknown_fields_remain_unknown(root):
         root,
         "print(json.dumps({'id':q['id'],'result':{'data':[{'model':'first' if 'cursor' not in q['params'] else 'second'}],'nextCursor':'next' if 'cursor' not in q['params'] else None}}),flush=True)",
     )
-    catalog = models.discover_codex(root, binary, "TEST", provider="openai", timeout_ms=1000)
+    discovered = models.discover_codex(root, binary, "TEST", provider="openai", timeout_ms=1000)
+    catalog = discovered["catalog"]
+    assert discovered["warnings"] == [models.CODEX_ENRICHMENT_WARNING]
     assert [m["id"] for m in catalog["models"]] == ["first", "second"]
     assert catalog["models"][0]["capabilities"] == []
     assert catalog["models"][0]["operations"] == ["main"]
@@ -376,8 +386,10 @@ def test_outcomes_immutable_tamper_detection_and_execution_dedup(root, monkeypat
     value, _, _ = execution_fixture(root, monkeypatch)
     saved = record_model_outcome(root, value)
     assert saved["model_attributed"] is True
-    with pytest.raises(FileExistsError):
+    with pytest.raises(FactoryError, match="already recorded.*immutable"):
         record_model_outcome(root, value)
+    with pytest.raises(FactoryError, match="attempt 1 already has outcome OUTCOME-001"):
+        record_model_outcome(root, {**value, "id": "OUTCOME-002"})
     report = model_calibration(root)
     assert report["records"] == 1
     row = report["cohorts"][0]["models"][0]
@@ -752,3 +764,323 @@ def test_model_command_errors_name_the_flag_to_fix(root):
         run_models(root, "sources", "--output", "models.json")
     with pytest.raises(FactoryError, match="Invalid --billing 'team'; use one of: subscription"):
         discover_claude_catalog(root, "--billing", "team")
+
+
+# 0.3.2 hardening (WP5): models, discovery, parser and calibration fixes.
+
+
+def stdin_bytes(monkeypatch, data):
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(data)))
+
+
+def test_models_inputs_read_one_json_document_from_stdin(root, monkeypatch):
+    claude_project(root)
+    request, catalog = inputs(root, "claude", "claude-code-native")
+    catalog["models"] = [model("claude-sonnet-5", provider="anthropic")]
+    request["session_id"] = catalog["session_id"]
+    write_json(root, CATALOG, catalog)
+    stdin_bytes(monkeypatch, json.dumps(catalog).encode())
+    assert run_models(root, "validate", "--kind", "catalog", "--input", "-")["valid"] is True
+    stdin_bytes(monkeypatch, json.dumps(request).encode())
+    plan = run_models(root, "plan", "--input", "-", "--catalog", CATALOG)
+    assert plan["assignments"][0]["model"]["id"] == "claude-sonnet-5"
+    write_json(root, PLAN, plan)
+    stdin_bytes(monkeypatch, json.dumps(catalog).encode())
+    dispatched = run_models(root, "dispatch", "--plan", PLAN, "--assignment", "implementer", "--catalog", "-")
+    assert dispatched["settings"]["model"] == "claude-sonnet-5"
+    stdin_bytes(monkeypatch, json.dumps(plan).encode())
+    assert run_models(root, "validate", "--kind", "plan", "--input", "-")["kind"] == "plan"
+
+
+def test_models_stdin_is_bounded_single_and_strict(root, monkeypatch):
+    claude_project(root)
+    with pytest.raises(FactoryError, match="Only one input can read stdin; --input and --catalog"):
+        run_models(root, "plan", "--input", "-", "--catalog", "-")
+    with pytest.raises(FactoryError, match="Only one input can read stdin"):
+        run_models(root, "dispatch", "--plan", "-", "--catalog", "-", "--assignment", "implementer")
+    for data, reason in (
+        (b" " * (256 * 1024 + 1), "exceeds 256 KiB"),
+        (b"\xff{}", "not valid UTF-8"),
+        (b"", "empty"),
+        (b'{"a": NaN}', "Cannot read --input JSON from stdin"),
+    ):
+        stdin_bytes(monkeypatch, data)
+        with pytest.raises(FactoryError, match=reason):
+            run_models(root, "validate", "--kind", "catalog", "--input", "-")
+    stdin_bytes(monkeypatch, b"{}")
+    with pytest.raises(FactoryError, match="Invalid model-outcome"):
+        run_models(root, "outcome-record", "--input", "-")
+
+
+@pytest.mark.parametrize(
+    "version,ok",
+    [("v2.1.300", True), ("2.1.300 (Claude Code)", True), ("V2.1.280", True), ("2.1.279", False)],
+)
+def test_client_version_accepts_v_prefix(version, ok):
+    guidance = {"minimum_client_versions": {"claude-code-native": "2.1.280"}}
+    catalog = {"harness": "claude-code-native", "client_version": version}
+    assert (models._version_reasons(guidance, catalog) == []) is ok
+
+
+def test_picker_parses_prefixes_parentheticals_versions_and_space_lists(root):
+    entries = models._claude_guidance(models.model_controls(root)["recommendations"]["entries"])
+    matched, skipped, _ = models.parse_claude_picker(
+        "Available models: Default (recommended), Opus (claude-opus-5-5), Sonnet 5 (1M context), "
+        "Claude Haiku 4.5, Fable v5.1, ()",
+        entries,
+    )
+    assert [e["model_ids"][0] for e in matched] == [
+        "claude-opus-5-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+        "claude-fable-5-1",
+    ]
+    assert skipped == [
+        {"entry": "Default", "reason": "Selection strategy or default alias, not a single model"}
+    ]
+    matched, skipped, notes = models.parse_claude_picker("sonnet opus[1m] haiku mythos", entries)
+    assert [e["key"] for e in matched] == ["anthropic-sonnet", "anthropic-opus", "anthropic-haiku"]
+    assert [s["entry"] for s in skipped] == ["mythos"] and len(notes) == 1
+    # A version that names no reviewed model is not silently mapped to its family.
+    matched, skipped, _ = models.parse_claude_picker("Sonnet 4.5", entries)
+    assert matched == [] and [s["entry"] for s in skipped] == ["Sonnet 4.5"]
+
+
+def test_picker_error_has_no_empty_parentheses(root):
+    claude_project(root)
+    with pytest.raises(FactoryError) as raised:
+        discover_claude_catalog(root, "--picker", "a full model ID")
+    assert "()" not in str(raised.value) and "matched reviewed factory guidance;" in str(raised.value)
+
+
+def test_resolve_assignment_and_bound_observation_errors_are_named(root):
+    mission, task, _ = bound(root)
+    binding = task["model_assignment"]
+    with pytest.raises(FactoryError, match="needs a model_observation for attempt 1"):
+        models.validate_task_observation(root, mission, task, None)
+    (root / binding["plan_path"]).write_bytes(b"{not json")
+    binding["plan_hash"] = sha256(b"{not json")
+    with pytest.raises(FactoryError, match="Cannot read model plan"):
+        models.resolve_assignment(root, mission, binding)
+    (root / binding["plan_path"]).unlink()
+    (root / binding["plan_path"]).mkdir()
+    with pytest.raises(FactoryError, match="Cannot read model plan"):
+        models.resolve_assignment(root, mission, binding)
+
+
+def test_sources_and_template_work_without_factory_json(root):
+    assert not (root / "factory.json").exists()
+    assert run_models(root, "sources", "--profile", "codex")["entries"]
+    template = run_models(root, "template", "--kind", "catalog", "--profile", "codex", "--session", "S1")
+    assert template["kind"] == "catalog"
+    with pytest.raises(FactoryError, match=r"missing required --profile \(claude, codex or copilot\)$"):
+        run_models(root, "template", "--kind", "catalog", "--session", "S1")
+
+
+def test_cli_validates_billing_timeout_assignment_and_profile_order(root):
+    fail = root / "must-not-run"
+    for argv, reason in (
+        (("--profile", "codex", "--client", str(fail), "--billing", "team"), "Invalid --billing 'team'"),
+        (("--profile", "claude", "--timeout-ms", "10"), "Invalid --timeout-ms 10; use 50-60000"),
+        (("--profile", "copilot", "--harness", "copilot-local", "--timeout-ms", "70000"), "--timeout-ms"),
+    ):
+        with pytest.raises(FactoryError, match=reason):
+            run_models(root, "discover", "--session", "S1", *argv)
+    with pytest.raises(FactoryError, match="missing required --assignment"):
+        run_models(root, "dispatch", "--plan", "p.json", "--catalog", "c.json")
+    request, catalog = inputs(root)
+    plan = models.create_model_plan(root, request, catalog)
+    with pytest.raises(
+        FactoryError, match="Assignment 'reviewer' is missing from the plan; use one of: implementer"
+    ):
+        models.dispatch_assignment(root, plan, "reviewer", catalog)
+    claude_project(root)
+    config = json.loads((root / "factory.json").read_text())
+    config["profile"] = ["claude", "codex"]
+    write_json(root, "factory.json", config)
+    with pytest.raises(FactoryError) as raised:
+        run_models(root, "discover", "--session", "S1", "--picker", "sonnet")
+    assert str(raised.value) == (
+        "models discover is missing required --profile (one of this project's profiles: claude, codex)"
+    )
+
+
+def test_validation_errors_name_the_json_path_and_provenance_is_per_kind(root, monkeypatch):
+    request, catalog = inputs(root)
+    catalog["models"][1]["capabilities"] = ["text", "audio"]
+    with pytest.raises(FactoryError, match="Invalid model catalog at models/1/capabilities/1: 'audio'"):
+        models.validate_document(root, "catalog", catalog)
+    catalog["models"][1]["capabilities"] = ["text"]
+    claude_project(root)
+    write_json(root, CATALOG, catalog)
+    assert run_models(root, "validate", "--kind", "catalog", "--input", CATALOG)["provenance"] == "fixture"
+    _, _, observation = bound(root)
+    write_json(root, ".factory/local/models/observation.json", observation)
+    result = run_models(
+        root, "validate", "--kind", "observation", "--input", ".factory/local/models/observation.json"
+    )
+    assert result["provenance"] == "unknown"
+    write_json(root, REQUEST, request)
+    assert run_models(root, "validate", "--kind", "request", "--input", REQUEST)["provenance"] == (
+        "local-unattested"
+    )
+
+
+def auto_catalog(root, lifecycle):
+    request, catalog = inputs(root, "copilot", "copilot-agent-host")
+    catalog["models"] = [
+        model(
+            "Auto",
+            identity="auto",
+            provider="github",
+            lifecycle=lifecycle,
+            context_tokens=None,
+            cost_tier=None,
+        )
+    ]
+    request["assignments"][0].update(preferred_model="Auto", rationale="Copilot auto selection by the user")
+    return request, catalog
+
+
+def test_auto_identity_follows_its_own_lifecycle_under_default_policy(root):
+    request, catalog = auto_catalog(root, "stable")
+    assignment = models.create_model_plan(root, request, catalog)["assignments"][0]
+    assert assignment["status"] == "selected" and assignment["model"]["id"] == "Auto"
+    request, catalog = auto_catalog(root, "preview")
+    assignment = models.create_model_plan(root, request, catalog)["assignments"][0]
+    assert assignment["status"] == "unresolved"
+    reasons = " ".join(assignment["rejected"][0]["reasons"])
+    assert "Stable model required" in reasons and "Auto cannot prove" not in reasons
+
+
+def test_display_names_match_copilot_only_and_are_never_native_ids(root):
+    request, catalog = inputs(root)
+    catalog["models"] = [model("GPT-6 Sol")]
+    assignment = models.create_model_plan(root, request, catalog)["assignments"][0]
+    assert assignment["status"] == "unresolved"
+    assert "No reviewed task-fit guidance" in " ".join(assignment["rejected"][0]["reasons"])
+    request, catalog = inputs(root, "copilot", "copilot-agent-host")
+    catalog["models"] = [model("GPT-6 Sol")]
+    assignment = models.create_model_plan(root, request, catalog)["assignments"][0]
+    assert assignment["model"]["id"] == "GPT-6 Sol" and assignment["sources"]
+    controls = models.model_controls(root)
+    assert all(" " not in i for e in controls["recommendations"]["entries"] for i in e["model_ids"])
+    entry = copy.deepcopy(controls["recommendations"]["entries"][0])
+    entry.update(key="dup-names", display_names=[entry["model_ids"][0].upper()])
+    request["research"] = [entry]
+    with pytest.raises(FactoryError, match="repeats a model ID or display name"):
+        models.validate_document(root, "request", request)
+
+
+def test_self_resolving_entries_and_free_intents_are_rejected(root):
+    request, catalog = inputs(root)
+    for patch, reason in (
+        ({"resolved_model": "gpt-6-sol"}, "Only aliases record resolved_model"),
+        ({"identity": "alias", "resolved_model": "gpt-6-sol"}, "cannot resolve to itself"),
+    ):
+        catalog["models"][0] = model(**patch)
+        with pytest.raises(FactoryError, match=reason):
+            models.validate_document(root, "catalog", catalog)
+    request, catalog = inputs(root)
+    request["assignments"][0]["intent"] = "review"
+    with pytest.raises(FactoryError, match="intent review differs from the policy intent coding"):
+        models.create_model_plan(root, request, catalog)
+
+
+def test_research_may_refresh_only_evidence_of_a_reviewed_key(root):
+    request, catalog = inputs(root)
+    reviewed = next(
+        e for e in models.model_controls(root)["recommendations"]["entries"] if e["key"] == "openai-sol"
+    )
+    refreshed = {
+        **copy.deepcopy(reviewed),
+        "strengths": "Refreshed research.",
+        "sources": ["https://example.com/sol"],
+        "checked_at": catalog["observed_at"],
+    }
+    request["research"] = [refreshed]
+    assignment = models.create_model_plan(root, request, catalog)["assignments"][0]
+    assert assignment["sources"] == ["https://example.com/sol"]
+    for patch in ({"model_ids": ["gpt-6-luna"]}, {"provider": "other"}, {"profiles": ["codex"]}):
+        request["research"] = [{**refreshed, **patch}]
+        with pytest.raises(FactoryError, match="re-binds reviewed guidance"):
+            models.create_model_plan(root, request, catalog)
+
+
+def test_codex_discovery_filters_modalities_and_bounds_errors(root, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "synthetic-not-a-secret")
+    binary = fake_client(
+        root,
+        "import os; open('env.log','w').write(str('TYPESAFE_API_KEY' in os.environ)); "
+        "print(json.dumps({'id':q['id'],'result':{'data':[{'model':'m1','inputModalities':"
+        "['text','audio','image']}],'nextCursor':''}}),flush=True)",
+    )
+    discovered = models.discover_codex(root, binary, "TEST", timeout_ms=1000)
+    assert discovered["catalog"]["models"][0]["capabilities"] == ["text", "image"]
+    assert discovered["warnings"][0] == "Ignored input modalities the catalog does not model: audio"
+    assert "enriched" in discovered["warnings"][1]
+    assert (root / "env.log").read_text() == "False"
+    binary = fake_client(root, "print(json.dumps({'id':q['id'],'result':{'data':[{'model':7}]}}),flush=True)")
+    with pytest.raises(FactoryError, match="no string model ID"):
+        models.discover_codex(root, binary, "TEST", timeout_ms=1000)
+    binary = fake_client(
+        root, "sys.stderr.write('boom password=hunter2secret\\n' + 'x' * 5000 + 'tail-marker'); sys.exit(3)"
+    )
+    with pytest.raises(FactoryError, match="exited before completing") as raised:
+        models.discover_codex(root, binary, "TEST", timeout_ms=1000)
+    message = str(raised.value)
+    assert "client stderr tail:" in message and message.endswith("tail-marker")
+    assert len(message) < 1300 and "hunter2" not in message
+
+
+def test_codex_cli_reports_discovery_warnings(root, monkeypatch, capsys):
+    binary = fake_client(
+        root,
+        "print(json.dumps({'id':q['id'],'result':{'data':[{'model':'m1'}],'nextCursor':None}}),flush=True)",
+    )
+    result = run_models(root, "discover", "--profile", "codex", "--session", "S1", "--client", str(binary))
+    assert [m["id"] for m in result["models"]] == ["m1"]
+    diagnostics = json.loads(capsys.readouterr().err)
+    assert diagnostics["provenance"] == "runtime" and "enriched" in diagnostics["warnings"][0]
+
+
+def test_calibration_path_must_be_a_directory(root, monkeypatch):
+    value, _, _ = execution_fixture(root, monkeypatch)
+    outcomes = root / ".factory/local/models/outcomes"
+    outcomes.parent.mkdir(parents=True, exist_ok=True)
+    outcomes.write_text("not a directory")
+    with pytest.raises(FactoryError, match="must be a directory"):
+        model_calibration(root)
+    with pytest.raises(FactoryError, match="must be a directory"):
+        record_model_outcome(root, value)
+
+
+def test_outcome_attempt_and_plan_sources_are_bounded(root):
+    record = outcome_template()
+    record.update(
+        kind="outcome",
+        recorded_at=now(),
+        content_hash="a" * 64,
+        result={
+            "path": ".factory/missions/M-EXAMPLE/results/records/T-001.json",
+            "sha256": "a" * 64,
+            "fingerprint": "b" * 64,
+            "status": "blocked",
+            "attempt": 0,
+            "observed_model": None,
+            "observed_effort": None,
+            "identity_provenance": "unknown",
+            "identity_reference": None,
+            "profile": None,
+            "harness": None,
+            "catalog_client_version": None,
+            "billing_context": None,
+        },
+    )
+    with pytest.raises(FactoryError, match="Invalid model-outcome"):
+        validate_outcome(root, record)
+    request, catalog = inputs(root)
+    plan = models.create_model_plan(root, request, catalog)
+    plan["assignments"][0]["sources"] = ["https://" + "a" * 2050]
+    with pytest.raises(FactoryError, match="assignments/0/sources/0"):
+        models.validate_document(root, "plan", plan)

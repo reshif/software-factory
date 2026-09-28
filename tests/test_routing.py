@@ -203,7 +203,7 @@ def test_candidate_ceiling_is_documented_and_enforced_before_credentials(root):
             }
             for i in range(count)
         ]
-        body, _ = routing._decision_body(root, request, item, item["requirements"], eligible, "jev-1.13.0")
+        body, _, _ = routing._decision_body(root, request, item, item["requirements"], eligible, "jev-1.13.0")
         return len(canonical(body))
 
     ceiling = max(n for n in range(1, routing.MAX_CANDIDATES + 1) if size(n) <= 24576)
@@ -260,10 +260,12 @@ def test_jev_receives_only_hard_eligible_reviewed_candidates(root):
 
 @pytest.mark.parametrize("patch", [{"session_id": "OTHER"}, {"observed_at": "2020-01-01T00:00:00Z"}])
 def test_catalog_session_and_freshness_remain_hard_constraints(root, patch):
+    # Intentional change (M-13): planning is refused before any selector runs.
     request, catalog = inputs(root)
     catalog.update(patch)
-    result = plan(root, request, catalog, transport=lambda *_a, **_k: pytest.fail("Stale inventory routed"))
-    assert result["assignments"][0]["status"] == "unresolved"
+    fail = lambda *_a, **_k: pytest.fail("Stale inventory routed")
+    with pytest.raises(FactoryError, match="Cannot plan with this catalog"):
+        plan(root, request, catalog, transport=fail, get_api_key=fail)
 
 
 def test_explicit_preference_cannot_be_changed_or_silently_substituted(root):
@@ -299,7 +301,10 @@ def test_copilot_child_filters_use_actual_selected_parent_tier(root):
         return response_for(body)
 
     result = plan(root, request, catalog, transport=choose)
-    assert [b["state"]["assignment"]["id"] for b in calls] == ["orchestrator", "implementer"]
+    # The child has one hard-eligible candidate, so only the parent is sent to JEV.
+    assert [b["state"]["assignment"]["id"] for b in calls] == ["orchestrator"]
+    reasons = {r["assignment_id"]: r["reason"] for r in result["routing"]["decisions"]}
+    assert reasons == {"orchestrator": "jev_choice", "implementer": "single_eligible_candidate"}
     models.validate_plan(root, result)
     catalog["parent_model"] = "gpt-6-luna"
     assert (
@@ -389,7 +394,9 @@ def test_each_request_gets_full_deadline_under_realistic_latency(root, monkeypat
     models.validate_plan(root, result)
 
 
-def test_single_request_exceeding_its_deadline_fails_without_fallback(root, monkeypatch):
+def test_late_successful_response_is_kept_not_discarded(root, monkeypatch):
+    # Intentional change (item 10): a response that arrives at the end of its
+    # budget is already billed and is kept; the transport enforces its deadline.
     clock = FakeClock()
     monkeypatch.setattr(routing, "time", clock)
     setting(root, deadline_ms=1000)
@@ -402,10 +409,9 @@ def test_single_request_exceeding_its_deadline_fails_without_fallback(root, monk
         clock.sleep(1.0)
         return response_for(body)
 
-    with pytest.raises(FactoryError, match="deadline exceeded; no fallback") as raised:
-        plan(root, request, catalog, transport=slow)
-    assert raised.value.exit_code == 2
-    assert calls == [1000]
+    result = plan(root, request, catalog, transport=slow)
+    assert calls == [1000, 1000]
+    assert result["routing"]["provider_requests"] == 2
 
 
 def test_overall_plan_budget_caps_sequential_requests(root, monkeypatch):
@@ -854,3 +860,83 @@ def test_plan_uses_saved_credential_and_fails_closed_on_invalid_store(root):
     (auth._directory() / auth.FILENAME).write_text("broken-store")
     with pytest.raises(FactoryError, match="credential_unavailable.*auth status"):
         plan(root, get_api_key=None, transport=lambda *_a, **_k: pytest.fail("bad credential used"))
+
+
+# 0.3.2 hardening (WP5): masking, single candidates and attempt counts.
+
+
+def test_objective_and_strengths_are_masked_and_counted(root, monkeypatch):
+    request, catalog = inputs(root)
+    request["objective"] = "Rotate password=hunter2secret before release"
+    request["research"] = [
+        {
+            "key": "research-luna",
+            "provider": "openai",
+            "profiles": ["codex"],
+            "model_ids": ["gpt-6-luna-research"],
+            "strengths": "Fast. token ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            "sources": ["https://example.com/luna"],
+            "checked_at": catalog["observed_at"],
+        }
+    ]
+    catalog["models"].append(model("gpt-6-luna-research"))
+    sent = []
+
+    def choose(body, **_):
+        sent.append(json.dumps(body))
+        return response_for(body)
+
+    result = plan(root, request, catalog, transport=choose)
+    assert "hunter2" not in sent[0] and "ghp_" not in sent[0]
+    assert "[REDACTED:" in sent[0]
+    receipt = result["routing"]["decisions"][0]
+    assert receipt["masks"] == 2
+    monkeypatch.setattr(routing, "request_jev", lambda *_a, **_k: pytest.fail("Replay called JEV"))
+    models.validate_plan(root, result)
+    receipt["masks"] = 0
+    rehash(result)
+    with pytest.raises(FactoryError, match="request changed"):
+        models.validate_plan(root, result)
+
+
+def test_single_eligible_candidate_skips_the_paid_request(root):
+    request, catalog = inputs(root)
+    catalog["models"] = [model("gpt-6-luna", cost_tier=1)]
+    fail = lambda *_a, **_k: pytest.fail("A single candidate reached credentials or JEV")
+    result = plan(root, request, catalog, transport=fail, get_api_key=fail)
+    item, receipt = result["assignments"][0], result["routing"]["decisions"][0]
+    assert item["model"]["id"] == "gpt-6-luna"
+    assert receipt["reason"] == "single_eligible_candidate" and receipt["response"] is None
+    assert "masks" not in receipt and result["routing"]["provider_requests"] == 0
+    assert "no JEV request" in item["rationale"]
+    models.validate_plan(root, result)
+    receipt["masks"] = 0
+    rehash(result)
+    with pytest.raises(FactoryError, match="cannot invent a JEV request"):
+        models.validate_plan(root, result, current=False)
+
+
+@pytest.mark.parametrize("reported", [[1, 1], [2], [1, 2, 3, 4]])
+def test_inconsistent_transport_attempt_counts_fail_closed(root, reported):
+    def transport(body, **kwargs):
+        for number in reported:
+            kwargs["on_attempt"](number)
+        return response_for(body)
+
+    with pytest.raises(FactoryError, match="inconsistent attempts") as raised:
+        plan(root, transport=transport)
+    assert raised.value.exit_code == 2
+
+
+def test_context_takes_one_stat_per_watched_path(root, monkeypatch):
+    calls = []
+    original = routing.Path.stat
+
+    def counting(self, *args, **kwargs):
+        calls.append(self)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(routing.Path, "stat", counting)
+    request, catalog = inputs(root)
+    _, stamps = routing._context(root, request, catalog)
+    assert len(calls) == len(stamps) == len(set(calls))

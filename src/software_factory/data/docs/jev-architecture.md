@@ -4,7 +4,7 @@ Implemented first-version scope: optional claim/source assessment through the ex
 
 Jev estimates supports, contradicts, not_addressed, mixed or insufficient_context for each eligible supplied claim. Code owns IDs, hashes, quote matching, timestamps, payload/response bounds and coverage. The native agent owns reasoning and action. Existing checks, independent review and actual authority remain in force. Context ranking, failure/skill/intent routing, MCP hosting and automatic hooks are deferred.
 
-See [JEV model routing](jev-routing.md): enabling JEV selects it as the model-choice engine; disabling it selects factory-models. The claim/source assessment path below is separate and uses `jev.claim_mode`; editing `claim_mode` or other claim-helper settings does not invalidate saved model plans. When enabled, model routing sends the request objective and any research `strengths` text verbatim to TypeSafe, together with compact candidate metadata. Routing abstention, or a choice below `jev.min_confidence` (default 0.6), leaves an assignment unresolved in a written plan; provider errors, timeouts and missing credentials exit 2 without writing a plan. Neither falls back to factory-models.
+See [JEV model routing](jev-routing.md): enabling JEV selects it as the model-choice engine; disabling it selects factory-models. The claim/source assessment path below is separate and uses `jev.claim_mode`; editing `claim_mode` or other claim-helper settings does not invalidate saved model plans. When enabled, model routing sends the request objective and any research `strengths` text to TypeSafe after best-effort secret masking, together with compact candidate metadata. Routing abstention, or a choice below `jev.min_confidence` (default 0.6), leaves an assignment unresolved in a written plan; provider errors, timeouts and missing credentials exit 2 without writing a plan. Neither falls back to factory-models.
 
 ## Complete mission lifecycle
 
@@ -115,7 +115,7 @@ flowchart TD
     CACHE -->|Yes| ANSWERS["Validated relationships, distributions and usage"]
     CACHE -->|No| ACCESS{"Credential available?"}
     ACCESS -->|No| FAILURE["Unavailable or invalid assistance<br/>No semantic answer for failed rows"]
-    ACCESS -->|Yes| REQUEST["Fixed Jev API; pinned model<br/>One deadline; at most 2 backoff retries<br/>on 408, 429, 5xx or connection errors"]
+    ACCESS -->|Yes| REQUEST["Fixed Jev API; pinned model<br/>One deadline; at most 2 backoff retries<br/>on 408, 429, 500, 502–504, 529<br/>or connection errors"]
     REQUEST -->|Transport error, deadline or cancellation| FAILURE
     REQUEST -->|Response| VALIDATE{"Exact answer IDs, model,<br/>distributions and usage valid?"}
     VALIDATE -->|No| FAILURE
@@ -172,8 +172,7 @@ Resume/model changes retain attempts. Exhaustion requires the documented replan 
 ## Components and evidence
 
 - Canonical skill/rubric: `.factory/skills/factory-semantic/`.
-- Shared CLI: `.factory/src/software_factory/semantic.py`.
-- Coordination/cache: `.factory/src/software_factory/semantic.py`.
+- Shared CLI, coordination and cache: `.factory/src/software_factory/semantic.py`.
 - Fixed provider transport/response validation: `.factory/src/software_factory/jev.py`.
 - Contracts: factory and semantic schemas.
 - Private lock/cache/shadow/advisory records: `.factory/local/semantic/`.

@@ -41,16 +41,20 @@ import sys
 
 ORCHESTRATOR = "factory-orchestrator"
 MAX_COMMAND = 262144
+MAX_PAYLOAD = 1 << 20  # Characters of hook JSON read from stdin.
 DELEGATE = (
     "The factory orchestrator coordinates and never edits files: brief a specialist with "
     "`software-factory mission brief` and delegate the change to factory-implementer "
     "(research/specs to factory-planner, checks to factory-verifier, review to factory-reviewer)."
 )
 SHELL_HELP = (
-    "Allowed shell commands: `uv run --locked --project .factory software-factory ...`, "
-    "`software-factory ...` (project commands only: no init, upgrade, uninstall, recover, render, auth "
-    "or --root), read-only git (status, diff, log, show, rev-parse, ls-files, "
-    "branch --show-current) and ls/cat/head/tail/wc/grep/rg/find without -exec or -delete; "
+    "Allowed shell commands: `uv run --locked --project .factory software-factory ...` or "
+    "`.factory/.venv/bin/software-factory ...` (project commands with their listed options only: no "
+    "init, upgrade, uninstall, recover, render, auth, models discover, mission approve, mission ci-result, "
+    "verify --candidate-root or --root; file options take project-relative paths or - for stdin), read-only git (status, diff, "
+    "log, show, rev-parse, ls-files, branch --show-current) and ls/cat/head/tail/wc/grep/rg/find "
+    "without -exec, -delete, rg --pre, --hostname-bin or -z; every argument project-relative (no "
+    "absolute path, leading ~ or .. component; use the Grep tool for patterns starting with /); "
     "joined only by &&, ||, ;, | or newlines; stdin only from `< file` or a heredoc (quote the "
     "delimiter, <<'EOF', for text with $, backticks or backslashes); no output redirection or "
     "expansion."
@@ -74,13 +78,80 @@ GIT_READ = {"status", "diff", "log", "show", "rev-parse", "ls-files"}
 GIT_FORBIDDEN = ("--output", "--ext-diff", "--textconv", "--exec", "--upload-pack", "--open-files-in-pager")
 FIND_FORBIDDEN = {"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"}
 FACTORY_PREFIX = ["uv", "run", "--locked", "--project", ".factory", "software-factory"]
-# Project-scoped CLI commands. Setup/admin commands (init, upgrade, uninstall, recover, render,
-# auth) and anything unknown are refused: they install, remove or regenerate files or handle
-# credentials, which belongs to the user, not the orchestrator.
+# The hydrated runtime's console script; equivalent to FACTORY_PREFIX and usable in sandboxes that
+# cannot write the uv cache (Codex).
+FACTORY_VENV = ".factory/.venv/bin/software-factory"
+# Project-scoped CLI commands and the options each may use: (options taking a value, flags).
+# Setup/admin commands (init, upgrade, uninstall, recover, render, auth) and anything unknown are
+# refused: they install, remove or regenerate files or handle credentials, which belongs to the
+# user, not the orchestrator. Options are matched exactly (argparse abbreviations are refused).
+# Deliberately absent: verify --candidate-root (verifies another tree), models discover and its
+# options (--client runs a program; discovery is a user setup step).
+MISSION_ONLY = ({"--mission"}, set())
+INPUT_ONLY = ({"--mission", "--input"}, set())
+SEMANTIC = ({"--input", "--mission"}, {"--no-network", "--no-cache", "--no-persist"})
 FACTORY_COMMANDS = {
-    "version", "doctor", "inspect", "status", "checks", "verify", "gate", "packet",
-    "mission", "models", "semantic", "jev", "triage",
+    "version": (set(), set()),
+    "doctor": (set(), set()),
+    "inspect": (set(), set()),
+    "status": MISSION_ONLY,
+    "checks": ({"--only"}, {"--require-clean"}),
+    "verify": ({"--mission", "--revision", "--resolution"}, {"--reconcile-postmerge"}),
+    "gate": MISSION_ONLY,
+    "packet": ({"--mission", "--kind"}, set()),
+    "triage": ({"--mission", "--revision", "--check"}, {"--no-network"}),
+    "models": (
+        {"--profile", "--harness", "--session", "--objective", "--id", "--kind", "--input", "--catalog",
+         "--plan", "--assignment", "--output"},
+        set(),
+    ),
 }  # fmt: skip
+# Records that stand for the user's own approval or an external result the user observed.
+HUMAN_ONLY = {
+    ("mission", "approve"): (
+        "software-factory mission approve records the user's own approval; show the user the exact "
+        "command (accept-scope and the gate print it) and ask them to run it in their terminal"
+    ),
+    ("mission", "ci-result"): (
+        "software-factory mission ci-result records a remote CI result the user observed; ask the user "
+        "to run it in their terminal with the run URL"
+    ),
+}
+FACTORY_SUBCOMMANDS = {
+    "mission": {
+        "create": ({"--id", "--title", "--kind", "--base", "--input", "--request-file"}, set()),
+        "list": (set(), set()),
+        "status": MISSION_ONLY,
+        "recover-lock": (set(), set()),
+        "task-add": INPUT_ONLY,
+        "task-update": ({"--mission", "--input", "--task"}, set()),
+        "task-transition": ({"--mission", "--task", "--to", "--reason", "--model-catalog"}, set()),
+        "transition": ({"--mission", "--to", "--reason", "--next", "--decision"}, set()),
+        "block": ({"--mission", "--reason", "--next"}, set()),
+        "resume": ({"--mission", "--to", "--model-catalog", "--resolution"}, {"--replan-models"}),
+        "accept-scope": MISSION_ONLY,
+        "clarify": INPUT_ONLY,
+        "criteria": INPUT_ONLY,
+        "brief": ({"--mission", "--task", "--kind"}, set()),
+        "risk": MISSION_ONLY,
+        "record-doc": ({"--mission", "--doc", "--input"}, set()),
+        "decision": INPUT_ONLY,
+        "review": INPUT_ONLY,
+        "record-result": INPUT_ONLY,
+        "record-results": INPUT_ONLY,
+        "model-plan": INPUT_ONLY,
+        "record-delivery": INPUT_ONLY,
+        "template": ({"--mission", "--kind"}, set()),
+    },
+    "semantic": {"status": (set(), set()), "example": (set(), set()), "check": SEMANTIC, "verify-claims": SEMANTIC},
+    "jev": {"status": (set(), set()), "example": (set(), set()), "check": SEMANTIC, "verify-claims": SEMANTIC},
+}  # fmt: skip
+# models takes its subcommand as a positional word (default: sources).
+MODEL_SUBCOMMANDS = {
+    "sources", "template", "validate", "plan", "dispatch", "outcome-template", "outcome-record", "calibration",
+}  # fmt: skip
+# Options naming a file; they take a project-relative path, or - for standard input.
+FACTORY_PATH_OPTIONS = {"--input", "--catalog", "--plan", "--output", "--request-file", "--model-catalog"}
 FACTORY_NO_ARGS = {"version", "doctor", "inspect"}  # Read-only; any extra word could name a path.
 FACTORY_HELP = {"-h", "--help"}
 
@@ -90,6 +161,7 @@ class Denied(Exception):
 
 
 REDIRECT = "\x00<"  # Placeholder word for a stdin redirection; NUL never survives input checks.
+STDIN_DEVICES = {"/dev/null", "/dev/stdin"}  # The only absolute stdin redirection targets.
 
 
 def heredoc_delimiter(command: str, index: int) -> tuple[str, bool, int]:
@@ -154,7 +226,7 @@ def split_segments(command: str) -> list[str]:
     command = command.strip(" \t\n")
     if not command:
         raise Denied("empty shell command")
-    segments, current, quote, pending, index, last_separator = [], [], None, [], 0, ""
+    segments, current, quote, pending, index, separators = [], [], None, [], 0, []
     while index < len(command):
         char = command[index]
         if char == "\\" and quote != "'" and command[index + 1 : index + 2] in ("\n", ""):
@@ -214,7 +286,8 @@ def split_segments(command: str) -> list[str]:
                 index = heredoc_bodies(command, index, pending)
                 pending = []
             segments.append("".join(current))
-            current, last_separator = [], char
+            separators.append(pair if pair in ("&&", "||") else char)
+            current = []
             continue
         else:
             current.append(char)
@@ -223,15 +296,82 @@ def split_segments(command: str) -> list[str]:
         raise Denied("unterminated quote in shell command")
     if pending:
         raise Denied("heredoc without a body")
-    if current or last_separator != "\n":  # A heredoc body may end the command.
-        segments.append("".join(current))
-    if any(not segment.strip() for segment in segments):
-        raise Denied("empty command in a shell chain")
-    return segments
+    segments.append("".join(current))
+    # An empty segment is harmless only where bash accepts it: a blank line, a line ending in `;`
+    # or a trailing `;` (or the end of a heredoc). After &&, || or |, or before the first command,
+    # it is a syntax error (or a continuation) and is refused.
+    for position, segment in enumerate(segments):
+        if segment.strip():
+            continue
+        before = separators[position - 1] if position else None
+        after = separators[position] if position < len(separators) else None
+        if before not in (";", "\n") or after not in (None, "\n"):
+            raise Denied("empty command in a shell chain")
+    return [segment for segment in segments if segment.strip()]
+
+
+def outside_project(value: str) -> bool:
+    """Whether a path-like word could name something outside the project tree."""
+    return (
+        value.startswith(("/", "\\", "~"))
+        or (len(value) > 1 and value[1] == ":" and value[0].isalpha())  # Windows drive
+        or ".." in value.replace("\\", "/").split("/")
+    )
+
+
+def check_path(value: str, label: str) -> None:
+    if outside_project(value):
+        raise Denied(
+            f"{label} {value!r} could read outside the project; use a project-relative path "
+            "without a leading / or ~ and without .. components"
+        )
+
+
+def check_argument_paths(program: str, args: list[str]) -> None:
+    """Refuse arguments that could name files outside the project (e.g. ~/.ssh, /proc, ../x).
+
+    Every argument is checked, as are an option's value after = and a short option's attached
+    tail (grep -f/etc/x), because this guard cannot tell a pattern from a path.
+    """
+    for arg in args:
+        candidates = [arg]
+        if arg.startswith("--") and "=" in arg:
+            candidates.append(arg.split("=", 1)[1])
+        elif arg.startswith("-") and not arg.startswith("--"):
+            candidates.append(arg[2:])
+        for value in candidates:
+            check_path(value, f"{program} argument")
+
+
+def check_options(label: str, args: list[str], values: set[str], flags: set[str]) -> None:
+    """Allow only the listed options (exact names); path options take project-relative paths or -."""
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        index += 1
+        if arg in FACTORY_HELP:
+            continue
+        name, has_value, value = arg.partition("=")
+        if name in flags and not has_value:
+            continue
+        if name in values:
+            if not has_value:
+                if index >= len(args):
+                    raise Denied(f"software-factory {label} {name} needs a value")
+                value = args[index]
+                index += 1
+            if value.startswith("-") and value != "-":
+                raise Denied(f"software-factory {label} {name} value {value!r} looks like an option")
+            if name in FACTORY_PATH_OPTIONS:
+                check_path(value, f"software-factory {label} {name}")
+            continue
+        if not arg.startswith("-") or arg == "-":
+            raise Denied(f"software-factory {label} does not take the argument {arg!r} here")
+        raise Denied(f"software-factory {label} option {name} is not allowed for the orchestrator")
 
 
 def check_factory(args: list[str]) -> None:
-    """Allow only project-scoped software-factory commands on the current project."""
+    """Allow only project-scoped software-factory commands with their allowlisted options."""
     for arg in args:
         name = arg.split("=", 1)[0]
         # --root (or an abbreviation argparse might accept) would select another project.
@@ -246,12 +386,39 @@ def check_factory(args: list[str]) -> None:
         if rest:
             raise Denied(f"software-factory {command} takes no further arguments")
         return
+    if command == "verify" and any(a.split("=", 1)[0].startswith("--c") for a in rest):
+        raise Denied(
+            "software-factory verify --candidate-root is not allowed; the orchestrator verifies "
+            "this project's candidate only"
+        )
+    if command in FACTORY_SUBCOMMANDS:
+        if not rest or rest[0] in FACTORY_HELP:
+            check_options(command, rest, set(), set())
+            return
+        table = FACTORY_SUBCOMMANDS[command]
+        if (command, rest[0]) in HUMAN_ONLY:
+            raise Denied(HUMAN_ONLY[(command, rest[0])])
+        if rest[0] not in table:
+            raise Denied(f"software-factory `{command} {rest[0]}` is not an allowed orchestrator command")
+        check_options(f"{command} {rest[0]}", rest[1:], *table[rest[0]])
+        return
     if command not in FACTORY_COMMANDS:
         raise Denied(f"software-factory `{command}` is not an allowed orchestrator command")
     if command in FACTORY_NO_ARGS and any(arg not in FACTORY_HELP for arg in rest):
         raise Denied(
             f"software-factory {command} takes no arguments here (a path could target another project)"
         )
+    label = command
+    if command == "models" and rest and not rest[0].startswith("-"):
+        if rest[0] == "discover":
+            raise Denied(
+                "software-factory models discover is a user setup step (it can run a client program); "
+                "ask the user to run it"
+            )
+        if rest[0] not in MODEL_SUBCOMMANDS:
+            raise Denied(f"software-factory `models {rest[0]}` is not an allowed orchestrator command")
+        label, rest = f"models {rest[0]}", rest[1:]
+    check_options(label, rest, *FACTORY_COMMANDS[command])
 
 
 def check_words(words: list[str]) -> None:
@@ -259,7 +426,7 @@ def check_words(words: list[str]) -> None:
     if words[: len(FACTORY_PREFIX)] == FACTORY_PREFIX:
         check_factory(words[len(FACTORY_PREFIX) :])
         return
-    if program == "software-factory":
+    if program in ("software-factory", FACTORY_VENV):
         check_factory(args)
         return
     if program == "git":
@@ -274,14 +441,23 @@ def check_words(words: list[str]) -> None:
                 name.startswith(bad) or (len(name) > 3 and bad.startswith(name)) for bad in GIT_FORBIDDEN
             ):
                 raise Denied(f"git option {name} can write files or run programs")
+        check_argument_paths("git", args[1:])
         return
     if program in READ_ONLY:
         if program == "find":
             bad = sorted(FIND_FORBIDDEN.intersection(args))
             if bad:
                 raise Denied(f"find {bad[0]} can modify files or run programs")
-        if program == "rg" and any(a == "--pre" or a.startswith("--pre=") for a in args):
-            raise Denied("rg --pre runs programs")
+        if program == "rg":
+            for arg in args:
+                name = arg.split("=", 1)[0]
+                if name in ("--pre", "--hostname-bin"):
+                    raise Denied(f"rg {name} runs programs")
+                if name == "--search-zip" or (
+                    arg.startswith("-") and not arg.startswith("--") and "z" in arg
+                ):
+                    raise Denied("rg -z/--search-zip runs decompression programs")
+        check_argument_paths(program, args)
         return
     raise Denied(f"`{program}` is not an allowed orchestrator command")
 
@@ -301,6 +477,8 @@ def check_shell(command) -> None:
                     raise Denied("stdin redirection without a file")
                 if words[index + 1].startswith(("/dev/tcp/", "/dev/udp/")):
                     raise Denied("network redirection is not allowed")
+                if words[index + 1] not in STDIN_DEVICES:
+                    check_path(words[index + 1], "stdin redirection from")
                 index += 2  # The file is only read as standard input.
                 continue
             plain.append(words[index])
@@ -314,14 +492,14 @@ def decide(payload) -> None:
     """Return normally to allow; raise Denied to block."""
     if not isinstance(payload, dict):
         raise Denied("hook input is not a JSON object")
+    if payload.get("hook_event_name") != "PreToolUse":
+        raise Denied("orchestrator guard only handles PreToolUse (hook_event_name missing or different)")
     agent_id, agent_type = payload.get("agent_id"), payload.get("agent_type")
     if agent_id is not None or agent_type is not None:
         if not isinstance(agent_type, str) or (agent_id is not None and not isinstance(agent_id, str)):
             raise Denied("malformed agent_id/agent_type in hook input")
         if agent_id and agent_type != ORCHESTRATOR:
             return  # A delegated specialist's own tool call; its agent file scopes its tools.
-    if payload.get("hook_event_name", "PreToolUse") != "PreToolUse":
-        raise Denied("orchestrator guard only handles PreToolUse")
     tool, args = payload.get("tool_name"), payload.get("tool_input")
     if not isinstance(tool, str) or not tool:
         raise Denied("hook input has no tool name")
@@ -362,7 +540,9 @@ def main(argv=None, stdin=None, stdout=None, stderr=None) -> int:
     try:
         if argv:
             raise Denied("usage: orchestrator_guard.py (hook JSON on stdin, no arguments)")
-        raw = stdin.read(1 << 20)
+        raw = stdin.read(MAX_PAYLOAD + 1)
+        if len(raw) > MAX_PAYLOAD:
+            raise Denied("hook payload too large to review (over 1 MiB)")
         try:
             payload = json.loads(raw)
         except ValueError as exc:

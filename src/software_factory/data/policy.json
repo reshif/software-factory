@@ -30,7 +30,21 @@
   ],
   "sensitive_paths": [
     "src/auth/**",
+    "**/auth/**",
+    "**/auth.*",
+    "**/authentication/**",
+    "**/authorization/**",
+    "**/oauth/**",
+    "**/security/**",
+    "**/crypto/**",
+    "**/secrets/**",
+    "**/billing/**",
+    "**/payment/**",
+    "**/payments/**",
     "migrations/**",
+    "**/migrations/**",
+    "**/*.tf",
+    "**/*.tfvars",
     "tests/fixtures/**"
   ],
   "required_decisions": [

@@ -2,6 +2,10 @@
 
 Only route_model_plan performs remote selection. Saved Choice observations are
 local, editable evidence; they do not authenticate a provider or execute a model.
+
+A routing record's ``provider_requests`` counts the assignments whose receipt
+holds a JEV response: one logical Choice request each. HTTP retries inside one
+request are counted by that receipt's ``attempts`` (1 to 3), not here.
 """
 
 from __future__ import annotations
@@ -13,7 +17,8 @@ from pathlib import Path
 
 from . import auth
 from .core import FactoryError, asset_path, canonical, digest, load_config, now, read_json, safe_path, sha256
-from .jev import JevError, request_jev, validate_jev_response
+from .jev import MAX_RETRIES, JevError, request_jev, validate_jev_response
+from .redaction import redact
 
 MAX_ASSIGNMENTS = 16
 MAX_CANDIDATES = 254
@@ -34,6 +39,8 @@ DEFAULTS = {
     "min_confidence": 0.6,
 }
 JEV_REASONS = ("jev_choice", "abstained", "low_confidence")
+# Receipt fields that exist only when a JEV request was made.
+JEV_RECEIPT_FIELDS = ("confidence", "threshold", "attempts", "masks")
 
 
 def settings(config):
@@ -72,9 +79,8 @@ def _rubric(root):
 def _context(root, request, catalog):
     config_path = safe_path(root, "factory.json")
     config = load_config(root) if config_path.is_file() else {}
+    # The factory schema admits only the typesafe provider.
     selected = settings(config)
-    if selected["provider"] != "typesafe":
-        raise FactoryError("Unsupported JEV routing provider", 2)
     paths = {
         "policy_hash": asset_path(root, "models/policy.json"),
         "recommendations_hash": asset_path(root, "models/recommendations.json"),
@@ -95,9 +101,7 @@ def _context(root, request, catalog):
     # factory.json stays in the in-flight stamps so any edit, even a transient
     # toggle, aborts routing; saved plans only bind routing_configuration().
     watched = list(paths.values()) + modules + ([config_path] if config_path.is_file() else [])
-    stamps = [
-        (p.stat().st_ino, p.stat().st_size, p.stat().st_mtime_ns, p.stat().st_ctime_ns) for p in watched
-    ]
+    stamps = [(s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns) for s in (p.stat() for p in watched)]
     return contract, stamps
 
 
@@ -119,6 +123,11 @@ def attach_factory_routing(root, plan):
 
 
 def _decision_body(root, request, assignment, requirements, eligible, model):
+    """The JEV Choice request, its choice keys and the number of masks applied.
+
+    The objective and guidance strengths are free text, so both pass through
+    ``redact`` before they are sent; the receipt records the mask count.
+    """
     rubric = _rubric(root)
     if len(eligible) > MAX_CANDIDATES:
         raise FactoryError(
@@ -131,23 +140,29 @@ def _decision_body(root, request, assignment, requirements, eligible, model):
         key: f"Select {identifier} as the best documented fit." for key, identifier in choices.items()
     }
     criteria["abstain"] = rubric["abstain"]
+    objective, masks = redact(request["objective"])
+    candidates = []
+    for key, entry in zip(choices, eligible, strict=True):
+        candidate, count = _candidate(key, entry)
+        candidates.append(candidate)
+        masks += count
     body = {
         "model": model,
         "state": {
-            "objective": request["objective"],
+            "objective": objective,
             "assignment": {
                 "id": assignment["id"],
                 "role": assignment["role"],
                 "intent": assignment["intent"],
                 "requirements": requirements,
             },
-            "candidates": [_candidate(key, entry) for key, entry in zip(choices, eligible, strict=True)],
+            "candidates": candidates,
         },
         "questions": {
             "selection": {"type": "choice", "instructions": rubric["instructions"], "criteria": criteria}
         },
     }
-    return body, choices
+    return body, choices, masks
 
 
 CANDIDATE_FIELDS = (
@@ -165,13 +180,14 @@ CANDIDATE_FIELDS = (
 
 
 def _candidate(key, entry):
-    """Compact candidate text: omits sources, model_ids, availability and nulls."""
+    """Compact candidate text and its mask count: omits sources, model_ids, availability and nulls."""
     model = entry["model"]
     value = {"choice": key}
     value.update({name: model[name] for name in CANDIDATE_FIELDS if model.get(name) is not None})
+    masks = 0
     if entry["guidance"]:
-        value["strengths"] = entry["guidance"]["strengths"]
-    return value
+        value["strengths"], masks = redact(entry["guidance"]["strengths"])
+    return value, masks
 
 
 def _jev_outcome(response, choices, threshold):
@@ -193,6 +209,9 @@ def _automatic_decision(assignment, eligible):
         return selected, "explicit_preference" if selected else "explicit_preference_unavailable"
     if not eligible:
         return None, "no_eligible_candidates"
+    if len(eligible) == 1:
+        # One hard-eligible candidate leaves JEV nothing to decide; never bill for it.
+        return eligible[0]["model"]["id"], "single_eligible_candidate"
     return None
 
 
@@ -220,11 +239,10 @@ def route_model_plan(root, request, catalog, *, at=None, get_api_key=None, trans
             current, current_stamps = _context(root, original_request, original_catalog)
             if current != context or current_stamps != stamps:
                 raise ValueError()
-            if input_paths and (
-                digest(read_json(root, input_paths["request"])) != context["request_hash"]
-                or digest(read_json(root, input_paths["catalog"])) != context["catalog_hash"]
-            ):
-                raise ValueError()
+            for name in ("request", "catalog"):
+                path = (input_paths or {}).get(name)
+                if path and digest(read_json(root, path)) != context[f"{name}_hash"]:
+                    raise ValueError()
         except (FactoryError, OSError, ValueError):
             raise FactoryError(
                 "Model routing inputs or configuration changed; regenerate the plan", 2
@@ -245,7 +263,7 @@ def route_model_plan(root, request, catalog, *, at=None, get_api_key=None, trans
         if automatic is not None:
             receipt["selected_model"], receipt["reason"] = automatic
         else:
-            body, choices = _decision_body(
+            body, choices, masks = _decision_body(
                 root, request, assignment, requirements, eligible, selected["model"]
             )
             if len(canonical(body)) > selected["max_request_bytes"]:
@@ -284,9 +302,16 @@ def route_model_plan(root, request, catalog, *, at=None, get_api_key=None, trans
                 raise FactoryError(f"JEV model routing {exc.code}; no fallback was applied", 2) from None
             except Exception:  # noqa: BLE001 - never expose provider bodies or credentials
                 raise FactoryError("JEV model routing provider failure; no fallback was applied", 2) from None
+            # A response that arrives is kept even when it used the whole budget: it
+            # is already billed, and the transport enforced remaining_ms itself.
             check_inputs()
-            if time.monotonic() >= min(deadline, started + remaining_ms / 1000):
-                raise FactoryError("JEV model routing deadline exceeded; no fallback was applied", 2)
+            # request_jev reports attempts 1, 2, ...; a transport that reports
+            # nothing made one call. Anything else is not a faithful count.
+            count = len(attempts) or 1
+            if (attempts and attempts != list(range(1, count + 1))) or count > MAX_RETRIES + 1:
+                raise FactoryError(
+                    "JEV model routing transport reported inconsistent attempts; no fallback was applied", 2
+                )
             selected_model, reason = _jev_outcome(response, choices, selected["min_confidence"])
             receipt.update(
                 request_hash=digest(body),
@@ -295,8 +320,8 @@ def route_model_plan(root, request, catalog, *, at=None, get_api_key=None, trans
                 reason=reason,
                 confidence=response["answers"]["selection"]["confidence"],
                 threshold=selected["min_confidence"],
-                # Injected transports that do not report attempts made one call.
-                attempts=max(1, len(attempts)),
+                attempts=count,
+                masks=masks,
             )
         decisions.append(receipt)
         return receipt["selected_model"]
@@ -374,7 +399,7 @@ def validate_recorded_routing(plan):
         elif (
             receipt["request_hash"] is not None
             or receipt["response"] is not None
-            or {"confidence", "threshold", "attempts"} & set(receipt)
+            or set(JEV_RECEIPT_FIELDS) & set(receipt)
         ):
             raise FactoryError("Explicit or unavailable assignment cannot invent a JEV request")
 
@@ -433,10 +458,10 @@ def replay_model_plan(root, plan):
             if receipt["request_hash"] is not None or receipt["response"] is not None:
                 raise FactoryError("Explicit or unavailable assignment cannot invent a JEV request")
         else:
-            request_body, choices = _decision_body(
+            request_body, choices, masks = _decision_body(
                 root, plan["request"], assignment, requirements, eligible, context["settings"]["model"]
             )
-            if receipt["request_hash"] != digest(request_body):
+            if receipt["request_hash"] != digest(request_body) or receipt.get("masks") != masks:
                 raise FactoryError("Model routing request changed")
             try:
                 response = validate_jev_response(

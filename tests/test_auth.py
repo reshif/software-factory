@@ -87,12 +87,18 @@ def test_env_precedes_invalid_store_and_invalid_store_path(monkeypatch):
 
 
 @pytest.mark.parametrize("value", ["", "   "])
-def test_explicit_empty_env_does_not_fall_back_to_a_different_account(monkeypatch, value):
+def test_blank_env_is_not_an_override_and_falls_through_to_the_store(monkeypatch, value):
+    # 0.3.2: a blank TYPESAFE_API_KEY (as CI templates often export it) no longer hides the saved key.
     saved()
     monkeypatch.setenv(auth.KEY_ENV, value)
+    assert auth.get_typesafe_key() == KEY
+    assert auth.request_credential() == (KEY, None)
+    status = auth.auth_status()
+    assert status["source"] == "user_store" and not status["environment_override_present"]
+    monkeypatch.setenv(auth.KEY_ENV, value)
+    auth.logout()
     assert auth.get_typesafe_key() is None
     assert auth.request_credential() == (None, "credential_missing")
-    assert auth.auth_status()["environment_override_present"]
 
 
 @pytest.mark.parametrize("value", ["\n", "has space", "a\nb", "a\x00b", "é", "a" * 4097])
@@ -357,3 +363,71 @@ def test_rotation_during_path_stat_accepts_unlinked_inode(monkeypatch):
 
     monkeypatch.setattr(auth.os, "stat", stat_during_rotation)
     assert auth.get_typesafe_key() == KEY
+
+
+@pytest.mark.parametrize("kind", ["malformed", "oversized", "unknown"])
+def test_logout_removes_an_invalid_store_after_safety_checks(kind):
+    path = saved()
+    unrelated = path.parent / "user-settings.json"
+    unrelated.write_text("user data")
+    path.write_text({"malformed": KEY, "oversized": KEY * 2000, "unknown": '{"a": 1}'}[kind])
+    with pytest.raises(auth.CredentialError):
+        auth.get_typesafe_key()
+    assert auth.logout()["removed"] is True
+    assert not path.exists() and unrelated.read_text() == "user data"
+    assert auth.get_typesafe_key() is None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permissions and symlinks")
+def test_logout_still_refuses_unsafe_invalid_store(tmp_path):
+    path = saved()
+    path.write_text("invalid")
+    path.chmod(0o644)
+    with pytest.raises(auth.CredentialError, match="owned by you"):
+        auth.logout()
+    assert path.exists()
+    path.unlink()
+    target = tmp_path / "elsewhere.json"
+    target.write_text("invalid")
+    path.symlink_to(target)
+    with pytest.raises(auth.CredentialError, match="symlinks"):
+        auth.logout()
+    assert path.is_symlink() and target.read_text() == "invalid"
+
+
+def test_request_credential_reports_os_errors_as_unavailable():
+    def broken():
+        raise PermissionError("denied")
+
+    assert auth.request_credential(broken) == (None, "credential_unavailable")
+
+
+def test_oversized_key_reports_size_before_format(monkeypatch):
+    with pytest.raises(auth.CredentialError, match="size limit"):
+        auth.save_typesafe_key("a" * 4097)
+    with pytest.raises(auth.CredentialError, match="size limit"):
+        auth.save_typesafe_key("a b" * 2000)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("a" * 4097))
+    with pytest.raises(auth.CredentialError, match="size limit"):
+        auth.login(stdin=True)
+
+
+def test_store_body_errors_are_not_relabelled_as_permission_problems(monkeypatch):
+    saved()
+
+    class Marker(OSError):
+        pass
+
+    with pytest.raises(Marker), auth._store():
+        raise Marker("body failure")
+    real_open = os.open
+
+    def failing_open(path, flags, *args, **kwargs):
+        if path == auth.FILENAME or str(path).endswith(auth.FILENAME):
+            raise OSError("disk error")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", failing_open)
+    with pytest.raises(auth.CredentialError, match="Cannot read the credential file"):
+        auth.get_typesafe_key()
+    assert auth.request_credential() == (None, "credential_unavailable")

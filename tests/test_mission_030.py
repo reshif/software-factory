@@ -148,8 +148,12 @@ def review(root, id, kind="code", verdict="pass", status="pass", **extra):
         "fingerprint": load_mission_fingerprint(root, id),
         "findings": [],
         "criteria_verdicts": {"AC-1": verdict},
+        # 0.3.2: every required review kind records the hash of its current brief.
+        "brief_hash": brief(root, id, kind)["sha256"],
         **extra,
     }
+    if record["brief_hash"] is None:
+        del record["brief_hash"]
     return cli(
         root, "mission", "review", "--mission", id, "--input", put(root, ".factory/local/r.json", record)
     )
@@ -277,17 +281,20 @@ def test_stdin_inputs_and_record_doc(repo, monkeypatch):
         "reference": "User authorized",
         "subject_hash": hash_file(repo, f".factory/missions/{id}/spec.md"),
     }
-    cli(
-        repo,
-        "mission",
-        "decision",
-        "--mission",
-        id,
-        "--input",
-        "-",
-        stdin=json.dumps(decision).encode(),
-        monkeypatch=monkeypatch,
-    )
+    # 0.3.2: a scope decision is refused from --input; the user records it with `mission approve`.
+    with pytest.raises(FactoryError, match="mission approve"):
+        cli(
+            repo,
+            "mission",
+            "decision",
+            "--mission",
+            id,
+            "--input",
+            "-",
+            stdin=json.dumps(decision).encode(),
+            monkeypatch=monkeypatch,
+        )
+    record_decision(repo, id, decision)
     cli(
         repo,
         "mission",
@@ -406,21 +413,32 @@ def test_accept_scope_refusals(repo):
         id,
         {"id": "D-WAIVE", "kind": "exception", "reference": "User: not needed", "subject_hash": "a" * 64},
     )
+    # 0.3.2: an exception decision no longer backs an exclusion; kind exclusion bound to the chain does.
+    with pytest.raises(FactoryError, match="has kind exception; record a decision of kind exclusion"):
+        criteria(
+            repo,
+            id,
+            {**CRITERIA, "exclusions": [{"excerpt": "Keep the module importable.", "decision": "D-WAIVE"}]},
+        )
+    chain = load_mission(repo, id)["request"]["chain"]
+    record_decision(
+        repo, id, {"id": "D-OUT", "kind": "exclusion", "reference": "User: keep as is", "subject_hash": chain}
+    )
     criteria(
         repo,
         id,
         {
             **CRITERIA,
             "ambiguities": [{**question, "status": "waived", "decision": "D-WAIVE"}],
-            "exclusions": [{"excerpt": "Keep the module importable.", "decision": "D-WAIVE"}],
+            "exclusions": [{"excerpt": "Keep the module importable.", "decision": "D-OUT"}],
         },
     )
     directory = repo / ".factory/missions" / id
     template = (asset_root() / "templates/context.md").read_text()
     for name, text, message in (
         ("context.md", template.replace("\n\n", "\n \n"), "context.md is missing or still"),
-        ("context.md", "# Context\n\n## Codebase map\n\n", "context.md adds no content"),
-        ("context.md", "# Mine\n\n" + template, "context.md adds no content"),
+        ("context.md", "# Context\n\n## Codebase map\n\n", "context.md adds fewer than 20"),
+        ("context.md", "# Mine\n\n" + template, "context.md adds fewer than 20"),
         ("plan.md", PLAN.replace("```mermaid", "```text"), "section has no fenced ```mermaid block"),
         ("plan.md", PLAN.replace("flowchart LR", "pie title nope"), "unknown diagram type 'pie'"),
         ("plan.md", PLAN.replace("## Architecture", "## Design"), "no '## Architecture' section"),
@@ -540,7 +558,7 @@ def test_feature_lane_requires_acceptance_review_with_current_brief(repo):
     gate = assess_gate(repo, id)
     assert gate["required_reviews"] == ["code", "acceptance"]
     assert any("acceptance review" in r for r in gate["reasons"])
-    review(repo, id, "acceptance")
+    review(repo, id, "acceptance", brief_hash=None)
     assert any("must record brief_hash" in r for r in assess_gate(repo, id)["reasons"])
     review(repo, id, "acceptance", brief_hash=early["sha256"])
     assert any("brief_hash does not match" in r for r in assess_gate(repo, id)["reasons"])
@@ -642,12 +660,16 @@ def test_check_reference_to_failed_check_blocks(repo):
     write_json(repo, "factory.json", config)
     commit(repo, "optional check")
     id = plan_mission(repo)
-    implement(repo, id, evidence={"AC-1": ["check:unit", "check:extra", "evidence:missing.txt", "note:seen"]})
+    implement(repo, id, evidence={"AC-1": ["check:unit", "check:extra", "note:seen"]})
     review(repo, id)
     reasons = assess_gate(repo, id)["reasons"]
     assert any("cites check extra, which did not pass" in r for r in reasons)
-    assert any("missing evidence file: missing.txt" in r for r in reasons)
     assert not any("check unit" in r for r in reasons)
+    # A missing evidence: file is refused when the result is recorded (and again by the gate).
+    result = result_for(repo, id, {"reference": load_mission(repo, id)["evidence"][-1]})
+    result["criteria_evidence"] = {"AC-1": ["check:unit", "evidence:missing.txt"]}
+    with pytest.raises(FactoryError, match="criteria_evidence cites a missing evidence file: missing.txt"):
+        record_result(repo, id, result)
 
 
 def test_tampered_request_blocks_gate(repo):
@@ -733,7 +755,22 @@ def test_request_mission_merge_rechecks_review_kinds(tmp_path):
     record_delivery(root, id, {"merge_ref": head})
     git(root, "branch", "-f", "main", head)
     assert assess_merged(root, id)["pass"], assess_merged(root, id)
-    review(root, id, "acceptance", status="changes_requested", verdict="fail")
+    # A rejection recorded through the CLI in READY_PR returns to IMPLEMENTING (0.3.2); write one
+    # directly so the merge check itself is exercised against a rejecting latest review.
+    mission = load_mission(root, id)
+    mission["reviews"].append(
+        {
+            "id": "V-LATE",
+            "kind": "acceptance",
+            "author": "independent-reviewer",
+            "status": "changes_requested",
+            "fingerprint": verified["fingerprint"],
+            "findings": [],
+            "criteria_verdicts": {"AC-1": "fail"},
+            "created_at": "2026-09-28T00:00:00.000Z",
+        }
+    )
+    write_json(root, f".factory/missions/{id}/mission.json", mission)
     reasons = assess_merged(root, id)["reasons"]
     assert any("acceptance review" in r for r in reasons) and any(
         "verdict for AC-1 is fail" in r for r in reasons
@@ -745,7 +782,7 @@ def test_exhausted_repair_budget_raises_risk(repo):
     transition_mission(repo, id, "IMPLEMENTING")
     transition_task(repo, id, "T-ONE", "RUNNING")
     assert cli(repo, "mission", "risk", "--mission", id)["tier"] == "low"
-    transition_task(repo, id, "T-ONE", "BLOCKED")
+    transition_task(repo, id, "T-ONE", "BLOCKED", reason="Paused for a diagnosis")
     transition_task(repo, id, "T-ONE", "RUNNING")
     risk = cli(repo, "mission", "risk", "--mission", id)
     assert risk == {
@@ -845,7 +882,7 @@ def test_criteria_change_after_planned_resets_like_clarify(repo):
     id = plan_mission(repo)
     transition_mission(repo, id, "IMPLEMENTING")
     transition_task(repo, id, "T-ONE", "RUNNING")
-    transition_task(repo, id, "T-ONE", "BLOCKED")
+    transition_task(repo, id, "T-ONE", "BLOCKED", reason="Paused for a diagnosis")
     before = load_mission(repo, id)
     assert before["state"] == "IMPLEMENTING" and before["tasks"][0]["attempts"] == 1
     changed = {"items": [{**CRITERIA["items"][0], "text": "VALUE equals two"}]}
@@ -857,10 +894,15 @@ def test_criteria_change_after_planned_resets_like_clarify(repo):
     with pytest.raises(FactoryError, match="Invalid transition PROPOSED -> IMPLEMENTING"):
         transition_mission(repo, id, "IMPLEMENTING")
     assert cli(repo, "mission", "accept-scope", "--mission", id)["state"] == "PLANNED"
-    # A premerge hold beyond PLANNED resets too and resolves the blocker.
+    # 0.3.2: a premerge hold beyond PLANNED resets scope but keeps the hold and its blocker.
     transition_mission(repo, id, "IMPLEMENTING")
     cli(repo, "mission", "block", "--mission", id, "--reason", "Waiting", "--next", "Ask the user")
     mission = criteria(repo, id, CRITERIA)
+    assert mission["state"] == "BLOCKED" and mission["previous_state"] == "PROPOSED"
+    assert [b["reason"] for b in mission["blockers"]] == ["Waiting"] and mission["criteria_hash"] is None
+    mission = cli(
+        repo, "mission", "resume", "--mission", id, "--to", "PROPOSED", "--resolution", "User answered"
+    )
     assert mission["state"] == "PROPOSED" and mission["blockers"] == []
 
 
@@ -985,11 +1027,14 @@ def test_missing_scope_decision_error_names_command_and_spec_hash(repo):
         cli(repo, "mission", "accept-scope", "--mission", id)
     message = str(refused.value)
     assert f"(sha256 {spec_hash})" in message
-    assert f"software-factory mission decision --mission {id} --input - <<'EOF'\n" in message
-    payload = json.loads(message.split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0])
-    assert payload["kind"] == "scope" and payload["subject_hash"] == spec_hash and payload["id"]
-    payload["reference"] = "User accepted the specification in chat"
-    cli(repo, "mission", "decision", "--mission", id, "--input", put(repo, ".factory/local/d.json", payload))
+    # 0.3.2: the hint names the user's own `mission approve` command, bound to the spec hash.
+    command = f"software-factory mission approve --mission {id} --kind scope --subject-hash {spec_hash}"
+    assert command in message and "mission decision" not in message
+    from software_factory.workflow import approve_decision
+
+    approve_decision(
+        repo, id, "scope", "User accepted the specification in chat", spec_hash, None, lambda *_: None
+    )
     assert cli(repo, "mission", "accept-scope", "--mission", id)["state"] == "PLANNED"
 
 
@@ -998,9 +1043,11 @@ def test_result_error_names_evidence_path_and_brief_states_requirements(repo):
     brief_text = (
         repo / cli(repo, "mission", "brief", "--mission", id, "--task", "T-ONE")["path"]
     ).read_text()
-    assert f".factory/missions/{id}/evidence/<run>/checks.json" in brief_text
-    assert f"record-doc --mission {id} --doc recovery" in brief_text
-    assert "Before READY_PR, recovery.md must state recovery implications" in brief_text
+    # 0.3.2 (C9): the implementer returns a provisional report, not result JSON, and does not verify.
+    assert "Return a provisional report" in brief_text
+    assert "Do not write a final result JSON and do not run software-factory verify" in brief_text
+    assert "Include recovery implications in the report" in brief_text
+    assert "result.schema.json" not in brief_text
     verified = implement(repo, id)
     path = f".factory/missions/{id}/results/index.json"
     index = read_json(repo, path)
@@ -1047,9 +1094,9 @@ def test_packet_lists_exclusions_with_decisions(repo):
         id,
         {
             "id": "D-OUT",
-            "kind": "exception",
+            "kind": "exclusion",
             "reference": "User: importability is out of scope",
-            "subject_hash": "b" * 64,
+            "subject_hash": load_mission(repo, id)["request"]["chain"],
         },
     )
     value = {**CRITERIA, "exclusions": [{"excerpt": "Keep   the module importable.", "decision": "D-OUT"}]}
@@ -1069,7 +1116,7 @@ def test_packet_lists_exclusions_with_decisions(repo):
     text = (repo / create_packet(repo, id)["path"]).read_text()
     section = text.split("## Request to evidence", 1)[1].split("\n## ", 1)[0]
     assert (
-        "- Excluded: Keep the module importable. — decision D-OUT (exception: User: importability is out of scope)"
+        "- Excluded: Keep the module importable. — decision D-OUT (exclusion: User: importability is out of scope)"
         in section
     )
 
@@ -1218,7 +1265,7 @@ def test_exclusion_decision_binds_the_request_chain(repo):
     excluded = {**CRITERIA, "exclusions": [{"excerpt": "Keep the module importable.", "decision": scope_id}]}
     with pytest.raises(
         FactoryError,
-        match=f"Exclusion decision {scope_id} has kind scope; use one of: exclusion, exception, decline",
+        match=f"Exclusion decision {scope_id} has kind scope; record a decision of kind exclusion",
     ):
         criteria(repo, id, excluded)
     criteria(repo, id, {**CRITERIA, "exclusions": [{**excluded["exclusions"][0], "decision": "D-EXCL"}]})
@@ -1250,6 +1297,7 @@ def test_review_defaults_author_and_unknown_fields(repo):
         "status": "pass",
         "findings": [],
         "criteria_verdicts": {"AC-1": "pass"},
+        "brief_hash": brief(repo, id, "code")["sha256"],
     }
     path = put(repo, ".factory/local/r.json", minimal)
     with pytest.raises(FactoryError) as error:
@@ -1259,7 +1307,7 @@ def test_review_defaults_author_and_unknown_fields(repo):
     with pytest.raises(FactoryError) as error:
         cli(repo, "mission", "review", "--mission", id, "--input", path)
     assert str(error.value).startswith(
-        "Unknown review field 'source'; allowed fields: id, fingerprint, status, author, created_at, kind"
+        "Unknown review field 'source'; allowed fields: id, fingerprint, status, author, kind, brief_hash"
     )
     assert load_mission(repo, id)["reviews"] == []
     cli(

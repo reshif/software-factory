@@ -11,7 +11,7 @@ The constitution in AGENTS.md applies; read [the constitution](../../../.factory
 
 ## Procedure
 
-Record `incident_ref` and a `recovery` decision (reference `recovery_ref`, subject the artifact digest), then transition DEPLOYING or OBSERVING to RECOVERING. Compare the observation to the recorded recovery trigger. Determine whether the approved action covers code rollback, flag disablement, data repair or a forward fix. Do not assume code rollback reverses a migration.
+Record `incident_ref` and a `recovery` decision (reference equal to `recovery_ref`; `subject_hash` is the 64 hex characters of `artifact_digest` without its `sha256:` prefix), then transition DEPLOYING or OBSERVING to RECOVERING. Compare the observation to the recorded recovery trigger. Determine whether the approved action covers code rollback, flag disablement, data repair or a forward fix. Do not assume code rollback reverses a migration.
 
 Use [the recovery template](../../../.factory/templates/recovery.md) to capture the exact operation, target, consequences and verification. Once enabled delivery has an artifact and recovery reference, `uv run --locked --project .factory software-factory packet --mission ID --kind recovery` prepares a separate `recovery-packet.md`; it does not run recovery. Execute only the existing configured action within the actual authorization; a standing recovery decision may already supply it. If new destructive data work or expanded access is required, present the concrete decision before dependent action.
 

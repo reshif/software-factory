@@ -7,7 +7,7 @@ import re
 
 import pytest
 from test_mission_030 import cli, put
-from test_workflow import begin, make_repo
+from test_workflow import begin, commit, make_repo
 
 from software_factory.core import CONSTITUTION_PATH, FactoryError, asset_root, hash_file, sha256
 from software_factory.installation import install
@@ -83,11 +83,14 @@ def test_product_mission_reconciles_changed_constitution(repo):
     assert message.startswith("Constitution changed (mission bound to sha256 " + before["constitution_hash"])
     assert f"{CONSTITUTION_PATH} is now sha256 {new_hash}, version 2.1.0" in message
     assert f"software-factory mission block --mission {id} --reason" in message
-    assert f"software-factory mission decision --mission {id} --input - <<'EOF'\n" in message
+    # 0.3.2: the exception is the user's own approval, so the hint names `mission approve`.
+    assert (
+        f"software-factory mission approve --mission {id} --kind exception --subject-hash {new_hash} "
+        f"--id D-CONST-{new_hash[:8]}"
+    ) in message
+    assert "mission decision" not in message
     assert f"software-factory mission accept-scope --mission {id}" in message
-    payload = json.loads(message.split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0])
-    assert payload["id"] == f"D-CONST-{new_hash[:8]}"
-    assert payload["kind"] == "exception" and payload["subject_hash"] == new_hash
+    payload = {"id": f"D-CONST-{new_hash[:8]}", "kind": "exception", "subject_hash": new_hash}
     gate = assess_gate(repo, id)
     assert not gate["pass"]
     assert any(
@@ -107,9 +110,21 @@ def test_product_mission_reconciles_changed_constitution(repo):
     assert load_mission(repo, id)["constitution_hash"] == before["constitution_hash"]
 
     payload["reference"] = "Maintainer approved constitution 2.1.0 in PR #7"
-    cli(repo, "mission", "decision", "--mission", id, "--input", put(repo, ".factory/local/d.json", payload))
+    # 0.3.2: an exception is the user's own approval, recorded through `mission approve`.
+    from software_factory.workflow import approve_decision
+
+    approve_decision(
+        repo, id, "exception", payload["reference"], payload["subject_hash"], payload["id"], lambda *_: None
+    )
+    # 0.3.2: a product mission's base must advance past the constitution commit, so it must exist.
+    with pytest.raises(FactoryError, match="commit the constitution change first"):
+        cli(repo, "mission", "accept-scope", "--mission", id)
+    head = commit(repo, "Adopt constitution 2.1.0")
     mission = cli(repo, "mission", "accept-scope", "--mission", id)
     assert mission["state"] == "PLANNED" and mission["previous_state"] is None
+    assert mission["base_commit"] == head
+    assert mission["base_history"][0]["from"] == before["base_commit"]
+    assert mission["base_history"][0]["decision"] == payload["id"]
     assert mission["constitution_hash"] == new_hash and mission["constitution_version"] == "2.1.0"
     assert [t["status"] for t in mission["tasks"]] == ["TODO"]
     assert mission["tasks"][0]["attempts"] == before["tasks"][0]["attempts"] == 1
@@ -164,6 +179,7 @@ def test_unversioned_constitution_drops_stale_version(repo):
     path = repo / CONSTITUTION_PATH
     path.write_text(re.sub(r"^Version: .*\n", "", path.read_text(), count=1, flags=re.MULTILINE))
     new_hash = hash_file(repo, CONSTITUTION_PATH)
+    commit(repo, "Drop the constitution version")
     transition_mission(repo, id, "BLOCKED", reason="Constitution changed")
     exception(repo, id, new_hash)
     mission = accept_scope(repo, id)

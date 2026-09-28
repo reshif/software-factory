@@ -10,7 +10,9 @@
         "copilot"
       ],
       "model_ids": [
-        "gpt-6-astra",
+        "gpt-6-astra"
+      ],
+      "display_names": [
         "GPT-6 Astra"
       ],
       "strengths": "Complex work requiring broad reasoning, planning and judgment.",
@@ -28,7 +30,9 @@
         "copilot"
       ],
       "model_ids": [
-        "gpt-6-sol",
+        "gpt-6-sol"
+      ],
+      "display_names": [
         "GPT-6 Sol"
       ],
       "strengths": "Coding and agentic workflows with multistep validation.",
@@ -46,7 +50,9 @@
         "copilot"
       ],
       "model_ids": [
-        "gpt-6-luna",
+        "gpt-6-luna"
+      ],
+      "display_names": [
         "GPT-6 Luna"
       ],
       "strengths": "Focused, repeatable coding and supporting tasks.",
@@ -64,7 +70,9 @@
         "copilot"
       ],
       "model_ids": [
-        "claude-opus-5-5",
+        "claude-opus-5-5"
+      ],
+      "display_names": [
         "Claude Opus 5.5"
       ],
       "strengths": "Complex agentic coding and long-running work.",
@@ -85,7 +93,9 @@
         "copilot"
       ],
       "model_ids": [
-        "claude-sonnet-5",
+        "claude-sonnet-5"
+      ],
+      "display_names": [
         "Claude Sonnet 5"
       ],
       "strengths": "Everyday coding and agent tasks balancing capability and speed.",
@@ -103,7 +113,9 @@
         "copilot"
       ],
       "model_ids": [
-        "claude-haiku-4-5",
+        "claude-haiku-4-5"
+      ],
+      "display_names": [
         "Claude Haiku 4.5"
       ],
       "strengths": "Low-latency, narrowly scoped supporting work.",
@@ -121,7 +133,9 @@
         "copilot"
       ],
       "model_ids": [
-        "claude-fable-5-1",
+        "claude-fable-5-1"
+      ],
+      "display_names": [
         "Claude Fable 5.1"
       ],
       "strengths": "Demanding reasoning and long-horizon agentic work; consider when the task warrants escalation.",

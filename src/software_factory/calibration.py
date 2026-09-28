@@ -7,7 +7,6 @@ import math
 import os
 import re
 import statistics
-import tempfile
 import time
 
 from .core import (
@@ -160,8 +159,7 @@ def record_model_outcome(root, input):
     attempt = result.get("execution_attempt")
     if attempt is None:
         raise FactoryError("Outcome result has no execution attempt; a new executed result is required")
-    if observation and attempt != observation["attempt"]:
-        raise FactoryError("Result execution attempt disagrees with its model observation")
+    # validate_task_observation already bound any observation to task["attempts"].
     if attempt != task["attempts"]:
         raise FactoryError("Outcome result does not match the current task attempt")
     observed = observation or {}
@@ -189,25 +187,61 @@ def record_model_outcome(root, input):
     validate_outcome(root, record)
     destination = f"{DIRECTORY}/{input['id']}.json"
     target = safe_path(root, destination)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    directory = _outcome_directory(root)
+    directory.mkdir(parents=True, exist_ok=True)
+    duplicate = FactoryError(
+        f"Outcome {input['id']} is already recorded at {destination}; outcomes are immutable. "
+        "Record a new observation under a new id"
+    )
+    if target.exists() or target.is_symlink():
+        raise duplicate
+    _reject_recorded_execution(root, directory, record)
     safe_path(root, destination)
-    descriptor, temporary = tempfile.mkstemp(prefix=".outcome-", dir=target.parent)
+    data = (json.dumps(record, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode()
+    # O_EXCL publishes each outcome once, without relying on hard links; a failed
+    # write removes the partial file so the id can be recorded again.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     try:
-        with os.fdopen(descriptor, "w") as stream:
-            json.dump(record, stream, indent=2, ensure_ascii=False, allow_nan=False)
-            stream.write("\n")
+        descriptor = os.open(target, flags, 0o600)
+    except FileExistsError:
+        raise duplicate from None
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        safe_path(root, destination)
-        os.link(temporary, target)
-    finally:
-        os.unlink(temporary)
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
     return {
         "recorded": destination,
         "content_hash": record["content_hash"],
         "model_attributed": record["result"]["observed_model"] is not None,
         "applied": False,
     }
+
+
+def _outcome_directory(root):
+    directory = safe_path(root, DIRECTORY)
+    if directory.exists() and not directory.is_dir():
+        raise FactoryError(f"{DIRECTORY} must be a directory; move the file aside and retry")
+    return directory
+
+
+def _reject_recorded_execution(root, directory, record):
+    """One outcome per executed attempt; a second id for it would split calibration."""
+    execution = (record["mission_id"], record["task_id"], record["result"]["attempt"])
+    for path in sorted(directory.glob("*.json")):
+        try:
+            other = read_json(root, f"{DIRECTORY}/{path.name}")
+            recorded = (other["mission_id"], other["task_id"], other["result"]["attempt"])
+        except (FactoryError, KeyError, TypeError):
+            continue
+        if recorded == execution:
+            raise FactoryError(
+                f"Task {record['task_id']} attempt {execution[2]} already has outcome {other.get('id')}; "
+                "outcomes are immutable and one per executed attempt"
+            )
 
 
 def _summary(values):
@@ -221,7 +255,7 @@ def _summary(values):
 
 
 def model_calibration(root):
-    directory = safe_path(root, DIRECTORY)
+    directory = _outcome_directory(root)
     if not directory.exists():
         return {
             "records": 0,

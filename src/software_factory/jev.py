@@ -4,6 +4,10 @@ The transport accepts only the fixed HTTPS endpoint. Errors expose stable codes,
 never upstream bodies, supplied excerpts, keys, or exception messages. Transient
 failures get a small number of backoff retries inside the caller's one deadline,
 following TypeSafe's published guidance and official SDK retry defaults.
+
+Billing risk: a retry after a timeout or dropped connection resends a request
+the provider may already have received and billed. The retry set is kept to
+transient statuses, and callers that must not pay twice pass max_retries=0.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ import json
 import math
 import queue
 import random
+import re
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -25,11 +30,16 @@ RELATIONS = (
     "insufficient_context",
 )
 MAX_CHOICES = 255
-# Official SDK defaults: two retries on 408, 429, 5xx (including 529) and on
-# connection errors/timeouts; backoff starts at 0.5 s, doubles, caps at 5 s and
-# jitter shortens each wait by up to 25%. Retries never extend the deadline.
+# Official SDK defaults: two retries on 408, 429, the transient 5xx statuses
+# (500, 502, 503, 504, 529) and on connection errors/timeouts; backoff starts at
+# 0.5 s, doubles, caps at 5 s and jitter shortens each wait by up to 25%.
+# Retries never extend the deadline. 501 and 505 are permanent and not retried.
 MAX_RETRIES = 2
-RETRY_STATUSES = frozenset({408, 429, *range(500, 600)})
+RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504, 529})
+# RFC 9110 delay-seconds (a decimal fraction is tolerated) and Content-Length are
+# plain digits: no sign, exponent, whitespace, underscores or non-ASCII digits.
+_DECIMAL_SECONDS = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+_DIGITS = re.compile(r"[0-9]+")
 BACKOFF_INITIAL_SECONDS = 0.5
 BACKOFF_MAX_SECONDS = 5.0
 BACKOFF_JITTER = 0.25
@@ -59,11 +69,10 @@ def _retryable(error: JevError) -> bool:
 
 def _retry_after(value) -> float | None:
     """Numeric Retry-After seconds only; HTTP dates and invalid values are ignored."""
-    try:
-        seconds = float(value)
-    except (TypeError, ValueError):
+    if not isinstance(value, str) or not _DECIMAL_SECONDS.fullmatch(value):
         return None
-    return seconds if math.isfinite(seconds) and seconds >= 0 else None
+    seconds = float(value)
+    return seconds if math.isfinite(seconds) else None
 
 
 def _backoff(retry: int) -> float:
@@ -195,9 +204,10 @@ def request_jev(
 ) -> dict:
     """Bounded HTTP requests sharing one deadline covering DNS, TLS, headers and body.
 
-    Retries at most ``max_retries`` times on HTTP 408, 429, 500-599 and on
-    connection errors, with jittered exponential backoff or a numeric
-    Retry-After. A retry happens only if its wait plus MIN_ATTEMPT_SECONDS fits
+    Retries at most ``max_retries`` times on HTTP 408, 429, 500, 502, 503, 504,
+    529 and on connection errors, with jittered exponential backoff or a numeric
+    Retry-After. A retry after a timeout or connection error may duplicate a
+    request the provider already billed; pass ``max_retries=0`` to avoid that. A retry happens only if its wait plus MIN_ATTEMPT_SECONDS fits
     before the deadline; otherwise the last error is raised. ``on_attempt(n)``
     is called before each provider attempt n (1-based); a raised JevError
     carries the same count in ``attempts``.
@@ -320,13 +330,11 @@ def _attempt(body, *, api_key, deadline, max_response_bytes, cancel, connection_
                 )
             announced = response.getheader("Content-Length")
             if announced is not None:
-                try:
-                    if int(announced) > max_response_bytes:
-                        raise JevError("response_too_large")
-                    if int(announced) < 0:
-                        raise ValueError()
-                except ValueError:
-                    raise JevError("invalid_response") from None
+                if not isinstance(announced, str) or not _DIGITS.fullmatch(announced):
+                    raise JevError("invalid_response")
+                announced = int(announced)
+                if announced > max_response_bytes:
+                    raise JevError("response_too_large")
             chunks, size = [], 0
             while True:
                 check()
@@ -344,7 +352,7 @@ def _attempt(body, *, api_key, deadline, max_response_bytes, cancel, connection_
                 if size > max_response_bytes:
                     raise JevError("response_too_large")
                 chunks.append(part)
-            if announced is not None and size != int(announced):
+            if announced is not None and size != announced:
                 raise JevError("invalid_response")
             try:
                 parsed = strict_json(b"".join(chunks))

@@ -25,13 +25,13 @@ uv run --locked --project .factory software-factory doctor
 
 Resolve errors and assess warnings against the runtime you actually use. Open a fresh conversation in the selected client and check that its instructions, skills and specialist agents are discovered. Every active profile is exported at once; selecting a model does not switch the factory profile. Finish active operations and follow [the switching runbook](resume-and-switch.md) when continuing existing work in another client.
 
-The native Codex extension and CLI are supported when their installed runtime provides the required capabilities. A Claude model selected in Copilot uses the Copilot profile. See [vendor behavior](vendor-behavior.md) for the supported clients and their differences.
+The native Codex extension and CLI are supported when their installed runtime provides the required capabilities. Codex's default sandbox cannot write the uv cache, so in a sandboxed Codex session the factory commands run as `.factory/.venv/bin/software-factory …`, which is equivalent to `uv run --locked --project .factory software-factory …`; the generated `AGENTS.md` names it. A Claude model selected in Copilot uses the Copilot profile. See [vendor behavior](vendor-behavior.md) for the supported clients and their differences.
 
 If a skill is missing, inspect the active profile, generated files and actual client discovery, then refresh/restart the client as needed. Reading a skill by its path can provide instructions, but does not prove native registration or delegation works. Complete the [live-client checks](../vendor-smoke-tests.md) before treating the integration as verified.
 
 ## Commands installed by render
 
-The renderer writes four entry skills alongside the registered workflow skills. It prints each entry invocation, its input hint and generated path under `prompt_commands`, with `next_step` showing how to begin; `model_commands` lists the model-selection invocation. The entries stay in the main session and preserve normal skill discovery; invoking one supplies its workflow instructions without pasting the long text. Existing `factory-start` and other workflow skills remain available.
+The renderer writes four entry skills alongside the registered workflow skills. It prints each entry invocation, its input hint and generated path under `prompt_commands`. The entries stay in the main session and preserve normal skill discovery; invoking one supplies its workflow instructions without pasting the long text. Existing `factory-start` and other workflow skills remain available.
 
 | Outcome | Claude / Copilot | Native Codex | Input |
 | --- | --- | --- | --- |
@@ -96,7 +96,7 @@ require their own existing or explicit authorization.
 
 ## Native Codex
 
-After activating `codex`, open the native Codex extension in VS Code (or launch the native CLI in this repository) and type `$` to select `factory-build`. The following expanded example is optional. Codex documents `$` skill mentions and repository discovery under `.agents/skills`. [Official OpenAI skills documentation](https://learn.chatgpt.com/docs/build-skills).
+After activating `codex`, open the native Codex extension in VS Code (or launch the native CLI in this repository) and type `$` to select `factory-build`. In a sandboxed session the agent runs `.factory/.venv/bin/software-factory …` instead of `uv run`, because the sandbox cannot write the uv cache; run `uv sync --locked --no-dev --project .factory` once beforehand so that environment exists. The following expanded example is optional. Codex documents `$` skill mentions and repository discovery under `.agents/skills`. [Official OpenAI skills documentation](https://learn.chatgpt.com/docs/build-skills).
 
 ```text
 $factory-build

@@ -3,7 +3,7 @@
 Record an actual decision or a concrete pending decision. A local record does not authenticate an approver or authorize an external action.
 
 - Kind: scope, exclusion, merge, release, recovery, exception or decline.
-- Subject: exact specification hash (scope), request chain head (exclusion, `request.chain` in `mission status`), candidate fingerprint or artifact identity.
+- Subject: exact specification hash (scope), request chain head (exclusion, `request.chain` in `mission status`), candidate fingerprint (merge, exception), new constitution hash (constitution reconcile exception), or for release and recovery the 64 hex characters of `artifact_digest` without its `sha256:` prefix.
 - Request: the concrete change or action under consideration.
 - Context: why it is needed and what remains blocked.
 - Alternatives: practical options and meaningful consequences.

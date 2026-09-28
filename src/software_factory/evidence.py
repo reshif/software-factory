@@ -1,19 +1,31 @@
 """Content-bound candidate identity and transient filesystem mutation guards.
 
 Local evidence does not authenticate approvals or remote CI. Git's index stat
-cache is never trusted when comparing the files that checks actually execute.
+cache is never trusted when comparing the files that checks actually execute,
+and neither are Git clean filters, textconv or diff attributes: content is
+hashed and diffed unfiltered, and the local Git view (info/exclude,
+info/attributes, excludes/attributes files, filter.* and diff.*.textconv) is
+bound into the fingerprint.
+
+Limits: candidates hold UTF-8-named regular files only (symlinks, submodules
+and nested repositories are refused with guidance). Reads of Git-ignored files
+cannot be observed; ignored writes are recorded. In a linked worktree (.git is
+a file) the Git control files live outside the monitored root. Writes through
+another hard link are detected from inode ctime (mtime on Windows).
 """
 
 from __future__ import annotations
 
 import ctypes
 import errno
+import hashlib
 import os
 import re
 import subprocess
 import sys
 import threading
 import time
+import zlib
 from pathlib import Path
 
 from .core import (
@@ -42,7 +54,9 @@ MISSION_RECORD = re.compile(
 # classification; a leftover temporary still enters the fingerprint. Creating
 # any other directory under .factory/missions during monitoring is a change.
 MISSION_RECORD_DIRECTORY = re.compile(rf"\.factory/missions/{_ID}/results(?:/records)?")
-INSTRUCTIONS = ("AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md")
+# Files any coding client reads as instructions or agent configuration wherever they sit;
+# they are governed in every directory, ignored or not.
+INSTRUCTIONS = ("AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md", "GEMINI.md", ".mcp.json")
 GOVERNED_DIRECTORIES = (
     ".factory/src",
     ".factory/schemas",
@@ -108,7 +122,7 @@ def matches_path(file, pattern):
         or not pattern
         or pattern.startswith("/")
         or "\\" in pattern
-        or ".." in pattern.split("/")
+        or any(part in (".", "..") for part in pattern.split("/"))
         or "\x00" in pattern
     ):
         raise FactoryError(f"Unsafe path pattern: {pattern!r}")
@@ -140,20 +154,70 @@ def _git_bytes(root, *args, data=None):
     return result.stdout
 
 
-def _collect_sources(root):
+def printable(path):
+    """A path as text that always encodes as UTF-8 (undecodable bytes become escapes)."""
+    try:
+        path.encode("utf-8")
+        return path
+    except UnicodeEncodeError:
+        return os.fsencode(path).decode("utf-8", "backslashreplace")
+
+
+def _decode_path(raw):
+    """Decode a Git path; candidate paths must be UTF-8 so records and digests can hold them."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise FactoryError(
+            f"Candidate path is not valid UTF-8: {printable(os.fsdecode(raw))}; rename it to a UTF-8 name"
+        ) from None
+
+
+def _require_utf8(path):
+    try:
+        path.encode("utf-8")
+    except UnicodeEncodeError:
+        raise FactoryError(
+            f"Candidate path is not valid UTF-8: {printable(path)}; rename it to a UTF-8 name"
+        ) from None
+    return path
+
+
+def _git_paths(root, *args):
+    return {_decode_path(p) for p in _git_bytes(root, *args).split(b"\0") if p}
+
+
+def _tree(root, commit):
+    """Non-metadata paths of a commit's tree as {path: (mode, object id)}."""
+    result = {}
+    for row in _git_bytes(root, "ls-tree", "-r", "-z", "--full-tree", commit).split(b"\0"):
+        if not row:
+            continue
+        metadata, raw_path = row.split(b"\t", 1)
+        name = _decode_path(raw_path)
+        if not is_metadata(name):
+            mode, _, blob = metadata.decode().split(" ")
+            result[name] = (mode, blob)
+    return result
+
+
+def _collect_sources(root, tracked=()):
+    """Candidate (visible) and governance paths.
+
+    tracked holds the base and HEAD tree paths: a path committed there stays
+    part of the candidate even after it is removed from the index and ignored.
+    """
     root = Path(root)
     hidden = [
-        entry[2:]
-        for entry in git(root, "ls-files", "-v", "-z").split("\0")
-        if entry and (entry[0] == "S" or entry[0].islower())
+        _decode_path(entry[2:])
+        for entry in _git_bytes(root, "ls-files", "-v", "-z").split(b"\0")
+        if entry and (entry[:1] == b"S" or entry[:1].islower())
     ]
     if hidden:
         raise FactoryError("Index marks paths skip-worktree or assume-unchanged: " + ", ".join(hidden[:10]))
-    visible = {
-        p
-        for p in git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0")
-        if p and not is_metadata(p)
-    }
+    cached = _git_paths(root, "ls-files", "-z", "--cached")
+    others = _git_paths(root, "ls-files", "-z", "--others", "--exclude-standard")
+    visible = {p for p in cached | others | set(tracked) if not is_metadata(p)}
     governed = set(GOVERNED_FILES)
     for directory in GOVERNED_DIRECTORIES:
         target = safe_path(root, directory)
@@ -186,60 +250,86 @@ def _collect_sources(root):
                 governed.add((Path(location) / name).relative_to(root).as_posix())
     directories = {""}
     for file in visible | governed:
+        _require_utf8(file)
         for parent in Path(file).parents:
             directories.add("" if str(parent) == "." else parent.as_posix())
     for directory in directories:
         governed.update(f"{directory}/{n}" if directory else n for n in INSTRUCTIONS)
-    return visible, governed
+    return visible, governed, cached
 
 
-def _entries(root, files):
-    result = []
+def _object_id(data, algorithm):
+    """The Git blob id of data, computed without any Git filter or attribute (hash-object --no-filters)."""
+    value = hashlib.new(algorithm)
+    value.update(b"blob %d\0" % len(data))
+    value.update(data)
+    return value.hexdigest()
+
+
+def _is_binary(data):
+    # Git's own heuristic (buffer_is_binary): a NUL byte within the first 8000 bytes.
+    return b"\0" in data[:8000]
+
+
+def _candidate_file(root, file):
+    """The regular file behind a candidate path, or None when it is absent."""
+    if (Path(root) / file).is_symlink():
+        raise FactoryError(
+            f"Symlink in candidate: {file}; the factory fingerprints regular files only, so replace the"
+            " link with a regular file or remove it (symlinks are not supported in candidates)"
+        )
+    target = safe_path(root, file)
+    if not target.exists():
+        return None
+    if not target.is_file():
+        raise FactoryError(
+            f"Cannot fingerprint directory/submodule or special file: {file}; the factory fingerprints"
+            " regular files only (submodules and nested repositories are not supported in candidates)"
+        )
+    return target
+
+
+def _read_files(root, files, algorithm):
+    """Fingerprint entries plus, per present file, (executable, raw blob id, CRLF-normalized blob id).
+
+    Each file is read once. Blob ids are computed without Git clean filters,
+    so a filter configured in .git/config or .git/info/attributes cannot make
+    changed content look committed. Only Git's built-in end-of-line conversion
+    is tolerated: a text file equal to its blob after CRLF -> LF is unchanged.
+    """
+    entries, blobs = [], {}
     for file in sorted(files):
-        target = safe_path(root, file)
-        if not target.exists():
-            result.append([file, "missing"])
+        target = _candidate_file(root, file)
+        if target is None:
+            entries.append([file, "missing"])
             continue
-        if not target.is_file():
-            raise FactoryError(f"Cannot fingerprint directory/submodule or special file: {file}")
-        result.append(
-            [
-                file,
-                0o755 if target.stat().st_mode & 0o111 else 0o644,
-                sha256(target.read_bytes()),
-            ]
+        data = target.read_bytes()
+        executable = bool(target.stat().st_mode & 0o111)
+        entries.append([file, 0o755 if executable else 0o644, sha256(data)])
+        normalized = (
+            _object_id(data.replace(b"\r\n", b"\n"), algorithm)
+            if b"\r\n" in data and not _is_binary(data)
+            else None
         )
-    return result
+        blobs[file] = (executable, _object_id(data, algorithm), normalized)
+    return entries, blobs
 
 
-def _content_changes(root, base, present):
-    baseline = {}
-    for row in _git_bytes(root, "ls-tree", "-r", "-z", "--full-tree", base).split(b"\0"):
-        if not row:
-            continue
-        metadata, raw_path = row.split(b"\t", 1)
-        name = os.fsdecode(raw_path)
-        if not is_metadata(name):
-            mode, _, blob = metadata.decode().split(" ")
-            baseline[name] = (mode, blob)
+def _content_changes(baseline, blobs):
+    """Paths whose working-tree content or executable bit differs from the baseline tree."""
     changed = set()
-    for file in set(baseline) | set(present):
-        target = safe_path(root, file)
-        before = baseline.get(file)
-        if not target.exists() or before is None:
+    for file in set(baseline) | set(blobs):
+        before, current = baseline.get(file), blobs.get(file)
+        if before is None or current is None:
             changed.add(file)
             continue
-        if not target.is_file() or before[0] not in ("100644", "100755"):
-            raise FactoryError(f"Cannot fingerprint directory/submodule or special file: {file}")
-        if bool(target.stat().st_mode & 0o111) != (before[0] == "100755"):
-            changed.add(file)
-        # --path applies the same Git clean filters as the index without trusting stat data.
-        blob = (
-            _git_bytes(root, "hash-object", "--stdin", "--path", file, data=target.read_bytes())
-            .decode()
-            .strip()
-        )
-        if blob != before[1]:
+        if before[0] not in ("100644", "100755"):
+            raise FactoryError(
+                f"Cannot fingerprint directory/submodule or special file: {file}; the factory fingerprints"
+                " regular files only (symlinks and submodules are not supported in candidates)"
+            )
+        executable, blob, normalized = current
+        if executable != (before[0] == "100755") or before[1] not in (blob, normalized):
             changed.add(file)
     return changed
 
@@ -251,31 +341,73 @@ def _assert_repository(root):
     return root
 
 
+def _governance_digest(target):
+    # Hidden governance files bind their full permission bits, unlike candidate
+    # entries (which bind only the executable bit, as Git does). Mission
+    # governance snapshots and the live comparison both use this one form.
+    return digest([target.stat().st_mode & 0o777, sha256(target.read_bytes())])
+
+
+def _git_file(root, name):
+    path = Path(_git_bytes(root, "rev-parse", "--git-path", name).decode().strip())
+    return path if path.is_absolute() else Path(root) / path
+
+
+def _file_hash(target):
+    try:
+        return sha256(Path(target).read_bytes()) if Path(target).is_file() else None
+    except OSError as exc:
+        raise FactoryError(f"Cannot read Git view file {target}: {exc}") from exc
+
+
+GIT_VIEW_KEYS = re.compile(r"core\.(?:excludesfile|attributesfile)|filter\..+|diff\..+\.textconv")
+
+
+def git_view(root):
+    """Digest of the local Git settings that change which files Git shows and how it hashes them.
+
+    Binds .git/info/exclude, .git/info/attributes, the effective excludes and
+    attributes files, and every core.excludesFile, core.attributesFile,
+    filter.* and diff.*.textconv setting from all configuration scopes.
+    """
+    root = Path(root)
+    settings = []
+    for item in _git_bytes(root, "config", "--list", "-z").split(b"\0"):
+        key, _, value = item.partition(b"\n")
+        key = key.decode(errors="replace")
+        if item and GIT_VIEW_KEYS.fullmatch(key.lower()):
+            settings.append([key, value.decode(errors="replace")])
+    configured = {key.lower(): value for key, value in settings}
+    files = {name: _file_hash(_git_file(root, name)) for name in ("info/exclude", "info/attributes")}
+    try:
+        xdg = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "git"
+    except RuntimeError:
+        xdg = None
+    for key, default in (("core.excludesfile", "ignore"), ("core.attributesfile", "attributes")):
+        target = Path(os.path.expanduser(configured[key])) if configured.get(key) else None
+        if target is None and xdg is not None:
+            target = xdg / default
+        if target is not None and not target.is_absolute():
+            target = root / target
+        files[key] = _file_hash(target) if target is not None else None
+    return digest({"config": settings, "files": files})
+
+
 def capture_local_governance(root):
     root = Path(root).resolve()
-    visible, governed = _collect_sources(root)
-    for location, dirs, names in os.walk(root, followlinks=False):
-        dirs[:] = [
-            d
-            for d in dirs
-            if d not in CACHE_DIRECTORIES
-            and (Path(location) / d).relative_to(root).as_posix() != ".factory/local"
-        ]
-        for name in names:
-            if name in INSTRUCTIONS:
-                governed.add((Path(location) / name).relative_to(root).as_posix())
+    visible, governed, _ = _collect_sources(root, _tree(root, git(root, "rev-parse", "HEAD")))
     result = {}
     for file in sorted(governed - visible):
         target = safe_path(root, file)
         if target.exists():
             if not target.is_file():
                 raise FactoryError(f"Governance path must be a regular file: {file}")
-            result[file] = digest([target.stat().st_mode & 0o777, sha256(target.read_bytes())])
+            result[file] = _governance_digest(target)
     return result
 
 
-def candidate_snapshot(root, base=None):
-    root = _assert_repository(root)
+def _snapshot(root, base=None, extra=()):
+    """The candidate snapshot plus the internals fingerprint() builds on."""
     config = read_json(root, "factory.json")
     if any(exclusion not in EXCLUDED for exclusion in config.get("evidence_exclude", [])):
         raise FactoryError(
@@ -284,40 +416,62 @@ def candidate_snapshot(root, base=None):
     head = git(root, "rev-parse", "HEAD")
     if base is not None:
         git(root, "cat-file", "-e", f"{base}^{{commit}}")
-    visible, governed = _collect_sources(root)
-    entries = _entries(root, visible | governed)
-    present = {entry[0] for entry in entries if entry[1] != "missing"}
-    dirty = sorted(_content_changes(root, head, present))
-    changed = sorted(_content_changes(root, base or head, present))
-    return {
-        "fingerprint": digest({"head": head, "entries": entries, "runtime": runtime_fingerprint()}),
-        "head": head,
-        "source_paths": sorted(visible | governed),
-        "dirty_paths": dirty,
-        "changed_paths": changed,
-        "unmerged_paths": sorted(
-            filter(
-                None,
-                git(root, "diff", "--name-only", "--diff-filter=U", "-z").split("\0"),
-            )
+    trees = {head: _tree(root, head)}
+    if base is not None:
+        trees[base] = trees.get(base) or _tree(root, base)
+    visible, governed, cached = _collect_sources(root, set().union(*trees.values()))
+    governed |= set(extra)
+    algorithm = _git_bytes(root, "rev-parse", "--show-object-format").decode().strip()
+    if algorithm not in ("sha1", "sha256"):
+        raise FactoryError(f"Unsupported Git object format: {algorithm}")
+    entries, blobs = _read_files(root, visible | governed, algorithm)
+    # A path committed in HEAD but dropped from the index is a change even when
+    # its content is untouched; the index no longer tracks it.
+    dropped = sorted(set(trees[head]) - cached)
+    view = git_view(root)
+    candidate = {
+        "fingerprint": digest(
+            {
+                "head": head,
+                "entries": entries,
+                "runtime": runtime_fingerprint(),
+                "index_dropped": dropped,
+                "git_view": view,
+            }
         ),
+        "head": head,
+        "git_view": view,
+        "source_paths": sorted(visible | governed),
+        "dirty_paths": sorted(_content_changes(trees[head], blobs) | set(dropped)),
+        "changed_paths": sorted(_content_changes(trees[base or head], blobs) | set(dropped)),
+        "entry_hashes": {entry[0]: digest(entry) for entry in entries},
+        "unmerged_paths": sorted(_git_paths(root, "diff", "--name-only", "--diff-filter=U", "-z")),
     }
+    return candidate, {
+        "visible": visible,
+        "governed": governed,
+        "entries": entries,
+        "blobs": blobs,
+        "dropped": dropped,
+        "baseline": trees[base or head],
+    }
+
+
+def candidate_snapshot(root, base=None):
+    return _snapshot(_assert_repository(root), base)[0]
 
 
 def fingerprint(root, mission, record_root=None):
     root = _assert_repository(root)
     record_root = Path(record_root or root).resolve()
-    candidate = candidate_snapshot(root, mission["base_commit"])
-    visible, governed = _collect_sources(root)
-    governed.update(mission.get("governance_snapshot", {}))
-    entries = _entries(root, visible | governed)
+    snapshot = mission.get("governance_snapshot", {})
+    candidate, parts = _snapshot(root, mission["base_commit"], snapshot)
+    visible, governed, entries = parts["visible"], parts["governed"], parts["entries"]
     hidden_changes = []
     for file in sorted(governed - visible):
         target = safe_path(root, file)
-        current = (
-            digest([target.stat().st_mode & 0o777, sha256(target.read_bytes())]) if target.exists() else None
-        )
-        if current != mission.get("governance_snapshot", {}).get(file):
+        current = _governance_digest(target) if target.exists() else None
+        if current != snapshot.get(file):
             hidden_changes.append(file)
     spec = f".factory/missions/{mission['id']}/spec.md"
     spec_hash = hash_file(record_root, spec)
@@ -338,6 +492,7 @@ def fingerprint(root, mission, record_root=None):
     # Request-bearing missions bind their acceptance criteria like task contracts;
     # legacy missions keep their 0.2.x fingerprint payload.
     criteria = {"criteria_hash": digest(mission["criteria"])} if "criteria" in mission else {}
+    visible_blobs = {file: blob for file, blob in parts["blobs"].items() if file in visible}
     candidate.update(
         {
             "fingerprint_format": "git-mode-v1",
@@ -348,18 +503,22 @@ def fingerprint(root, mission, record_root=None):
                     "head": candidate["head"],
                     "base_commit": mission["base_commit"],
                     "kind": mission["kind"],
-                    "governance_snapshot": mission.get("governance_snapshot", {}),
+                    "governance_snapshot": snapshot,
                     "task_contracts": contracts,
                     "entries": entries,
                     "spec_hash": spec_hash,
                     "model_plans": plans,
                     "runtime": runtime_fingerprint(),
+                    "index_dropped": parts["dropped"],
+                    "git_view": candidate["git_view"],
                     **criteria,
                 }
             ),
             "criteria_hash": criteria.get("criteria_hash"),
             "changed_paths": sorted(
-                _content_changes(root, mission["base_commit"], visible) | set(hidden_changes)
+                _content_changes(parts["baseline"], visible_blobs)
+                | set(parts["dropped"])
+                | set(hidden_changes)
             ),
             "source_paths": sorted(set(candidate["source_paths"]) | {spec} | set(plans)),
         }
@@ -437,12 +596,59 @@ CHANGED_PATHS_SHOWN = 20
 IGNORE_PROBE = ".software-factory-ignore-probe"
 
 
+IGNORED_WRITES_KEPT = 200
+# Writes inside the repository's own control files change what Git shows and
+# hashes (ignore rules, attributes, filters, hooks); everything else under .git
+# (objects, refs, index, logs) is Git bookkeeping and is not a candidate change.
+GIT_CONTROL = re.compile(r"\.git/(?:config|info(?:/.*)?|hooks(?:/.*)?)")
+
+
 def changed_paths_reason(when, paths):
     """A bounded, human-readable list of candidate paths that changed."""
-    paths = sorted(set(paths))
+    paths = sorted({printable(p) for p in paths})
     shown = ", ".join(paths[:CHANGED_PATHS_SHOWN])
     more = f" (+{len(paths) - CHANGED_PATHS_SHOWN} more)" if len(paths) > CHANGED_PATHS_SHOWN else ""
     return f"Candidate paths changed {when}: {shown}{more}"
+
+
+def _inode_state(path):
+    """Identity and change markers of a path; any write or relink moves ctime (and mtime on Windows)."""
+    try:
+        state = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as exc:
+        return ("error", exc.errno)
+    return (state.st_dev, state.st_ino, state.st_nlink, state.st_ctime_ns, state.st_mtime_ns, state.st_size)
+
+
+class KnownPaths(set):
+    """Candidate paths a monitor treats as source, with the inode state seen when each became known.
+
+    Native events are path based: a write through a hard link elsewhere (for
+    example under .git/) reaches the same inode without an event for the
+    candidate path, and is only visible in the inode's ctime and link count.
+    """
+
+    def __init__(self, root, paths=()):
+        super().__init__()
+        self.root = Path(root)
+        self.states = {}
+        self.update(paths)
+
+    def add(self, path):
+        self.update((path,))
+
+    def update(self, *groups):
+        for group in groups:
+            for path in group:
+                if path not in self:
+                    super().add(path)
+                    self.states[path] = _inode_state(self.root / path)
+
+    def __ior__(self, other):
+        self.update(other)
+        return self
 
 
 class CandidateMonitor:
@@ -450,11 +656,18 @@ class CandidateMonitor:
 
     Failure to start/drain monitoring fails verification closed. Reading files
     produces open/close events on Linux; only actual mutation events count.
+
+    source_paths are candidate paths; each is also bound to its start inode
+    state, compared at close. metadata_prefixes (a historical name) are
+    record prefixes the operation must not see written: events at or below
+    them count as source changes although they are not candidate paths.
+    Git-ignored paths written during monitoring are reported as ignored_writes;
+    reads of ignored files are not observable and are not reported.
     """
 
     def __init__(self, root, source_paths=(), metadata_prefixes=()):
         self.root = Path(root).resolve()
-        self.known = set(source_paths)
+        self.known = KnownPaths(self.root, source_paths)
         self.metadata_prefixes = tuple(metadata_prefixes)
         self.source_changed = False
         self.monitoring_reasons = []
@@ -465,6 +678,7 @@ class CandidateMonitor:
         self._suspects = {}
         self._changed = set()
         self._offending = set()
+        self._ignored = set()
         self._closed = False
         self.observer = None
         self._loss_detection = _install_inotify_hooks()
@@ -523,11 +737,13 @@ class CandidateMonitor:
     def _drain(self):
         with self._lock:
             batch, self._pending = self._pending, set()
-        changed = getattr(self, "_changed", set())
-        suspects = getattr(self, "_suspects", {})
+        changed, suspects = self._changed, self._suspects
         known_directories = None
         for file, directory, written in batch:
             if file == ".git" or file.startswith(".git/"):
+                if GIT_CONTROL.fullmatch(file):
+                    self.source_changed = True
+                    changed.add(file)
                 continue
             observed = any(file.startswith(p) or p.startswith(file + "/") for p in self.metadata_prefixes)
             if directory and not observed and file not in self.known:
@@ -541,7 +757,6 @@ class CandidateMonitor:
                 key = (file, bool(directory))
                 previous = suspects.get(key, 0)
                 suspects[key] = max(previous if previous is not None else 0, written or 0) or None
-        self._changed, self._suspects = changed, suspects
         self._classify_suspects()
 
     @staticmethod
@@ -573,12 +788,12 @@ class CandidateMonitor:
         cache a candidate change. Known candidate and governance paths are
         never re-judged here: a write-and-restore of them stays a change.
         """
-        suspects = getattr(self, "_suspects", {})
+        suspects = self._suspects
         if not suspects:
             self._offending = set()
             return
         moves = {}
-        for sequence, source, destination in getattr(self, "_moves", ()):
+        for sequence, source, destination in self._moves:
             moves.setdefault(source, []).append((sequence, destination))
         final = {key: self._final_location(moves, key[0], written) for key, written in suspects.items()}
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -599,7 +814,11 @@ class CandidateMonitor:
         try:
             paths = sorted({path + ("/" if key[1] else "") for key, path in final.items()})
             ignored = git_output(
-                "check-ignore", "--no-index", "--stdin", "-z", data=("\0".join(paths) + "\0").encode()
+                "check-ignore",
+                "--no-index",
+                "--stdin",
+                "-z",
+                data=b"".join(os.fsencode(p) + b"\0" for p in paths),
             )
             # A directory whose ignore rules now ignore any new file in it (for
             # example a cache that wrote its own "*" .gitignore) and that holds
@@ -620,7 +839,7 @@ class CandidateMonitor:
                     "--no-index",
                     "--stdin",
                     "-z",
-                    data=b"".join(f"{d}/{IGNORE_PROBE}\0".encode() for d in candidates),
+                    data=b"".join(os.fsencode(f"{d}/{IGNORE_PROBE}") + b"\0" for d in candidates),
                 )
                 if candidates
                 else set()
@@ -650,13 +869,17 @@ class CandidateMonitor:
                 for key, path in final.items()
                 if (path + "/" if key[1] else path) not in ignored and not (key[1] and path in empty)
             }
-        except (FactoryError, OSError, subprocess.SubprocessError) as exc:
+            self._ignored = {
+                path + "/" if key[1] else path
+                for key, path in final.items()
+                if (path + "/" if key[1] else path) in ignored
+            }
+        except (FactoryError, OSError, ValueError, subprocess.SubprocessError) as exc:
             self.uncertain(f"Could not classify filesystem events: {exc}")
 
     def _check_losses(self):
-        # Without a recorded start (a partially constructed monitor), any loss counts.
-        losses, start = _event_loss(), getattr(self, "_losses", {"overflow": 0, "watch": 0})
-        if not getattr(self, "_loss_detection", False):
+        losses, start = _event_loss(), self._losses
+        if not self._loss_detection:
             self.uncertain("Filesystem event-loss detection is unavailable; changes may have been missed")
         if losses["overflow"] != start["overflow"]:
             self.uncertain("Filesystem event queue overflowed; changes may have been missed")
@@ -680,14 +903,37 @@ class CandidateMonitor:
             self.uncertain("Filesystem observer stopped before assessment completed")
         if not self._closed:
             self._check_losses()
-        paths = sorted(getattr(self, "_changed", set()) | getattr(self, "_offending", set()))
+        paths = sorted(self._changed | self._offending)
         reasons = list(dict.fromkeys(self.monitoring_reasons))
+        ignored = sorted({printable(p) for p in self._ignored})
         return {
             "source_changed": self.source_changed or bool(paths),
             "monitoring_uncertain": bool(reasons),
             "monitoring_reasons": reasons
             + ([changed_paths_reason("during monitoring", paths)] if paths else []),
+            "ignored_writes": ignored[:IGNORED_WRITES_KEPT],
+            "ignored_writes_total": len(ignored),
         }
+
+    def _check_inodes(self):
+        """Compare each known path's inode state with the state recorded when it became known."""
+        linked = []
+        for path, before in self.known.states.items():
+            after = _inode_state(self.root / path)
+            if after != before:
+                self.source_changed = True
+                self._changed.add(path)
+            if any(isinstance(s, tuple) and s[0] != "error" and s[2] > 1 for s in (before, after)):
+                linked.append(printable(path))
+        if linked:
+            shown = ", ".join(sorted(linked)[:CHANGED_PATHS_SHOWN])
+            more = (
+                f" (+{len(linked) - CHANGED_PATHS_SHOWN} more)" if len(linked) > CHANGED_PATHS_SHOWN else ""
+            )
+            self.uncertain(
+                f"Candidate files have more than one hard link, so writes through another link may be"
+                f" unobserved: {shown}{more}"
+            )
 
     def close(self):
         """Stop producers, drain dispatched events, and expose final uncertainty.
@@ -728,6 +974,7 @@ class CandidateMonitor:
                 except (OSError, RuntimeError) as exc:
                     self.uncertain(f"Filesystem observer shutdown was incomplete: {exc}")
         self._check_losses()
+        self._check_inodes()
         self._closed = True
         self._drain()
         return self.report()
@@ -754,14 +1001,43 @@ _DIFF_OPTIONS = (
 )
 
 
-def _scratch_git(root, index, *args, codes=(0,)):
-    """Run Git against a private temporary index; the repository index is never read or refreshed."""
+def _scratch_git(scratch, *args, data=None, codes=(0,)):
+    """Run Git in a private scratch repository whose objects fall back to the candidate's.
+
+    The scratch repository has no configuration, attributes, filters or
+    textconv drivers of its own, and global/system configuration is ignored,
+    so the candidate's Git settings cannot change what the diff shows.
+    """
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    env.update({"GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": str(index)})
-    config = ("-c", "core.quotePath=true", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false")
+    env.update(
+        {
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_DIR": str(Path(scratch) / "repo.git"),
+            "GIT_INDEX_FILE": str(Path(scratch) / "index"),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_ATTR_NOSYSTEM": "1",
+        }
+    )
+    config = (
+        "-c",
+        "core.quotePath=true",
+        "-c",
+        "diff.noprefix=false",
+        "-c",
+        "diff.mnemonicPrefix=false",
+        "-c",
+        f"core.attributesFile={os.devnull}",
+    )
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), *config, *args], capture_output=True, check=False, timeout=60, env=env
+            ["git", *config, *args],
+            cwd=scratch,
+            input=data,
+            capture_output=True,
+            check=False,
+            timeout=60,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise FactoryError(f"Git diff inspection failed: {exc}") from exc
@@ -770,58 +1046,84 @@ def _scratch_git(root, index, *args, codes=(0,)):
     return result.stdout
 
 
+def _write_object(objects, data, algorithm):
+    """Store data as a loose blob in the scratch object directory; return its id."""
+    object_id = _object_id(data, algorithm)
+    target = Path(objects) / object_id[:2] / object_id[2:]
+    target.parent.mkdir(exist_ok=True)
+    target.write_bytes(zlib.compress(b"blob %d\0" % len(data) + data))
+    return object_id
+
+
 def candidate_diff(root, base, paths):
     """Content diff of candidate paths against base: a patch plus per-path line counts.
 
-    A fresh temporary index holding the base tree carries no stat cache, so Git
-    compares actual working-tree content. Paths absent from base (untracked or
-    newly added files) are rendered as additions. Metadata paths are excluded.
+    Working-tree content is stored unfiltered in a private scratch repository
+    (base objects are borrowed through alternates) and compared tree to index,
+    so the candidate's clean filters, textconv, diff drivers and "-diff"/binary
+    attributes cannot hide or zero a change. Binary detection is Git's content
+    heuristic alone. Paths absent from base (untracked or newly added files)
+    are rendered as additions. Metadata paths are excluded. "reasons" names
+    text files whose repository attributes would hide their diff.
     """
     import tempfile
 
     root = Path(root).resolve()
-    paths = sorted({p for p in paths if not is_metadata(p)})
-    in_base = {
-        os.fsdecode(p)
-        for p in _git_bytes(root, "ls-tree", "-r", "-z", "--name-only", "--full-tree", base).split(b"\0")
-        if p
-    }
-    tracked = [p for p in paths if p in in_base]
-    added = [p for p in paths if p not in in_base and safe_path(root, p).is_file()]
-    patch, stats = b"", {}
+    paths = sorted({_require_utf8(p) for p in paths if not is_metadata(p)})
+    commit = (
+        _git_bytes(root, "rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}").decode().strip()
+    )
+    baseline = _tree(root, commit)
+    algorithm = _git_bytes(root, "rev-parse", "--show-object-format").decode().strip()
+    objects = _git_file(root, "objects").resolve()
+    rows, stats, texts, deleted = [], {}, [], []
     with tempfile.TemporaryDirectory(prefix="sf-diff-") as scratch:
-        index = Path(scratch) / "index"
-        if tracked:
-            _scratch_git(root, index, "read-tree", base)
-            specs = [f":(literal){p}" for p in tracked]
-            patch = _scratch_git(root, index, "diff", *_DIFF_OPTIONS, "--", *specs)
-            for row in _scratch_git(
-                root,
-                index,
-                "diff",
-                "--numstat",
-                "-z",
-                "--no-renames",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--",
-                *specs,
-            ).split(b"\0"):
-                if row:
-                    plus, minus, name = row.decode(errors="replace").split("\t", 2)
-                    binary = plus == "-"
-                    stats[name] = (0 if binary else int(plus), 0 if binary else int(minus), binary)
-        for file in added:
-            patch += _scratch_git(
-                root, index, "diff", "--no-index", *_DIFF_OPTIONS, "--", "/dev/null", file, codes=(0, 1)
+        _scratch_git(scratch, "init", "-q", "--bare", f"--object-format={algorithm}", "repo.git")
+        store = Path(scratch) / "repo.git/objects"
+        (store / "info/alternates").write_text(f"{objects}\n", encoding="utf-8")
+        for file in paths:
+            target = _candidate_file(root, file)
+            if target is None:
+                if file in baseline:
+                    deleted.append(file)
+                    rows.append(b"0 " + b"0" * len(baseline[file][1]) + b"\t" + file.encode() + b"\0")
+                continue
+            data = target.read_bytes()
+            if not _is_binary(data):
+                texts.append(file)
+            mode = b"100755" if target.stat().st_mode & 0o111 else b"100644"
+            rows.append(
+                mode + b" " + _write_object(store, data, algorithm).encode() + b"\t" + file.encode() + b"\0"
             )
-            content = safe_path(root, file).read_bytes()
-            binary = b"\0" in content
-            lines = content.count(b"\n") + (1 if content and not content.endswith(b"\n") else 0)
-            stats[file] = (0 if binary else lines, 0, binary)
-    return {
-        "patch": patch,
-        "stats": stats,
-        "base": base,
-        "deleted": [p for p in tracked if not safe_path(root, p).exists()],
-    }
+        _scratch_git(scratch, "read-tree", commit)
+        if rows:
+            _scratch_git(scratch, "update-index", "-z", "--index-info", data=b"".join(rows))
+        patch = _scratch_git(scratch, "diff", "--cached", *_DIFF_OPTIONS, commit)
+        for row in _scratch_git(
+            scratch,
+            "diff",
+            "--cached",
+            "--numstat",
+            "-z",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            commit,
+        ).split(b"\0"):
+            if row:
+                plus, minus, name = row.split(b"\t", 2)
+                binary = plus == b"-"
+                stats[_decode_path(name)] = (0 if binary else int(plus), 0 if binary else int(minus), binary)
+    reasons = []
+    if texts:
+        values = _git_bytes(
+            root, "check-attr", "-z", "--stdin", "diff", data=b"".join(t.encode() + b"\0" for t in texts)
+        )
+        fields = values.split(b"\0")
+        for index in range(0, len(fields) - 2, 3):
+            if fields[index + 2] == b"unset":
+                reasons.append(
+                    f"Git attributes mark text file {_decode_path(fields[index])} as binary (-diff);"
+                    " its diff is still counted as text"
+                )
+    return {"patch": patch, "stats": stats, "base": base, "deleted": deleted, "reasons": reasons}

@@ -23,7 +23,7 @@
     "roles": {
       "type": "array",
       "minItems": 4,
-      "maxItems": 64,
+      "maxItems": 4,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -37,7 +37,10 @@
           "name": {
             "type": "string",
             "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
-            "maxLength": 48
+            "maxLength": 48,
+            "not": {
+              "const": "orchestrator"
+            }
           },
           "description": {
             "type": "string",
@@ -57,18 +60,20 @@
             "maxLength": 64
           }
         }
-      }
+      },
+      "$comment": "Exactly the four specialists (planner, implementer, verifier, reviewer); see the top-level $comment."
     },
     "skills": {
       "type": "array",
       "uniqueItems": true,
-      "minItems": 11,
+      "minItems": 4,
       "maxItems": 256,
       "items": {
         "type": "string",
         "pattern": "^factory-[a-z0-9]+(-[a-z0-9]+)*$",
         "maxLength": 64
-      }
+      },
+      "$comment": "At least the four role skills; the shipped registry lists twelve."
     },
     "entries": {
       "type": "array",
@@ -79,7 +84,9 @@
         "type": "string",
         "pattern": "^factory-[a-z0-9]+(-[a-z0-9]+)*$",
         "maxLength": 64
-      }
+      },
+      "$comment": "At least factory-build, factory-blueprint, factory-resume and factory-status, which the rendered instructions name."
     }
-  }
+  },
+  "$comment": "Cross-list rules a schema cannot express are enforced by rendering._check_registry: names are unique across factory-<role>, skills and entries; roles are exactly the four specialists the orchestrator guard and allowlists name; each role's skill is listed; the entries include the four entry prompts the rendered instructions name."
 }

@@ -44,7 +44,7 @@ Keep summaries and raw logs under ignored `.factory/local/`. Writing a report in
 
 ## Risk tier
 
-`software-factory mission risk --mission ID` reads the candidate against `base_commit` and returns `low` or `high` with reasons: sensitive or protected paths, check-definition changes, deleted or shrunk tests (policy `test_paths`), dependency manifests and lockfiles, CI workflow files, a diff larger than `limits.high_risk_lines` (default 400, excluding tests and lockfiles), or an exhausted repair budget. It changes nothing. A high tier adds acceptance and adversarial reviews to the gate.
+`software-factory mission risk --mission ID` reads the candidate against `base_commit` and returns `low` or `high` with reasons: sensitive or protected paths, check-definition changes, deleted or shrunk tests (policy `test_paths`), removed test assertions ("Test assertions removed"), a changed script that a check command runs ("Check command script changed"), dependency manifests and lockfiles, CI workflow files, a diff larger than `limits.high_risk_lines` (default 400, excluding tests and lockfiles), or an exhausted repair budget. It changes nothing. A high tier adds acceptance and adversarial reviews to the gate.
 
 ## Repository and platform boundary
 

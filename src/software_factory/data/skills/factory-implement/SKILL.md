@@ -19,9 +19,9 @@ Run focused checks while developing. If the task has a model assignment, report 
 
 ## Outputs and verification
 
-A diff within owned paths and a provisional report: changed paths, behavior per AC id, commands actually run with outcomes, and unresolved concerns. The report is testimony for the orchestrator to verify (*Claims are testimony*). Do not record results, transition state, claim review or invent a fingerprint.
+A diff within owned paths and a provisional report as text: summary, changed files, the criteria (AC ids) you believe are addressed, commands actually run with outcomes, and unresolved items. The report is testimony for the orchestrator to verify (*Claims are testimony*). Do not return a result JSON, run `software-factory verify`, record results, transition state, claim review or invent a fingerprint.
 
-The orchestrator then moves the task to VERIFYING, runs `software-factory verify --revision R-n` (a new run label), and records the result with `mission record-result --mission ID --input -`, listing `.factory/missions/ID/evidence/R-n/checks.json` in `evidence` and giving `criteria_evidence` for each AC (`check:<id>` for a check that passed in the current verification, `evidence:<path>`, or `note:<text>`), before moving the task to DONE. A minimal result (`schema_version`, `mission_id`, `fingerprint` and `created_at` are filled in by the tool; `software-factory mission template --kind result` prints a skeleton):
+The orchestrator, not the implementer, then moves the task to VERIFYING, runs `software-factory verify --revision R-n` (a new run label), and writes and records the result with `mission record-result --mission ID --input -`, listing `.factory/missions/ID/evidence/R-n/checks.json` in `evidence` and giving `criteria_evidence` for each AC (`check:<id>` for a check that passed in the current verification, `evidence:<path>`, or `note:<text>`), before moving the task to DONE. A minimal result (`schema_version`, `mission_id`, `fingerprint` and `created_at` are filled in by the tool; `software-factory mission template --kind result` prints a skeleton):
 
 ```json
 {"task_id": "T-1", "status": "complete", "summary": "Empty titles are rejected with an error; nothing is saved.",

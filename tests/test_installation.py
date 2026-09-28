@@ -700,9 +700,11 @@ def test_upgrade_blocks_history_that_fails_new_schemas(tmp_path):
     assert "## Schema changes and mission history" in runbook and "archive" in runbook
 
 
-def test_upgrade_blocks_schema_changes_without_known_records(tmp_path):
+def test_upgrade_does_not_treat_input_schemas_as_history(tmp_path):
+    """Only schemas of persisted records (HISTORY_RECORDS) need a history validation."""
     root, _ = installed_with_history(tmp_path)
     from software_factory.core import sha256
+    from software_factory.installation import validate_history
 
     name = ".factory/schemas/semantic.schema.json"
     data = (root / name).read_bytes() + b"\n"
@@ -710,8 +712,11 @@ def test_upgrade_blocks_schema_changes_without_known_records(tmp_path):
     manifest = json.loads((root / ".factory/installation.json").read_text())
     manifest["files"][name]["sha256"] = sha256(data)
     (root / ".factory/installation.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    planned = install(root, upgrade=True, skip_sync=True, dry_run=True)
+    assert name in planned["changed"] and name not in planned.get("history", {}).get("schemas", [])
+    # The validator itself still refuses a schema it has no record mapping for.
     with pytest.raises(FactoryError, match="without a known record validation.*semantic.schema.json"):
-        install(root, upgrade=True, skip_sync=True, dry_run=True)
+        validate_history(root, [name], {name: data})
 
 
 def _loosen_installed(root, name, change):
@@ -898,9 +903,9 @@ def _codex_toggle(tmp_path, old, new):
 
 def test_conflicting_codex_key_after_uninstall_refuses_init(tmp_path):
     install(tmp_path, selected="codex", skip_sync=True)
-    c = _codex_toggle(tmp_path, "enabled = true", "enabled = false")
-    result = uninstall(tmp_path)
-    assert ".codex/config.toml" in result["preserved"]
+    # 0.3.2 no longer writes agents.enabled; a user-set false still refuses init.
+    c = _codex_toggle(tmp_path, "[agents]\n", "[agents]\nenabled = false\n")
+    uninstall(tmp_path)
     assert "enabled = false" in c.read_text()
     before = files(tmp_path)
     with pytest.raises(FactoryError) as caught:
@@ -923,7 +928,7 @@ def test_compatible_codex_key_reinstalls(tmp_path, changed):
     import tomllib
 
     agents = tomllib.loads((tmp_path / ".codex/config.toml").read_text())["agents"]
-    assert agents["enabled"] is True
+    assert "enabled" not in agents
     assert agents["max_concurrent_threads_per_session"] == (5 if changed else 3)
     render(tmp_path, check=True)
 
@@ -973,8 +978,14 @@ def test_specialists_cannot_dispatch_and_orchestrators_cannot_edit(tmp_path, pro
             assert "edit" not in header["tools"] and "agent" in header["tools"]
             continue
         assert "agent" not in header["tools"] and header["agents"] == [], path
+    import tomllib
+
     for path in (tmp_path / ".codex/agents").glob("*.toml"):
-        assert "agent" not in path.read_text().split("developer_instructions")[0].lower().replace("name", "")
+        specialist = tomllib.loads(path.read_text())
+        # A flat specialist definition: no agent/thread settings or nested tables that could dispatch.
+        assert specialist["name"] == path.stem, path
+        assert not any("agent" in key.lower() or "thread" in key.lower() for key in specialist), path
+        assert all(isinstance(value, str) for value in specialist.values()), path
     assert (tmp_path / ORCHESTRATOR).is_file() == (enforced and "claude" in selected)
     assert not (tmp_path / ".github/hooks").exists()
     assert (tmp_path / ".factory/hooks/orchestrator_guard.py").is_file()
@@ -989,7 +1000,8 @@ def test_orchestrator_agent_export(tmp_path):
     header = frontmatter(tmp_path / ORCHESTRATOR)
     assert header["name"] == "factory-orchestrator"
     assert header["tools"] == (
-        "Agent(factory-planner, factory-implementer, factory-verifier, factory-reviewer), Read, Glob, Grep, Bash"
+        "Agent(factory-planner, factory-implementer, factory-verifier, factory-reviewer), Read, Glob, Grep, Bash, "
+        "AskUserQuestion, TodoWrite"
     )
     [entry] = header["hooks"]["PreToolUse"]
     assert entry["matcher"] == "*"
@@ -1164,7 +1176,7 @@ def test_doctor_reports_enforcement_read_only(tmp_path):
     report = doctor(tmp_path)
     assert files(tmp_path) == before
     assert report["enforcement"]["claude"]["layer"] == "hook" and report["enforcement"]["claude"]["enabled"]
-    assert report["enforcement"]["claude"]["capabilities"]["blocking_hooks"] == "fail_closed"
+    assert report["enforcement"]["claude"]["capabilities"]["blocking_hooks"] == "fail_closed_when_run"
     assert report["enforcement"]["codex"]["layer"] == "instructions"
     assert report["enforcement"]["codex"]["opt_in"] is None
     assert report["enforcement"]["copilot"]["layer"] == "tool_allowlist"

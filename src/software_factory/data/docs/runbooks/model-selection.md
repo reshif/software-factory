@@ -1,6 +1,6 @@
 # Model selection
 
-`jev.enabled` chooses the selector used by `software-factory models plan`: **true → JEV**, **false → factory-models**. Both use actual inventory and hard constraints. JEV chooses a model; the coding agent executes the work. `jev.claim_mode` controls only claim/source judgments. A JEV choice below `jev.min_confidence` (default 0.6) stays unresolved for a human decision, as does an abstention. Transient provider failures (408, 429, 5xx, connection errors) are retried at most twice within the same deadline. See [JEV routing](../jev-routing.md) for the complete path, limits and unresolved behavior.
+`jev.enabled` chooses the selector used by `software-factory models plan`: **true → JEV**, **false → factory-models**. Both use actual inventory and hard constraints. JEV chooses a model; the coding agent executes the work. `jev.claim_mode` controls only claim/source judgments. A JEV choice below `jev.min_confidence` (default 0.6) stays unresolved for a human decision, as does an abstention. Transient provider failures (HTTP 408, 429, 500, 502, 503, 504, 529, connection errors) are retried at most twice within the same deadline. See [JEV routing](../jev-routing.md) for the complete path, limits and unresolved behavior.
 
 The `factory-models` skill discovers eligible models and explains task fit before substantial factory planning or delegation. It is available after profile rendering as `$factory-models` in native Codex and `/factory-models` in Claude Code or Copilot. With combined profiles, Copilot discovers the shared exported skill tree. Select the Copilot `factory` agent first.
 
@@ -21,7 +21,7 @@ The orchestrator records the checkpoint in the existing mission `plan.md` and ca
 - Plan and assignment references when present, catalog observation/provenance, policy and guidance used, and actual validation commands/outcomes.
 - Outcome: **selected**, **inherited**, or **unresolved**, with its reason, affected work and remaining evidence gaps.
 
-**Selected** requires a compatible current plan and catalog, reconciled guidance, and supported controls for the next action. Run `software-factory models validate --kind plan --input PATH`; before execution, also run `software-factory models dispatch --plan PATH --assignment ID --catalog CURRENT-PATH` for each assignment needed next. Validation replays the recorded decision offline and rechecks eligibility at the recorded creation time; dispatch checks current availability. Apply supported settings through the actual host before dependent work and record execution observations separately. Neither a "selected" label nor `applied: false` proves that the model is executing.
+**Selected** requires a compatible current plan and catalog, reconciled guidance, and supported controls for the next action. Run `software-factory models validate --kind plan --input PATH` (or `--input -` with the plan JSON on stdin); before execution, also run `software-factory models dispatch --plan PATH --assignment ID --catalog CURRENT-PATH` for each assignment needed next, where PATH can be the registered plan under `.factory/missions/ID/models/`. Validation replays the recorded decision offline and rechecks eligibility at the recorded creation time; dispatch checks current availability. Apply supported settings through the actual host before dependent work and record execution observations separately. Neither a "selected" label nor `applied: false` proves that the model is executing.
 
 With JEV disabled, **Inherited** records an intentional decision to retain host defaults under inherit/omitted mode, or after assessment in recommend mode when the task's requirements permit it. Required mode, an existing binding, an explicit user selection requirement or another hard constraint cannot be bypassed this way. Reconcile bindings through the existing task workflow; never silently remove them. An unknown effective model remains unknown.
 
@@ -47,7 +47,17 @@ Published guidance, visible account inventory, requested selection and observed 
 
 ## Prepare inventory and a request
 
-These commands print JSON unless `--output` names a file directly under `.factory/local/models/`. That directory is ignored. Only `models plan` calls JEV inference, and only when `jev.enabled` is true; it then sends the request objective and any research `strengths` text verbatim to TypeSafe. Other model commands do not run inference. These tools do not fetch arbitrary webpages, change native settings or configure credentials. The skill uses its actual browsing tools to research the linked official sources.
+These commands print JSON unless `--output` names a file directly under `.factory/local/models/`. That directory is ignored. Only `models plan` calls JEV inference, and only when `jev.enabled` is true; it then sends the request objective and any research `strengths` text to TypeSafe after masking recognized secrets with the shared redaction helper (a best-effort denylist; the receipt records the mask count). Other model commands do not run inference. These tools do not fetch arbitrary webpages, change native settings or configure credentials. Research into the linked official sources is delegated: the orchestrator briefs the planner with `software-factory mission brief --mission ID --kind research` and records the cited findings the planner returns; it does not browse itself.
+
+The examples below use files, as a human operator would. During a mission the orchestrator writes no files: `models plan`, `models validate`, `models dispatch` and `models outcome-record` accept `-` for their request, plan, observation or outcome JSON argument and read it from stdin (at most one `-` per invocation, 256 KiB, UTF-8), supplied through a quoted heredoc:
+
+```bash
+uv run --locked --project .factory software-factory models validate --kind request --input - <<'JSON'
+{"schema_version": 1, "kind": "request", "id": "PLAN-001", ...}
+JSON
+```
+
+Catalogs come from `models discover --output`, which is a user setup step (the Claude orchestrator guard denies `models discover`). A plan registered with `mission model-plan --input -` is stored under `.factory/missions/ID/models/`, and `models dispatch --plan` can read it from there.
 
 ```bash
 uv run --locked --project .factory software-factory models sources --profile claude

@@ -154,8 +154,14 @@ def enforcement_checks(command, project, work, env, shell):
     assert agent in changed and not (project / ".github/hooks").exists(), changed
     header = (project / agent).read_text().split("---\n")[1]
     assert "Agent(factory-planner, factory-implementer, factory-verifier, factory-reviewer)" in header
-    assert "Edit" not in header and "Write" not in header and "PreToolUse" in header
     import yaml
+
+    # Compare whole tool names: TodoWrite (a task list, not a file write) is allowed.
+    tools = {
+        t.strip() for t in re.sub(r"Agent\([^)]*\)", "Agent", yaml.safe_load(header)["tools"]).split(",")
+    }
+    assert not tools & {"Edit", "Write", "MultiEdit", "NotebookEdit"}, tools
+    assert "PreToolUse" in header
 
     claude_hook = yaml.safe_load(header)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     guard_env = {**env, "CLAUDE_PROJECT_DIR": str(project)}

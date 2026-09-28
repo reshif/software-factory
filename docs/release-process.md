@@ -37,6 +37,20 @@ Also confirm, in the disposable-project smoke run, that every relative Markdown 
 
 The release ships constitution 2.0.0 (MAJOR; see docs/implementation.md). In the disposable-project smoke run, also confirm that the managed AGENTS.md section carries the 2.0.0 text, that `.factory/docs/runbooks/constitution-enforcement.md` is installed and its links resolve, and that no installed role, skill, prompt or runbook cites a rule by number. Upgrade a project holding a 0.3.0 pre-merge mission: `upgrade --dry-run` must list it under `missions_needing_constitution_reconcile` without blocking, and the reconciliation in the runbook must return it to PLANNED. Keep the enforcement map in step with any gate or guard change.
 
+## 0.3.2 additions
+
+In the disposable-project smoke run, also confirm:
+
+- `mission decision` refuses a `scope`, `exception`, `merge` or `release` record and names `mission approve`.
+- `mission approve` refuses without an interactive terminal, and records nothing until the typed mission ID matches.
+- The opt-in Claude guard denies `mission approve` and `mission ci-result`.
+- The gate reports an unset `owners.maintainer`.
+- A `.mcp.json` or nested `.claude/` change blocks `mission brief` in a product mission and fails its gate.
+- An added `@pytest.mark.skip` or a `conftest.py` change raises the risk tier to high.
+- A mission input holding an obvious token is refused.
+
+Record live Claude, Codex and Copilot behaviour as not run until observed in a live client.
+
 ## Review decisions in this port
 
 Independent reviewers covered installation/ownership/transactions, JEV, models/calibration, and workflow/evidence/checks. Repairs bind operations to early preimages, protect journals before writes, reject path/ownership aliases, preserve shared text, validate required assets, bound model discovery writes, collect final filesystem-monitor events, discover ignored governance files on each snapshot, and observe configuration before running checks. These strengthen consistency checks without adding permissions or changing the constitution.

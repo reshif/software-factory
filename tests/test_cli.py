@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 
 from software_factory.cli import main
+from software_factory.core import FactoryError, sha256
 
 
 def test_project_command_dispatches_before_global_parser(tmp_path):
@@ -52,8 +53,10 @@ def pinned_project(root, launcher="raise SystemExit(0)\n", version="0.0.1"):
     (root / ".factory/src/software_factory").mkdir(parents=True)
     (root / ".factory/src/software_factory/cli.py").write_text("")
     (root / ".factory/run.py").write_text(launcher)
+    # The recorded hash matches, so the runtime has no drift and dispatch may exec it.
+    files = {".factory/src/software_factory/cli.py": {"sha256": sha256(b""), "managed": True}}
     (root / ".factory/installation.json").write_text(
-        json.dumps({"schema_version": 2, "runtime": "python-uv", "version": version, "files": {}})
+        json.dumps({"schema_version": 2, "runtime": "python-uv", "version": version, "files": files})
     )
     bin_dir = root / ".factory/.venv/bin"
     bin_dir.mkdir(parents=True)
@@ -143,7 +146,7 @@ def test_pending_journal_refuses_mutating_dispatch(tmp_path, capsys):
     pinned_project(tmp_path)
     write_json(tmp_path, JOURNAL, {"schema_version": 1, "files": {}})
     for command in ("render", "mission", "uninstall", "checks", "future-command"):
-        with pytest.raises(Exception, match="interrupted.*recover"):
+        with pytest.raises(FactoryError, match="interrupted.*recover"):
             _dispatch(tmp_path, command, [command])
     with (
         patch("software_factory.cli.os.execv", side_effect=SystemExit(0)) as execv,

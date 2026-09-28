@@ -11,7 +11,16 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .core import FactoryError, git, load_config, resolve_root, runtime_fingerprint, safe_path, sha256
+from .core import (
+    INVALID_INSTALLATION,
+    FactoryError,
+    git,
+    load_config,
+    resolve_root,
+    runtime_fingerprint,
+    safe_path,
+    sha256,
+)
 
 # Commands that never write project files; they may run while a recovery journal exists.
 READ_ONLY = ("doctor", "inspect", "status")
@@ -66,6 +75,16 @@ def runtime_drift(root: Path, installation: dict) -> list[str]:
     return sorted(set(drift))
 
 
+def drift_message(drift: list[str]) -> str:
+    paths = " ".join(drift) if len(drift) <= 10 else ".factory/src"
+    shown = ", ".join(drift[:10]) + ("" if len(drift) <= 10 else f" and {len(drift) - 10} more")
+    return (
+        f"Project runtime source differs from the installed release: {shown}. Restore it with "
+        f"git checkout -- {paths} (and delete files the release did not install), or run "
+        "software-factory upgrade, which restores deleted runtime files but keeps edited ones"
+    )
+
+
 def inspect_project(root: Path) -> dict:
     suggestions = []
     package = root / "package.json"
@@ -99,13 +118,20 @@ def inspect_project(root: Path) -> dict:
 
 
 def doctor(root: Path) -> dict:
-    from .installation import jev_summary
+    from .installation import jev_summary, load_installation
     from .rendering import ENFORCEMENT_FLAGS, enforcement_settings, enforcement_summary, render
     from .transactions import JOURNAL
 
     report = inspect_project(root)
     issues = []
     installation = _installation(root)
+    manifest_valid = installation is not None
+    if installation is not None:
+        try:
+            load_installation(root)
+        except FactoryError as exc:
+            manifest_valid = False
+            issues.append({"severity": "error", "code": "installation_manifest_invalid", "message": str(exc)})
     local_python = _runtime_python(root)
     pinned = _running_pinned(root)
     if installation is not None:
@@ -154,10 +180,13 @@ def doctor(root: Path) -> dict:
                         "message": f"enforcement.{flag} has no effect without the {profile} profile",
                     }
                 )
-        if skew or uninstalled:
-            report["exports"] = "not_checked"
-        else:
-            report["exports"] = render(root, check=True)
+        try:
+            report["exports"] = "not_checked" if skew or uninstalled else render(root, check=True)
+        except FactoryError as exc:
+            # Stale exports are one problem among several; the remaining checks still run.
+            report["exports"] = "stale"
+            issues.append({"severity": "error", "code": "exports_stale", "message": str(exc)})
+        if isinstance(report["exports"], dict):
             entry_skills = report["exports"]["relinquished_entry_skills"]
             replaced = sorted(n for n, state in entry_skills.items() if state == "replaced")
             missing = sorted(n for n, state in entry_skills.items() if state == "missing")
@@ -214,20 +243,20 @@ def doctor(root: Path) -> dict:
                 )
     except (FactoryError, OSError) as exc:
         issues.append({"severity": "error", "code": "configuration", "message": str(exc)})
-    if installation and not uninstalled:
+    if manifest_valid and not uninstalled:
         drift = runtime_drift(root, installation)
         if drift:
-            issues.append(
-                {
-                    "severity": "error",
-                    "code": "runtime_drift",
-                    "message": "Project runtime source differs from the installed release: "
-                    + ", ".join(drift[:10])
-                    + ("" if len(drift) <= 10 else f" and {len(drift) - 10} more")
-                    + ". Restore it from Git or run software-factory upgrade",
-                }
-            )
-    if not uninstalled and not local_python.is_file():
+            issues.append({"severity": "error", "code": "runtime_drift", "message": drift_message(drift)})
+    if installation is None:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "runtime_missing",
+                "message": "The factory is not installed in this project; run software-factory init "
+                "--profile <claude,codex,copilot>",
+            }
+        )
+    elif not uninstalled and not local_python.is_file():
         pinned_note = f" (project pins {installation.get('version')})" if installation else ""
         issues.append(
             {
@@ -313,7 +342,7 @@ def build_parser() -> argparse.ArgumentParser:
         handler=lambda a: {"version": __version__, "runtime": "python-uv", "python": sys.version.split()[0]}
     )
     for name, summary in (
-        ("inspect", "Inspect a project and suggest checks without changing files"),
+        ("inspect", "Read-only: inspect a project and suggest checks"),
         ("doctor", "Diagnose setup, configuration, and runtime problems"),
     ):
         p = setup.add_parser(name, help=summary)
@@ -406,10 +435,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _common_options(argv: list[str]) -> tuple[list[str], str | None]:
+    """Remove the global --root option; everything after ``--`` is passed through untouched."""
     result, root = [], None
     iterator = iter(argv)
     for token in iterator:
-        if token == "--root":
+        if token == "--":
+            result.append(token)
+            result.extend(iterator)
+        elif token == "--root":
             if root is not None:
                 raise FactoryError("Duplicate --root")
             root = next(iterator, None)
@@ -419,6 +452,8 @@ def _common_options(argv: list[str]) -> tuple[list[str], str | None]:
             if root is not None:
                 raise FactoryError("Duplicate --root")
             root = token.split("=", 1)[1]
+            if not root:
+                raise FactoryError("--root requires a path")
         else:
             result.append(token)
     return result, root
@@ -428,7 +463,10 @@ def _pinned_arguments(root: Path, raw: list[str]) -> list[str]:
     """Pin --root to the resolved project; the pinned process starts in that root."""
     result, iterator = [], iter(raw)
     for token in iterator:
-        if token == "--root":
+        if token == "--":
+            result.append(token)
+            result.extend(iterator)
+        elif token == "--root":
             next(iterator, None)
             result.append("--root=" + str(root))
         elif token.startswith("--root="):
@@ -438,11 +476,20 @@ def _pinned_arguments(root: Path, raw: list[str]) -> list[str]:
     return result
 
 
+def _requests_help(cleaned: list[str]) -> bool:
+    """-h/--help as an option: not the --root value, not after ``--``, not inside ``--opt=value``."""
+    options = cleaned[: cleaned.index("--")] if "--" in cleaned else cleaned
+    return any(token in ("-h", "--help") for token in options)
+
+
 def _dispatch(root: Path, command: str, raw: list[str]) -> int | None:
     from .transactions import JOURNAL
 
-    helping = any(a in raw for a in ("--help", "-h"))
-    if command in ("auth", "recover", "version") or helping:
+    # doctor and inspect always run in this (global) process: diagnosing a project must
+    # not execute its repository-controlled runtime.
+    if command in ("auth", "recover", "version", "doctor", "inspect") or _requests_help(
+        _common_options(raw)[0]
+    ):
         return None
     if command not in READ_ONLY and (root / JOURNAL).is_file():
         raise FactoryError(
@@ -453,14 +500,17 @@ def _dispatch(root: Path, command: str, raw: list[str]) -> int | None:
         return None
     manifest = safe_path(root, ".factory/installation.json")
     if not manifest.exists():
-        if command not in ("doctor", "inspect"):
-            raise FactoryError("Initialize this project first with software-factory init")
-        return None
+        raise FactoryError("Initialize this project first with software-factory init")
     installation = _installation(root)
-    if installation and installation.get("uninstalled"):
-        if command in ("doctor", "inspect"):
-            return None
+    if not installation or not isinstance(installation.get("files"), dict):
+        raise FactoryError(INVALID_INSTALLATION)
+    if installation.get("uninstalled"):
         raise FactoryError(UNINSTALLED_MESSAGE)
+    # Refuse to run project runtime source that differs from the installed release, both
+    # before exec and when already running it (the .venv entrypoint and uv run skip exec).
+    drift = runtime_drift(root, installation)
+    if drift:
+        raise FactoryError(drift_message(drift))
     local = safe_path(root, ".factory/src/software_factory")
     if _running_pinned(root):
         return None
@@ -468,11 +518,9 @@ def _dispatch(root: Path, command: str, raw: list[str]) -> int | None:
     # without the managed-file symlink rule used for configuration and evidence.
     python = _runtime_python(root)
     if not python.is_file() or not (local / "cli.py").is_file():
-        if command in ("doctor", "inspect"):
-            return None
         raise FactoryError(
             "Pinned project runtime is unavailable; run uv sync --locked --no-dev --project .factory "
-            "(or software-factory upgrade if .factory/src is missing)"
+            "(software-factory upgrade first restores a deleted .factory/src or .factory/run.py)"
         )
     # -B: read-only commands must not write __pycache__ into .factory/src.
     argv = [str(python), "-I", "-B", str(safe_path(root, ".factory/run.py")), *_pinned_arguments(root, raw)]
@@ -493,7 +541,11 @@ def main(argv=None):
         cleaned, root_option = _common_options(raw)
         # Dispatch before parsing project command syntax: the pinned runtime may
         # support commands/options unknown to the installed global bootstrap.
-        if cleaned and not cleaned[0].startswith("-") and cleaned[0] not in ("auth", "init", "upgrade"):
+        if (
+            cleaned
+            and not cleaned[0].startswith("-")
+            and cleaned[0] not in ("auth", "init", "upgrade", "version")
+        ):
             dispatched = _dispatch(resolve_root(root_option), cleaned[0], raw)
             if dispatched is not None:
                 raise SystemExit(dispatched)
@@ -508,7 +560,7 @@ def main(argv=None):
             raise FactoryError("The target path and --root disagree; select one project")
         args.root = (
             None
-            if args.command == "auth"
+            if args.command in ("auth", "version")
             else (
                 Path(target or root_option or Path.cwd()).absolute()
                 if args.command in ("init", "upgrade")
@@ -526,4 +578,9 @@ def main(argv=None):
         raise SystemExit(exc.exit_code) from None
     except (OSError, ValueError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        raise SystemExit(1) from None
+    except (KeyError, TypeError, AttributeError) as exc:
+        # A malformed record (missing field, wrong type) is a user-facing error, not a traceback.
+        message = f"Malformed factory record or input ({type(exc).__name__}: {exc})"
+        print(json.dumps({"error": message}, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(1) from None

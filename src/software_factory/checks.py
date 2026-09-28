@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import queue
 import re
+import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -20,6 +22,7 @@ from .core import (
     private_dir,
     read_json,
     safe_path,
+    sha256,
     validate,
     write_json,
 )
@@ -36,15 +39,90 @@ def successful_check(record):
     )
 
 
+# Every process a check starts inherits this marker, so descendants that left
+# the check's process group (setsid, double fork) can still be found on Linux.
+RUN_MARKER = "SOFTWARE_FACTORY_CHECK_RUN"
+
+
+def resolve_program(program, cwd, env):
+    """The absolute program path a check will execute, as Popen resolves it, and its sha256.
+
+    A name with a path separator is relative to the check's cwd; a bare name is
+    searched on the check's PATH, whose relative entries are also relative to
+    the cwd. Resolution happens before the check starts.
+    """
+    cwd = Path(cwd)
+    if os.sep in program or (os.altsep and os.altsep in program):
+        target = cwd / program
+        found = str(target) if target.is_file() and os.access(target, os.X_OK) else None
+    else:
+        search = os.pathsep.join(
+            entry if os.path.isabs(entry) else str(cwd / (entry or "."))
+            for entry in env.get("PATH", os.defpath).split(os.pathsep)
+        )
+        found = shutil.which(program, path=search)
+    if not found:
+        return None, None
+    found = os.path.abspath(found)
+    try:
+        return found, sha256(Path(found).read_bytes())
+    except OSError:
+        return found, None
+
+
+def _leftover_processes(group, marker):
+    """Processes still alive after a check's own process exited.
+
+    Linux reads /proc for members of the check's process group and for any
+    process carrying the check's run marker (descendants that called setsid).
+    Other POSIX systems can only probe the process group. Zombies do not count.
+    """
+    if os.name != "posix":
+        return set()
+    if not sys.platform.startswith("linux") or not os.path.isdir("/proc"):
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            return set()
+        except OSError:
+            pass
+        # The leader has been reaped, so its pid may be reused: name the group, never the pid.
+        return {-group}
+    found, needle = set(), marker.encode()
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{entry.name}/stat", "rb") as handle:
+                fields = handle.read().rsplit(b")", 1)[1].split()
+            if fields[0] in (b"Z", b"X"):
+                continue
+            if int(fields[2]) == group:
+                found.add(int(entry.name))
+                continue
+            with open(f"/proc/{entry.name}/environ", "rb") as handle:
+                if needle in handle.read().split(b"\0"):
+                    found.add(int(entry.name))
+        except (OSError, IndexError, ValueError):
+            continue
+    return found
+
+
 def run_check(
     root,
     check,
     default_timeout=120,
     max_output_bytes=1048576,
     log_files=None,
-    on_output=None,
     capture_bytes=65536,
 ):
+    """Run one check argv without a shell, bounded in time and output.
+
+    The check inherits the factory's environment (minus the factory inference
+    key); the program it resolves to is recorded as resolved_program with its
+    sha256. Anything the check leaves running after it exits is killed and the
+    check is labeled background_process.
+    """
     command = check.get("command")
     if (
         not isinstance(command, list)
@@ -63,8 +141,23 @@ def run_check(
     status, total, retained, process = None, 0, 0, None
     events = queue.Queue(maxsize=256)
     readers = []
-    previous_sigterm = None
+    previous_sigterm, installed = None, False
     return_code = None
+    leftovers = set()
+    # Product checks never receive the factory's own inference credential.
+    marker = f"{os.getpid()}-{time.monotonic_ns()}-{threading.get_ident()}"
+    env = {
+        **{k: v for k, v in os.environ.items() if k != "TYPESAFE_API_KEY"},
+        "SOFTWARE_FACTORY_AUTH_DISABLED": "1",
+        RUN_MARKER: marker,
+    }
+    program, program_sha256 = resolve_program(command[0], cwd, env)
+
+    def kill_group():
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
 
     def stop(why):
         nonlocal status
@@ -87,6 +180,25 @@ def run_check(
                 except OSError:
                     pass
 
+    def reap():
+        """After the check's process exited: note and kill everything it left running."""
+        needle = f"{RUN_MARKER}={marker}"
+        found = _leftover_processes(process.pid, needle)
+        if found:
+            # A descendant that closed its pipes may not have finished exiting yet.
+            time.sleep(0.05)
+            alive = _leftover_processes(process.pid, needle)
+            leftovers.update(alive)
+            found |= alive
+        if os.name == "posix":
+            kill_group()
+            for pid in found:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        return found
+
     def receive(channel, data):
         nonlocal total, retained
         allowed = data[: max(0, max_output_bytes - total)]
@@ -94,11 +206,8 @@ def run_check(
         preview = allowed[: max(0, capture_bytes - retained)]
         captured[channel].extend(preview)
         retained += len(preview)
-        if allowed:
-            if channel in streams:
-                streams[channel].write(allowed)
-            if on_output:
-                on_output(channel, allowed)
+        if allowed and channel in streams:
+            streams[channel].write(allowed)
         if total > max_output_bytes:
             stop("output_limit")
 
@@ -118,69 +227,80 @@ def run_check(
         if threading.current_thread() is threading.main_thread():
             previous_sigterm = signal.getsignal(signal.SIGTERM)
             signal.signal(signal.SIGTERM, lambda *_: stop("interrupted"))
+            installed = True
         if log_files:
             for channel in ("stdout", "stderr"):
                 path = Path(log_files[channel])
                 path.parent.mkdir(parents=True, exist_ok=True)
                 descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 streams[channel] = os.fdopen(descriptor, "wb")
-        # argv is never passed through a shell; explicit product shell commands remain user configuration.
-        # Product checks never receive the factory's own inference credential.
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            env={
-                **{k: v for k, v in os.environ.items() if k != "TYPESAFE_API_KEY"},
-                "SOFTWARE_FACTORY_AUTH_DISABLED": "1",
-            },
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=os.name == "posix",
-        )
-        for channel in ("stdout", "stderr"):
-            thread = threading.Thread(
-                target=read_pipe, args=(channel, getattr(process, channel)), daemon=True
+        # A SIGTERM delivered before the check starts means it never starts.
+        if status is None:
+            # argv is never passed through a shell; explicit product shell commands remain user configuration.
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=os.name == "posix",
             )
-            thread.start()
-            readers.append(thread)
-        closed = set()
-        stopped_at = None
-        while len(closed) < 2:
-            elapsed = time.monotonic() - started
-            if elapsed >= timeout and status is None:
-                # An exited check whose pipes stay open left a background process behind.
-                stop("background_process" if process.poll() is not None else "timeout")
             if status is not None:
-                stopped_at = stopped_at or time.monotonic()
-                if time.monotonic() - stopped_at > 1:
-                    break
+                stop(status)
+        if process is not None:
+            for channel in ("stdout", "stderr"):
+                thread = threading.Thread(
+                    target=read_pipe, args=(channel, getattr(process, channel)), daemon=True
+                )
+                thread.start()
+                readers.append(thread)
+            closed = set()
+            stopped_at = None
+            exited = False
+            while len(closed) < 2:
+                elapsed = time.monotonic() - started
+                if not exited and status is None and process.poll() is not None:
+                    # Only something the check left behind can still hold its pipes open.
+                    exited = True
+                    reap()
+                    if leftovers:
+                        stop("background_process")
+                if elapsed >= timeout and status is None:
+                    # An exited check whose pipes stay open left a background process behind.
+                    stop("background_process" if process.poll() is not None else "timeout")
+                if status is not None:
+                    stopped_at = stopped_at or time.monotonic()
+                    if time.monotonic() - stopped_at > 1:
+                        break
+                try:
+                    channel, data = events.get(timeout=0.03)
+                except queue.Empty:
+                    continue
+                if data is None:
+                    closed.add(channel)
+                else:
+                    receive(channel, data)
             try:
-                channel, data = events.get(timeout=0.03)
-            except queue.Empty:
-                continue
-            if data is None:
-                closed.add(channel)
-            else:
-                receive(channel, data)
-        try:
-            return_code = process.wait(
-                timeout=max(0.01, timeout - (time.monotonic() - started)) if status is None else 1
-            )
-        except subprocess.TimeoutExpired:
-            stop("timeout")
-            return_code = process.wait(timeout=2)
+                return_code = process.wait(
+                    timeout=max(0.01, timeout - (time.monotonic() - started)) if status is None else 1
+                )
+            except subprocess.TimeoutExpired:
+                stop("timeout")
+                return_code = process.wait(timeout=2)
     except KeyboardInterrupt:
         stop("interrupted")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         stop("error")
         receive("stderr", str(exc).encode())
     finally:
-        if previous_sigterm is not None:
-            signal.signal(signal.SIGTERM, previous_sigterm)
+        if installed:
+            # getsignal() returns None for a handler not installed from Python; restore the default then.
+            signal.signal(signal.SIGTERM, signal.SIG_DFL if previous_sigterm is None else previous_sigterm)
         if process is not None:
             if process.poll() is None:
                 stop("error")
+            reap()
             for channel in ("stdout", "stderr"):
                 stream = getattr(process, channel)
                 if stream:
@@ -189,13 +309,15 @@ def run_check(
             stream.flush()
             os.fsync(stream.fileno())
             stream.close()
+    if leftovers and status is None:
+        status = "background_process"
     signame = None
     if return_code is not None and return_code < 0:
         try:
             signame = signal.Signals(-return_code).name
         except ValueError:
             signame = str(-return_code)
-    return {
+    result = {
         "id": check["id"],
         "command": command,
         "cwd": check.get("cwd", "."),
@@ -205,9 +327,16 @@ def run_check(
         "signal": signame,
         "duration_ms": round((time.monotonic() - started) * 1000),
         "truncated": total > max_output_bytes,
+        "resolved_program": program,
+        "program_sha256": program_sha256,
         "stdout": captured["stdout"].decode(errors="replace"),
         "stderr": captured["stderr"].decode(errors="replace"),
     }
+    if result["status"] == "background_process":
+        result["reason"] = (
+            "Processes started by the check were still running after it exited; they were killed"
+        )
+    return result
 
 
 def _execute_suite(root, config, selected, log_root=None, record_root=None):
@@ -225,8 +354,9 @@ def _execute_suite(root, config, selected, log_root=None, record_root=None):
             root,
             check,
             config["limits"]["check_timeout_seconds"],
-            check.get(
-                "output_limit_bytes",
+            # A per-check output limit can only lower the global limit.
+            min(
+                check.get("output_limit_bytes", config["limits"].get("check_output_bytes", 1048576)),
                 config["limits"].get("check_output_bytes", 1048576),
             ),
             log_files={c: safe_path(record_root or root, p) for c, p in paths.items()} if paths else None,
@@ -264,8 +394,17 @@ def fingerprint_change_reasons(before, after, monitoring):
     paths = set()
     for key in ("source_paths", "dirty_paths", "changed_paths"):
         paths |= set(before.get(key, [])) ^ set(after.get(key, []))
+    # Content changes to a path that was already dirty or changed move no path
+    # between the lists; the per-path entry digests still attribute them.
+    entries, later = before.get("entry_hashes", {}), after.get("entry_hashes", {})
+    paths |= {path for path in set(entries) | set(later) if entries.get(path) != later.get(path)}
+    reasons = []
     if paths:
-        return [changed_paths_reason("between the pre- and post-check fingerprints", paths)]
+        reasons.append(changed_paths_reason("between the pre- and post-check fingerprints", paths))
+    if before.get("git_view") != after.get("git_view"):
+        reasons.append("Git ignore, attribute, filter or textconv settings changed during checks")
+    if reasons:
+        return reasons
     return [
         "Candidate fingerprint changed during checks"
         + ("" if monitoring["source_changed"] else "; the changed paths could not be attributed")
@@ -363,32 +502,35 @@ def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=Fa
             f" revision: pass a new one such as {next_run_label(run_dir.parent, revision)}"
         ) from exc
     logs = f".factory/local/runs/{mission_id}/{revision}"
+    logs_dir = safe_path(root, logs)
+    reference = f"{relative}/checks.json"
+    registered, logs_created, monitor, records_monitor = False, False, None, None
     try:
-        safe_path(root, logs).mkdir(parents=True, exist_ok=False, mode=0o700)
-    except FileExistsError as exc:
-        raise FactoryError(
-            f"Private logs already exist for revision {revision}; use a new revision ID"
-        ) from exc
-    published = False
-    monitor = CandidateMonitor(
-        candidate_root,
-        metadata_prefixes=(
-            f".factory/missions/{mission_id}/spec.md",
-            f".factory/missions/{mission_id}/models/",
-        ),
-    )
-    records_monitor = (
-        CandidateMonitor(
-            root,
+        try:
+            logs_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
+        except FileExistsError as exc:
+            raise FactoryError(
+                f"Private logs already exist for revision {revision}; use a new revision ID"
+            ) from exc
+        logs_created = True
+        monitor = CandidateMonitor(
+            candidate_root,
             metadata_prefixes=(
                 f".factory/missions/{mission_id}/spec.md",
                 f".factory/missions/{mission_id}/models/",
             ),
         )
-        if root != candidate_root
-        else None
-    )
-    try:
+        records_monitor = (
+            CandidateMonitor(
+                root,
+                metadata_prefixes=(
+                    f".factory/missions/{mission_id}/spec.md",
+                    f".factory/missions/{mission_id}/models/",
+                ),
+            )
+            if root != candidate_root
+            else None
+        )
         config = load_config(candidate_root)
         before = fingerprint(candidate_root, mission, record_root=root)
         monitor.known.update(before["source_paths"])
@@ -448,9 +590,9 @@ def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=Fa
                 "resolution": resolution.strip(),
             }
         validate(root, "evidence", evidence)
-        reference = f"{relative}/checks.json"
         write_json(root, reference, evidence)
-        published = True
+        # The registered hash binds the file: an edit after registration invalidates it.
+        evidence_hash = hash_file(root, reference)
 
         # An interrupted check (Ctrl-C/SIGTERM) is not a verdict on the candidate and
         # does not consume a repair attempt; a timeout is a failure and does.
@@ -459,9 +601,10 @@ def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=Fa
         def register(value):
             if value != mission:
                 raise FactoryError(
-                    "Mission changed during verification; evidence was saved but not registered"
+                    "Mission changed during verification; this run's evidence was discarded, run verify again"
                 )
             value["evidence"].append(reference)
+            value.setdefault("evidence_sha256", {})[reference] = evidence_hash
             # Repair budget (constitution: Deliberate repair): failing a task's checks after it
             # left RUNNING consumes its attempt. It cannot become DONE again until it
             # re-enters RUNNING, which counts a new attempt. Failures while RUNNING
@@ -472,6 +615,7 @@ def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=Fa
                         task["repair_required"] = reference
 
         update_mission(root, mission_id, register)
+        registered = True
         required = {c["id"] for c in config["checks"] if c["required"]} | {
             c for t in mission["tasks"] for c in t["checks"]
         }
@@ -483,14 +627,21 @@ def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=Fa
         )
         return {"pass": passed, "reference": reference, **evidence}
     finally:
-        monitor.close()
+        if monitor:
+            monitor.close()
         if records_monitor:
             records_monitor.close()
-        if not published:
+        if not registered:
+            # Evidence is never left unregistered (for example after a concurrent verify
+            # changed the mission): the run's record and private logs are removed so the
+            # label can be used again.
             try:
+                safe_path(root, reference).unlink(missing_ok=True)
                 run_dir.rmdir()
-            except OSError:
+            except (OSError, FactoryError):
                 pass
+            if logs_created:
+                shutil.rmtree(logs_dir, ignore_errors=True)
 
 
 def model_assignments(mission):
@@ -510,9 +661,16 @@ def validate_verification(root, mission, config, candidate, tasks=None, referenc
     try:
         if not reference or not reference.startswith(f".factory/missions/{mission['id']}/evidence/"):
             raise FactoryError("No verification evidence registered in this mission")
+        registered = mission.get("evidence_sha256", {}).get(reference)
+        if reference in mission["evidence"] and registered is None:
+            raise FactoryError("Verification evidence is not hash-bound; run verify again")
+        if registered is not None and hash_file(root, reference) != registered:
+            raise FactoryError("Verification evidence changed after registration; run verify again")
         evidence = validate(root, "evidence", read_json(root, reference))
         if evidence["mission_id"] != mission["id"]:
             raise FactoryError("Evidence mission mismatch")
+        if reference != f".factory/missions/{mission['id']}/evidence/{evidence['id']}/checks.json":
+            raise FactoryError("Evidence id does not match its registered directory")
         if (
             reference not in mission["evidence"]
             or evidence["sequence"] != mission["evidence"].index(reference) + 1

@@ -13,6 +13,7 @@ import json
 import os
 import posixpath
 import re
+import shlex
 import shutil
 import socket
 import sys
@@ -1107,9 +1108,8 @@ def scope_decision_hint(id, spec_hash):
         "subject_hash": spec_hash,
         "reference": "<who accepted the specification, and where>",
     }
-    return (
-        f"record it with: software-factory mission decision --mission {id} --input - <<'EOF'\n"
-        f"{json.dumps(record)}\nEOF"
+    return "ask the user to record their acceptance in their own terminal: " + approve_command(
+        id, "scope", record["subject_hash"], record["id"], record["reference"]
     )
 
 
@@ -1142,9 +1142,9 @@ def constitution_reconcile_hint(id, constitution):
     return (
         f"reconcile with: software-factory mission block --mission {id} "
         "--reason 'Constitution changed; reconcile before continuing'; then "
-        f"software-factory mission decision --mission {id} --input - <<'EOF'\n"
-        f"{json.dumps(record)}\nEOF\n"
-        f"then software-factory mission accept-scope --mission {id} "
+        "ask the user to approve the constitution change in their own terminal: "
+        + approve_command(id, "exception", record["subject_hash"], record["id"], record["reference"])
+        + f"\nthen software-factory mission accept-scope --mission {id} "
         "(commit the constitution change first: a product mission's base advances to the newest commit "
         "that carries it and changes only factory controls; returns to PLANNED; tasks restart from TODO "
         "and must be re-verified and re-reviewed)"
@@ -2955,6 +2955,84 @@ def record_decision(root, id, record):
     return update_mission(root, id, mutate)
 
 
+# Decisions that stand for the user's own approval. The CLI records them only through
+# `mission approve`, which needs an interactive terminal and a typed confirmation, so an
+# agent cannot record them from --input. Records remain local and unauthenticated.
+HUMAN_DECISION_KINDS = ("scope", "exception", "merge", "release")
+MAINTAINER_REQUIRED = (
+    "owners.maintainer is not set in factory.json: set it to the person who implements and approves "
+    "(commit it before creating missions) so self-review can be detected"
+)
+
+
+def approve_command(id, kind, subject_hash=None, decision_id=None, reference=None):
+    parts = [f"software-factory mission approve --mission {id} --kind {kind}"]
+    if subject_hash:
+        parts.append(f"--subject-hash {subject_hash}")
+    if decision_id:
+        parts.append(f"--id {decision_id}")
+    parts.append("--reference " + shlex.quote(reference or "<who approved, and where>"))
+    return " ".join(parts)
+
+
+def human_decision_refusal(id, record):
+    kind = record.get("kind")
+    return (
+        f"A {kind} decision records the user's own approval, so it is not recorded from --input; ask the "
+        "user to run it in their own terminal: "
+        + approve_command(id, kind, record.get("subject_hash"), record.get("id"), record.get("reference"))
+    )
+
+
+def _confirm_on_terminal(lines, mission_id):
+    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+        raise FactoryError(
+            "mission approve records the user's own approval, so it only runs in an interactive terminal; "
+            "an agent or script cannot run it"
+        )
+    sys.stderr.write("\n".join(lines) + f"\nType the mission ID ({mission_id}) to record this approval: ")
+    sys.stderr.flush()
+    answer = sys.stdin.readline()
+    if answer.strip() != mission_id:
+        raise FactoryError("Approval not recorded: the typed mission ID did not match")
+
+
+def approve_decision(root, id, kind, reference, subject_hash=None, decision_id=None, confirm=None):
+    """Record the user's own scope, exception, merge or release approval after a typed confirmation."""
+    if kind not in HUMAN_DECISION_KINDS:
+        raise FactoryError("Approval kind must be one of: " + ", ".join(HUMAN_DECISION_KINDS))
+    mission = load_mission(root, id)
+    candidate = fingerprint(root, mission)
+    bound = {}
+    if candidate.get("spec_hash"):
+        bound[candidate["spec_hash"]] = "the current spec.md"
+    bound[candidate["fingerprint"]] = "the current candidate fingerprint"
+    try:
+        bound.setdefault(hash_file(root, CONSTITUTION_PATH), "the current constitution")
+    except (FactoryError, OSError):
+        pass
+    subject = subject_hash or (candidate.get("spec_hash") if kind == "scope" else candidate["fingerprint"])
+    if not subject:
+        raise FactoryError("No spec.md to approve yet; record the specification first")
+    record = {
+        "id": decision_id or f"D-{kind.upper()}-{subject[:8]}",
+        "kind": kind,
+        "subject_hash": subject,
+        "reference": reference,
+    }
+    refuse_secrets(json.dumps(record, ensure_ascii=False), "Approval")
+    (confirm or _confirm_on_terminal)(
+        [
+            f"Mission {mission['id']}: {mission.get('title', '')} [{mission['state']}]",
+            f"Approval kind: {kind}",
+            f"Binds to: {subject} ({bound.get(subject, 'a hash that matches nothing current')})",
+            f"Reference: {reference}",
+        ],
+        mission["id"],
+    )
+    return record_decision(root, id, record)
+
+
 REVIEW_AUTHOR_REQUIRED = "Review author is required (the reviewer's actual agent/session or human name)"
 
 
@@ -3174,6 +3252,8 @@ def _assess_gate_snapshot(root, mission, candidate, resuming_to=None):
     mission = copy.deepcopy(mission)
     reasons = []
     config = load_config(root)
+    if not config.get("owners", {}).get("maintainer"):
+        reasons.append(MAINTAINER_REQUIRED)
     if resuming_to is not None:
         if (
             mission["state"] not in HOLD_STATES
@@ -4122,7 +4202,12 @@ def _mission_handler(args):
     if command == "accept-scope":
         return accept_scope(root, id)
     if command == "decision":
-        return record_decision(root, id, _input(args))
+        value = _input(args)
+        if isinstance(value, dict) and value.get("kind") in HUMAN_DECISION_KINDS:
+            raise FactoryError(human_decision_refusal(id, value))
+        return record_decision(root, id, value)
+    if command == "approve":
+        return approve_decision(root, id, args.kind, args.reference, args.subject_hash, args.id)
     if command == "review":
         return record_review(root, id, _input(args))
     if command == "record-result":
@@ -4160,7 +4245,8 @@ def add_parser(subparsers):
         "brief": "Write a deterministic subagent brief for a --task or --kind",
         "risk": "Assess the candidate's live risk tier without changing records",
         "record-doc": "Record a mission document verbatim from --input PATH or - for stdin",
-        "decision": "Record a decision from --input JSON",
+        "decision": "Record an exclusion, decline or recovery decision from --input JSON",
+        "approve": "Record your own scope, exception, merge or release approval (interactive terminal only)",
         "review": "Record a review from --input JSON",
         "record-result": "Record one task result from --input JSON",
         "record-results": "Record several task results from --input JSON",
@@ -4188,6 +4274,11 @@ def add_parser(subparsers):
         "conclusion": ("RESULT", "CI conclusion, such as success"),
         "trunk": ("BRANCH", "Trunk branch (default: detected)"),
         "request-file": ("PATH", "Repository path of the verbatim user request, or - for stdin (required)"),
+        "reference": ("TEXT", "Who approved, and where (for example a PR review URL or meeting note)"),
+        "subject-hash": (
+            "SHA256",
+            "Hash the approval binds to (default: spec.md for scope, else the candidate)",
+        ),
     }
 
     def option(parser, name, help=None, **kwargs):
@@ -4212,6 +4303,7 @@ def add_parser(subparsers):
         "risk",
         "record-doc",
         "decision",
+        "approve",
         "review",
         "record-result",
         "record-results",
@@ -4299,6 +4391,11 @@ def add_parser(subparsers):
                     " stays consumed and the next RUNNING spends a new one"
                 ),
             )
+        if command == "approve":
+            parser.add_argument("--kind", required=True, choices=HUMAN_DECISION_KINDS, help="Approval kind")
+            option(parser, "reference", required=True)
+            option(parser, "subject-hash")
+            option(parser, "id", help="Decision ID (default: D-<KIND>-<first 8 hex of the subject>)")
         if command == "ci-result":
             for name in ("url", "head", "conclusion"):
                 option(parser, name, required=True)

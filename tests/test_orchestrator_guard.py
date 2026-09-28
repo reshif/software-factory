@@ -517,7 +517,6 @@ OPTION_ALLOWED = [
     "software-factory mission status --mission=M-1",
     "software-factory mission resume --mission M-1 --to PLANNED --resolution fixed --replan-models",
     "software-factory mission task-transition --mission M-1 --task T-1 --to RUNNING",
-    "software-factory mission ci-result --mission M-1 --head abc --conclusion success --url https://ci/x",
     "software-factory mission record-doc --mission M-1 --doc plan --input -",
     "software-factory checks --only lint --require-clean",
     "software-factory verify --mission M-1 --reconcile-postmerge",
@@ -533,6 +532,14 @@ OPTION_ALLOWED = [
 ]
 
 OPTION_DENIED = [
+    (
+        "software-factory mission approve --mission M-1 --kind scope --reference 'user said yes'",
+        "records the user's own approval",
+    ),
+    (
+        "software-factory mission ci-result --mission M-1 --head abc --conclusion success --url https://ci/x",
+        "remote CI result the user observed",
+    ),
     ("software-factory models discover --client /bin/sh", "models discover"),
     ("software-factory models discover --profile claude", "models discover"),
     (f"{VENV} models discover", "models discover"),

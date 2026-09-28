@@ -580,12 +580,15 @@ def plan_render(
             f"(`{GUARD}`) denies Edit, Write, MultiEdit, NotebookEdit, Skill, unknown tools, Agent calls "
             f"for any subagent other than {', '.join(SPECIALISTS)}, and shell commands outside its "
             "read-only allowlist (project-scoped software-factory commands with their listed options only, "
-            "without init, upgrade, uninstall, recover, render, auth, models discover, verify --candidate-root "
+            "without init, upgrade, uninstall, recover, render, auth, models discover, mission approve, "
+            "mission ci-result, verify --candidate-root "
             f"or --root, through `uv run --locked --project .factory software-factory` or `{VENV_CLI}`; "
             "read-only git; ls/cat/head/tail/wc/grep/rg/find; project-relative arguments only, with no "
             "absolute path, leading ~ or .. component). Pass JSON input on stdin with a quoted heredoc "
             "(`--input - <<'JSON'`) instead of writing files. When a call is denied, delegate the work named "
-            "in the reason; never try to bypass the guard. It is a local guardrail: records remain "
+            "in the reason; never try to bypass the guard. Scope, exception, merge and release approvals and CI "
+            "results are the user's to record: give them the exact `mission approve` or `mission ci-result` "
+            "command to run in their own terminal. It is a local guardrail: records remain "
             "local-unattested and live behaviour is not_run.\n\n" + roles["orchestrator"],
         )
     trees = [

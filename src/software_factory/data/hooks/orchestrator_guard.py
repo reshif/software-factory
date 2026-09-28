@@ -50,8 +50,8 @@ DELEGATE = (
 SHELL_HELP = (
     "Allowed shell commands: `uv run --locked --project .factory software-factory ...` or "
     "`.factory/.venv/bin/software-factory ...` (project commands with their listed options only: no "
-    "init, upgrade, uninstall, recover, render, auth, models discover, verify --candidate-root or "
-    "--root; file options take project-relative paths or - for stdin), read-only git (status, diff, "
+    "init, upgrade, uninstall, recover, render, auth, models discover, mission approve, mission ci-result, "
+    "verify --candidate-root or --root; file options take project-relative paths or - for stdin), read-only git (status, diff, "
     "log, show, rev-parse, ls-files, branch --show-current) and ls/cat/head/tail/wc/grep/rg/find "
     "without -exec, -delete, rg --pre, --hostname-bin or -z; every argument project-relative (no "
     "absolute path, leading ~ or .. component; use the Grep tool for patterns starting with /); "
@@ -106,6 +106,17 @@ FACTORY_COMMANDS = {
         set(),
     ),
 }  # fmt: skip
+# Records that stand for the user's own approval or an external result the user observed.
+HUMAN_ONLY = {
+    ("mission", "approve"): (
+        "software-factory mission approve records the user's own approval; show the user the exact "
+        "command (accept-scope and the gate print it) and ask them to run it in their terminal"
+    ),
+    ("mission", "ci-result"): (
+        "software-factory mission ci-result records a remote CI result the user observed; ask the user "
+        "to run it in their terminal with the run URL"
+    ),
+}
 FACTORY_SUBCOMMANDS = {
     "mission": {
         "create": ({"--id", "--title", "--kind", "--base", "--input", "--request-file"}, set()),
@@ -129,7 +140,6 @@ FACTORY_SUBCOMMANDS = {
         "record-result": INPUT_ONLY,
         "record-results": INPUT_ONLY,
         "model-plan": INPUT_ONLY,
-        "ci-result": ({"--mission", "--reason", "--url", "--head", "--conclusion", "--trunk"}, set()),
         "record-delivery": INPUT_ONLY,
         "template": ({"--mission", "--kind"}, set()),
     },
@@ -386,6 +396,8 @@ def check_factory(args: list[str]) -> None:
             check_options(command, rest, set(), set())
             return
         table = FACTORY_SUBCOMMANDS[command]
+        if (command, rest[0]) in HUMAN_ONLY:
+            raise Denied(HUMAN_ONLY[(command, rest[0])])
         if rest[0] not in table:
             raise Denied(f"software-factory `{command} {rest[0]}` is not an allowed orchestrator command")
         check_options(f"{command} {rest[0]}", rest[1:], *table[rest[0]])

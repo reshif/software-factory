@@ -83,11 +83,14 @@ def test_product_mission_reconciles_changed_constitution(repo):
     assert message.startswith("Constitution changed (mission bound to sha256 " + before["constitution_hash"])
     assert f"{CONSTITUTION_PATH} is now sha256 {new_hash}, version 2.1.0" in message
     assert f"software-factory mission block --mission {id} --reason" in message
-    assert f"software-factory mission decision --mission {id} --input - <<'EOF'\n" in message
+    # 0.3.2: the exception is the user's own approval, so the hint names `mission approve`.
+    assert (
+        f"software-factory mission approve --mission {id} --kind exception --subject-hash {new_hash} "
+        f"--id D-CONST-{new_hash[:8]}"
+    ) in message
+    assert "mission decision" not in message
     assert f"software-factory mission accept-scope --mission {id}" in message
-    payload = json.loads(message.split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0])
-    assert payload["id"] == f"D-CONST-{new_hash[:8]}"
-    assert payload["kind"] == "exception" and payload["subject_hash"] == new_hash
+    payload = {"id": f"D-CONST-{new_hash[:8]}", "kind": "exception", "subject_hash": new_hash}
     gate = assess_gate(repo, id)
     assert not gate["pass"]
     assert any(
@@ -107,7 +110,12 @@ def test_product_mission_reconciles_changed_constitution(repo):
     assert load_mission(repo, id)["constitution_hash"] == before["constitution_hash"]
 
     payload["reference"] = "Maintainer approved constitution 2.1.0 in PR #7"
-    cli(repo, "mission", "decision", "--mission", id, "--input", put(repo, ".factory/local/d.json", payload))
+    # 0.3.2: an exception is the user's own approval, recorded through `mission approve`.
+    from software_factory.workflow import approve_decision
+
+    approve_decision(
+        repo, id, "exception", payload["reference"], payload["subject_hash"], payload["id"], lambda *_: None
+    )
     # 0.3.2: a product mission's base must advance past the constitution commit, so it must exist.
     with pytest.raises(FactoryError, match="commit the constitution change first"):
         cli(repo, "mission", "accept-scope", "--mission", id)

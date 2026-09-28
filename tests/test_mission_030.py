@@ -281,17 +281,20 @@ def test_stdin_inputs_and_record_doc(repo, monkeypatch):
         "reference": "User authorized",
         "subject_hash": hash_file(repo, f".factory/missions/{id}/spec.md"),
     }
-    cli(
-        repo,
-        "mission",
-        "decision",
-        "--mission",
-        id,
-        "--input",
-        "-",
-        stdin=json.dumps(decision).encode(),
-        monkeypatch=monkeypatch,
-    )
+    # 0.3.2: a scope decision is refused from --input; the user records it with `mission approve`.
+    with pytest.raises(FactoryError, match="mission approve"):
+        cli(
+            repo,
+            "mission",
+            "decision",
+            "--mission",
+            id,
+            "--input",
+            "-",
+            stdin=json.dumps(decision).encode(),
+            monkeypatch=monkeypatch,
+        )
+    record_decision(repo, id, decision)
     cli(
         repo,
         "mission",
@@ -1024,11 +1027,14 @@ def test_missing_scope_decision_error_names_command_and_spec_hash(repo):
         cli(repo, "mission", "accept-scope", "--mission", id)
     message = str(refused.value)
     assert f"(sha256 {spec_hash})" in message
-    assert f"software-factory mission decision --mission {id} --input - <<'EOF'\n" in message
-    payload = json.loads(message.split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0])
-    assert payload["kind"] == "scope" and payload["subject_hash"] == spec_hash and payload["id"]
-    payload["reference"] = "User accepted the specification in chat"
-    cli(repo, "mission", "decision", "--mission", id, "--input", put(repo, ".factory/local/d.json", payload))
+    # 0.3.2: the hint names the user's own `mission approve` command, bound to the spec hash.
+    command = f"software-factory mission approve --mission {id} --kind scope --subject-hash {spec_hash}"
+    assert command in message and "mission decision" not in message
+    from software_factory.workflow import approve_decision
+
+    approve_decision(
+        repo, id, "scope", "User accepted the specification in chat", spec_hash, None, lambda *_: None
+    )
     assert cli(repo, "mission", "accept-scope", "--mission", id)["state"] == "PLANNED"
 
 

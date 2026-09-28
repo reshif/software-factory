@@ -35,15 +35,13 @@ EOF
 
 ## Outputs and verification
 
-Context and spec text and a criteria JSON, returned to the orchestrator as text. The orchestrator pipes them into `mission record-doc --doc context|spec --input -` and `software-factory mission criteria --mission ID --input -` (quoted heredoc). After recording the spec, the orchestrator shows it to the user and records the acceptance they actually gave (never an invented one) as a `scope` decision bound to the recorded spec's hash:
+Context and spec text and a criteria JSON, returned to the orchestrator as text. The orchestrator pipes them into `mission record-doc --doc context|spec --input -` and `software-factory mission criteria --mission ID --input -` (quoted heredoc). After recording the spec, the orchestrator shows it to the user, who records their own acceptance in their terminal (an agent cannot: the command needs an interactive terminal and a typed mission ID, and `mission decision` refuses scope, exception, merge and release decisions):
 
 ```sh
-uv run --locked --project .factory software-factory mission decision --mission ID --input - <<'EOF'
-{"id": "D-SCOPE-1", "kind": "scope", "subject_hash": "<sha256 of .factory/missions/ID/spec.md>", "reference": "<where and how the user accepted>"}
-EOF
+uv run --locked --project .factory software-factory mission approve --mission ID --kind scope --reference '<where and how the user accepted>'
 ```
 
-Every decision has exactly `id`, `kind`, `subject_hash` and `reference` (the tool adds `recorded_at`). Decision ids are unique per mission; use a new one (D-SCOPE-2, …) for each re-acceptance. If the decision is missing or stale, `mission accept-scope` fails and prints the exact command with the current hash. Run `mission accept-scope` once the plan's architecture exists (factory-plan). Accept-scope binds the spec and criteria hashes and records the hashes of context.md and plan.md; changing spec or criteria later, or a clarification after PLANNED, resets scope and tasks for revalidation while keeping attempts and history, and a changed context.md or plan.md fails later scope checks until accept-scope runs again. On a PAUSED or BLOCKED mission, clarify and criteria keep the hold; resume it with `--resolution` before accepting. It does not approve the changed scope itself: record the user's acceptance again when the spec changed, and re-run accept-scope.
+It binds the decision to the current spec.md hash and names it D-SCOPE-<first 8 hex> unless `--id` is given. Exclusion decisions have exactly `id`, `kind`, `subject_hash` and `reference` (the tool adds `recorded_at`); decision ids are unique per mission. If the scope decision is missing or stale, `mission accept-scope` fails and prints the exact `mission approve` command with the current hash. Run `mission accept-scope` once the plan's architecture exists (factory-plan). Accept-scope binds the spec and criteria hashes and records the hashes of context.md and plan.md; changing spec or criteria later, or a clarification after PLANNED, resets scope and tasks for revalidation while keeping attempts and history, and a changed context.md or plan.md fails later scope checks until accept-scope runs again. On a PAUSED or BLOCKED mission, clarify and criteria keep the hold; resume it with `--resolution` before accepting. It does not approve the changed scope itself: when the spec changed, the user runs `mission approve --kind scope` again, then re-run accept-scope.
 
 ## Failure behavior
 

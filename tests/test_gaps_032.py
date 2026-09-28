@@ -140,3 +140,91 @@ def test_home_paths_alone_are_not_treated_as_secrets(repo):  # noqa: F811
     id = plan_mission(repo)
     doc = put(repo, ".factory/local/handoff.md", "# Handoff\n\nThe checkout is /home/alice/project.\n")
     assert cli(repo, "mission", "record-doc", "--mission", id, "--doc", "handoff", "--input", doc)
+
+
+@pytest.mark.parametrize("kind", ["scope", "exception", "merge", "release"])
+def test_approval_kinds_are_not_recorded_from_input(repo, kind):  # noqa: F811
+    """F-1: an agent cannot record the user's approval through `mission decision`."""
+    id = plan_mission(repo)
+    record = {"id": "D-AGENT", "kind": kind, "subject_hash": "0" * 64, "reference": "user approved in chat"}
+    with pytest.raises(
+        FactoryError, match=f"A {kind} decision records the user's own approval.*mission approve"
+    ):
+        cli(
+            repo,
+            "mission",
+            "decision",
+            "--mission",
+            id,
+            "--input",
+            put(repo, ".factory/local/d.json", record),
+        )
+
+
+def test_approve_refuses_without_an_interactive_terminal(repo, monkeypatch):  # noqa: F811
+    import io
+    import sys
+
+    id = plan_mission(repo)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("M-REQ\n"))
+    with pytest.raises(FactoryError, match="only runs in an interactive terminal"):
+        cli(repo, "mission", "approve", "--mission", id, "--kind", "merge", "--reference", "PR #1 review")
+
+
+def _terminal(monkeypatch, answer):
+    import io
+    import sys
+
+    class Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    prompt = Tty()
+    monkeypatch.setattr(sys, "stdin", Tty(answer))
+    monkeypatch.setattr(sys, "stderr", prompt)
+    return prompt
+
+
+def test_approve_records_after_typed_confirmation(repo, monkeypatch):  # noqa: F811
+    from test_mission_030 import load_mission_fingerprint
+
+    from software_factory.workflow import load_mission
+
+    id = plan_mission(repo)
+    prompt = _terminal(monkeypatch, id + "\n")
+    cli(repo, "mission", "approve", "--mission", id, "--kind", "merge", "--reference", "PR #1 review")
+    fingerprint = load_mission_fingerprint(repo, id)
+    decision = load_mission(repo, id)["decisions"][-1]
+    assert decision["kind"] == "merge" and decision["subject_hash"] == fingerprint
+    assert decision["id"] == f"D-MERGE-{fingerprint[:8]}" and decision["reference"] == "PR #1 review"
+    assert "the current candidate fingerprint" in prompt.getvalue()
+
+
+def test_approve_is_not_recorded_when_confirmation_does_not_match(repo, monkeypatch):  # noqa: F811
+    from software_factory.workflow import load_mission
+
+    id = plan_mission(repo)
+    before = len(load_mission(repo, id)["decisions"])
+    _terminal(monkeypatch, "yes\n")
+    with pytest.raises(FactoryError, match="did not match"):
+        cli(repo, "mission", "approve", "--mission", id, "--kind", "scope", "--reference", "chat")
+    assert len(load_mission(repo, id)["decisions"]) == before
+
+
+def test_accept_scope_hint_names_the_approve_command(repo):  # noqa: F811
+    from software_factory.workflow import scope_decision_hint
+
+    hint = scope_decision_hint("M-1", "a" * 64)
+    assert "software-factory mission approve --mission M-1 --kind scope --subject-hash " + "a" * 64 in hint
+    assert "mission decision" not in hint
+
+
+def test_gate_requires_a_configured_maintainer(repo):  # noqa: F811
+    from software_factory.core import read_json, write_json
+    from software_factory.workflow import MAINTAINER_REQUIRED
+
+    id = plan_mission(repo)
+    config = read_json(repo, "factory.json")
+    config["owners"]["maintainer"] = None
+    write_json(repo, "factory.json", config)
+    assert MAINTAINER_REQUIRED in assess_gate(repo, id)["reasons"]

@@ -10,6 +10,6 @@ Reviewed 2026-09-27; pinned model default `jev-1.13.0`. Recheck official contrac
 - [Official skill](https://github.com/typesafe-ai/skills/blob/main/skills/typesafe-ai/SKILL.md): guidance for building integrations, not a runtime interceptor.
 - [Citation example](https://docs.typesafe.ai/cookbooks/citation_check): illustrates exact quote checking followed by semantic assessment; its small sample does not establish factory quality.
 
-No live Jev accuracy, latency, calibration or account-availability result is established by these references. The Python implementation uses standard-library HTTPS with bounded deadlines and cancellation. Dynamic Choice validation is shared by routing and claim assessment. The official SDK is not used; the shared transport makes at most two retries on 408, 429, 529, 5xx and connection errors, always within the caller's deadline.
+No live Jev accuracy, latency, calibration or account-availability result is established by these references. The Python implementation uses standard-library HTTPS with bounded deadlines and cancellation. Dynamic Choice validation is shared by routing and claim assessment. The official SDK is not used; the shared transport makes at most two retries on HTTP 408, 429, 500, 502, 503, 504, 529 and connection errors (not 501 or 505), always within the caller's deadline.
 
 Model selection uses the same documented Choice primitive with a supplied eligible candidate set and an abstain option. See [JEV routing](../../../../.factory/docs/jev-routing.md).

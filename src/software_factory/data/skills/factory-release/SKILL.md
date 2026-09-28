@@ -15,7 +15,7 @@ Confirm the mission is MERGED: that requires a successful `ci-result` recorded f
 
 Inspect existing pipeline evidence and actual external state. Once enabled delivery has the required artifact/staging references, `uv run --locked --project .factory software-factory packet --mission ID --kind release` prepares `release-packet.md` without executing commands or overwriting the authored release plan. An agent-written record of approval is not authorization. Reuse explicit authorization already given for the exact action, and request a concrete decision only when missing. Before any external mutation, verify target, artifact and authorized scope.
 
-Use the configured delivery system to stage or promote only when authorized and available. Bind release evidence to the same artifact and record actual references; DEPLOYING also requires `recovery_ref`. Record the observation as `observation: {ref, status}`. Only a healthy observation reaches DELIVERED; an unhealthy one leads to factory-recover. Local state transitions describe external progress; they do not execute or prove a deployment.
+Use the configured delivery system to stage or promote only when authorized and available. Bind release evidence to the same artifact and record actual references. DEPLOYING also requires `recovery_ref` and a `release` decision whose reference equals `release_ref` and whose `subject_hash` is the 64 hex characters of `artifact_digest` without its `sha256:` prefix. Record the observation as `observation: {ref, status}`. Only a healthy observation reaches DELIVERED; an unhealthy one leads to factory-recover. Local state transitions describe external progress; they do not execute or prove a deployment.
 
 ## Outputs and verification
 

@@ -16,7 +16,7 @@ flowchart TD
     SMALL & FEAT --> MODELS["Model checkpoint<br/>inherit → one line; JEV / factory-models only when enabled"]
     MODELS --> CTX["mission brief --kind context → planner<br/>context.md (both lanes)"]
     CTX --> CLAR["Ask all ambiguities up front<br/>mission clarify (verbatim, chained hash)"]
-    CLAR --> SPEC["Planner: spec.md + criteria AC-n citing request excerpts<br/>plan.md with ## Architecture mermaid"]
+    CLAR --> SPEC["mission brief --kind plan → planner<br/>spec.md + criteria AC-n citing request excerpts<br/>plan.md with ## Architecture mermaid · recovery.md"]
     SPEC --> ACCEPT["record-doc · criteria · decision · accept-scope<br/>task-add mapped to AC ids → PLANNED"]
     ACCEPT --> BRIEF["mission brief --task T → one implementer<br/>one writer per workspace"]
     BRIEF --> VERIFY["Orchestrator runs software-factory verify"]
@@ -38,7 +38,7 @@ flowchart TD
 
 Blueprint runs the same flow up to the plan and stops before implementation. A mission created before 0.3.0 has no recorded request; it keeps the earlier gate rules and shows a warning. The small lane still needs context, criteria and an architecture diagram, kept short.
 
-*The orchestrator never produces* is an instruction in every client. Claude Code can additionally run the orchestrator as a tool-restricted agent with a guard hook (`claude --agent factory-orchestrator`), and Copilot's `factory` agent has no edit tool; the orchestrator records everything through CLI commands that read stdin; see [enforcement per client](runbooks/vendor-behavior.md#enforcement-per-client) for what each client actually enforces.
+*The orchestrator never produces* is an instruction in every client. Claude Code can additionally run the orchestrator as a tool-restricted agent with a guard hook (`claude --agent factory-orchestrator`), and Copilot's `factory` agent has no edit or web tool; the orchestrator records everything through CLI commands that read stdin; see [enforcement per client](runbooks/vendor-behavior.md#enforcement-per-client) for what each client actually enforces.
 
 READY_PR is a local, unattested gate result: evidence, reviews, decisions and `ci-result` records are caller-supplied. Remote PR creation, GitHub CI, merge and production delivery require separate actual evidence. Delivery is disabled in the default product configuration. A pipeline node in this diagram is an integration boundary, not a deployed service supplied by this repository.
 
@@ -62,7 +62,7 @@ The diagram shows GitHub CI between READY_PR and merge. The constitution's *Hone
 | Staging, release | STAGING → AWAITING_RELEASE → DEPLOYING | Artifact digest, staging, release decision and `recovery_ref` before DEPLOYING |
 | Observation | OBSERVING → DELIVERED | `delivery.observation` with `status: healthy` |
 | Unhealthy / failed deploy | DEPLOYING or OBSERVING → RECOVERING → RECOVERED (or BLOCKED) | `incident_ref`, `recovery_ref`, recovery decision; RECOVERED also needs a healthy `recovery_observation` and `follow_up_mission` |
-| Held work | PAUSED / BLOCKED (`--reason`, optional `--next`; `block` command) | Resume needs `--resolution`; an exhausted task needs a replan with new paths, checks or dependencies, which resets its budget at most once |
+| Held work | PAUSED / BLOCKED (`--reason`, optional `--next`; `block` command) | Resume needs `--resolution`; `clarify` and `criteria` keep the hold (the mission returns to PROPOSED on resume); accept-scope lifts only a constitution-reconcile hold; an exhausted task needs a replan with new paths, checks or dependencies, which resets its budget at most once |
 
 The trunk is chosen once, by `ci-result`, and recorded as a full ref; MERGED re-resolves that same ref and `transition` accepts no trunk override. In a repository with any remote the trunk must be a remote-tracking ref (`--trunk origin/BRANCH` or `origin/HEAD`); only a repository without remotes may use a local `main`/`master` (`trunk_kind: local`). The rule accepts merge commits, squash merges and fast-forwards of a work branch, and rejects work that never left the trunk, a commit the trunk does not contain, and a pre-mission trunk commit with matching content.
 

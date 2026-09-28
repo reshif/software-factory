@@ -25,7 +25,7 @@
         "properties": {
           "file": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_-]+[.]json$"
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,159}[.]json$"
           },
           "sha256": {
             "type": "string",

@@ -251,9 +251,13 @@ def test_hold_restore_budget_and_one_material_replan(repo):
         resume_mission(repo, id, "IMPLEMENTING")
     resume_mission(repo, id, "IMPLEMENTING", resolution="Workspace reconciled")
     assert load_mission(repo, id)["tasks"][0]["attempts"] == 1
-    transition_task(repo, id, "T-ONE", "BLOCKED")
+    with pytest.raises(FactoryError, match="BLOCKED reason"):
+        transition_task(repo, id, "T-ONE", "BLOCKED")
+    transition_task(repo, id, "T-ONE", "BLOCKED", reason="Waiting for a fixture")
+    assert load_mission(repo, id)["tasks"][0]["blocked_reason"] == "Waiting for a fixture"
     transition_task(repo, id, "T-ONE", "RUNNING")
-    transition_task(repo, id, "T-ONE", "BLOCKED")
+    assert "blocked_reason" not in load_mission(repo, id)["tasks"][0]
+    transition_task(repo, id, "T-ONE", "BLOCKED", reason="Waiting again")
     with pytest.raises(FactoryError, match="now BLOCKED"):
         transition_task(repo, id, "T-ONE", "RUNNING")
     with pytest.raises(FactoryError, match="still exhausted"):
@@ -271,7 +275,7 @@ def test_hold_restore_budget_and_one_material_replan(repo):
     transition_task(repo, id, "T-ONE", "RUNNING")
     task = load_mission(repo, id)["tasks"][0]
     assert task["attempts"] == 3 and task["attempt_base"] == 2 and task["budget_resets"] == 1
-    transition_task(repo, id, "T-ONE", "BLOCKED")
+    transition_task(repo, id, "T-ONE", "BLOCKED", reason="Replanning dependencies")
     with pytest.raises(FactoryError, match="cycle"):
         edit_task(
             repo,
@@ -625,7 +629,11 @@ def test_later_pass_must_resolve_earlier_blocking_findings(repo):
     with pytest.raises(FactoryError, match="needs an id"):
         record_review(repo, id, rejection)
     rejection["findings"] = [{**blocking, "id": "F-CALLERS"}]
-    record_review(repo, id, rejection)
+    # 0.3.2: a rejection in READY_PR returns the mission to IMPLEMENTING.
+    assert "READY_PR to IMPLEMENTING" in record_review(repo, id, rejection)["note"]
+    assert load_mission(repo, id)["state"] == "IMPLEMENTING"
+    transition_mission(repo, id, "VERIFYING")
+    transition_mission(repo, id, "REVIEWING")
     later = {
         "id": "V-OVERRIDE",
         "author": "independent-reviewer",
@@ -859,7 +867,7 @@ def test_reason_and_next_are_rejected_for_non_hold_transitions(repo):
 
 def test_task_input_rejects_unknown_and_managed_fields(repo):
     id = begin(repo)
-    allowed = "id, title, depends_on, owned_paths, checks, criteria, model_assignment"
+    allowed = "id, title, depends_on, owned_paths, checks, criteria, model_assignment, replaces, reason"
     task = {"id": "T-TWO", "title": "Second", "paths": ["src/**"], "checks": ["unit"]}
     with pytest.raises(FactoryError) as error:
         add_task(repo, id, task)

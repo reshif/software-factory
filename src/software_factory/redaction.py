@@ -36,7 +36,7 @@ from __future__ import annotations
 import os
 import re
 
-__all__ = ["MASK_PREFIX", "bound_text", "redact", "redact_argv"]
+__all__ = ["MASK_PREFIX", "bound_text", "redact", "redact_argv", "secret_kinds"]
 
 MASK_PREFIX = "[REDACTED:"
 _NOT_MASKED = r"(?!\[REDACTED:)"
@@ -274,6 +274,18 @@ def redact(text: str) -> tuple[str, int]:
         text, number = pattern.subn("~", text)
         count += number
     return text, count
+
+
+_MASK = re.compile(re.escape(MASK_PREFIX) + r"([a-z0-9_]+)\]")
+
+
+def secret_kinds(text: str) -> list[str]:
+    """Kinds of obvious secrets ``redact`` would mask in ``text``; home-directory paths are not secrets."""
+    masked, _ = redact(text)
+    kinds = _MASK.findall(masked)
+    for kind in _MASK.findall(text):
+        kinds.remove(kind)
+    return kinds
 
 
 def _mask_key_tails(text, pattern, mask):

@@ -563,7 +563,20 @@ def read_text_input(root, relative, label):
         raise FactoryError(f"{label} is not valid UTF-8: {relative}") from exc
     if not text.strip():
         raise FactoryError(f"{label} is empty: {relative}")
+    refuse_secrets(text, f"{label} {relative}")
     return data, text
+
+
+def refuse_secrets(text, label):
+    """Mission records are committed, so input that looks like it holds a secret is refused."""
+    from .redaction import secret_kinds
+
+    kinds = sorted(set(secret_kinds(text)))
+    if kinds:
+        raise FactoryError(
+            f"{label} looks like a secret ({', '.join(kinds)}); mission records are committed to Git, "
+            "so remove it and refer to where the secret is stored instead"
+        )
 
 
 def create_mission(root, input, require_request=False):
@@ -3948,7 +3961,9 @@ def _input(args):
         except ValueError as exc:
             raise FactoryError(f"Cannot read JSON from stdin: {exc}") from exc
     # Like models --input: a root-relative path read without following symlinks.
-    return read_json(args.root, args.input)
+    value = read_json(args.root, args.input)
+    refuse_secrets(json.dumps(value, ensure_ascii=False), f"--input JSON {args.input}")
+    return value
 
 
 MISSION_DOCS = ("context", "spec", "plan", "recovery", "handoff")

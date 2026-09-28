@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from test_mission_030 import assess_gate, brief, cli, plan_mission, put, repo  # noqa: F401  (fixture)
+from test_mission_030 import assess_gate, brief, cli, create, plan_mission, put, repo  # noqa: F401  (fixture)
 
 from software_factory.core import FactoryError
 
@@ -93,3 +93,50 @@ def test_test_runner_configuration_change_raises_risk(repo, path):  # noqa: F811
     risk = cli(repo, "mission", "risk", "--mission", id)
     assert f"Test runner configuration changed: {path}" in risk["reasons"]
     assert risk["tier"] == "high"
+
+
+SECRET_TEXTS = [
+    "Use the key AKIAABCDEFGHIJKLMNOP for the bucket.\n",
+    "Token: ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8" + "\n",
+    "api_key = 'sk-" + "abcdefghijklmnopqrstuvwx" + "'\n",
+]
+
+
+@pytest.mark.parametrize("text", SECRET_TEXTS)
+def test_secret_in_mission_document_is_refused(repo, text):  # noqa: F811
+    """F-6: records are committed, so an obvious secret never reaches them."""
+    id = plan_mission(repo)
+    doc = put(repo, ".factory/local/handoff.md", "# Handoff\n\n" + text)
+    with pytest.raises(FactoryError, match="looks like a secret"):
+        cli(repo, "mission", "record-doc", "--mission", id, "--doc", "handoff", "--input", doc)
+
+
+def test_secret_in_json_record_input_is_refused(repo):  # noqa: F811
+    id = plan_mission(repo)
+    decision = {
+        "id": "D-SECRET",
+        "kind": "exclusion",
+        "subject_hash": "0" * 64,
+        "reference": "user said to use ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8",
+    }
+    with pytest.raises(FactoryError, match="looks like a secret"):
+        cli(
+            repo,
+            "mission",
+            "decision",
+            "--mission",
+            id,
+            "--input",
+            put(repo, ".factory/local/d.json", decision),
+        )
+
+
+def test_secret_in_request_is_refused(repo):  # noqa: F811
+    with pytest.raises(FactoryError, match="looks like a secret"):
+        create(repo, "M-SECRET", request="Deploy with password = hunter2secret please.\n")
+
+
+def test_home_paths_alone_are_not_treated_as_secrets(repo):  # noqa: F811
+    id = plan_mission(repo)
+    doc = put(repo, ".factory/local/handoff.md", "# Handoff\n\nThe checkout is /home/alice/project.\n")
+    assert cli(repo, "mission", "record-doc", "--mission", id, "--doc", "handoff", "--input", doc)

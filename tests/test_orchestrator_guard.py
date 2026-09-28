@@ -67,7 +67,7 @@ ALLOWED = [
     "software-factory jev --help",
     "software-factory triage --help",
     "software-factory mission list",
-    "software-factory mission brief --mission M-1 --summary 'no --root here'",
+    "software-factory mission transition --mission M-1 --to BLOCKED --reason 'no --root here'",
     "git status",
     "git status --porcelain",
     "git diff --stat HEAD~1",
@@ -390,6 +390,9 @@ STDIN_ALLOWED = [
     f"{SF} mission record-doc --mission M --doc handoff --input - <<'EOF' && git status\nbody\nEOF",
     f"{SF} mission record-doc --mission M --doc plan --input - <<'EOF'\nEOF \n EOF\nEOFX\nEOF",
     "git status\ngit diff --stat",
+    "git status\n\ngit log",
+    "git status;",
+    "git status;\ngit log",
     "git log --format=#%h -1",
     "grep '# heading' README.md",
 ]
@@ -428,7 +431,6 @@ STDIN_DENIED = [
     ("bash <<'EOF'\nrm -rf x\nEOF", "`bash`"),
     ("find . -de\\\nlete", "line continuations"),
     ('grep "a\\\nb" file', "line continuations"),
-    ("git status\n\ngit log", "empty command"),
     ("git status # <<'EOF'\nrm -rf x\nEOF", "comments"),
     ("git status #x", "comments"),
     ("#x", "comments"),
@@ -488,3 +490,186 @@ def test_bash_runs_only_allowlisted_programs_for_allowed_commands(tmp_path, comm
             "criteria file.json",
         ]
     )
+
+
+# 0.3.2: per-subcommand option allowlist, project-relative paths and hook input checks.
+VENV = ".factory/.venv/bin/software-factory"
+
+OPTION_ALLOWED = [
+    f"{VENV} status",
+    f"{VENV} mission brief --mission M-1 --kind code",
+    f"{VENV} semantic check --input - --mission M-1 <<'JSON'\n{{}}\nJSON",
+    "software-factory semantic verify-claims --input - --no-network <<'JSON'\n{}\nJSON",
+    "software-factory jev check --input .factory/local/claims.json --no-cache --no-persist",
+    "software-factory models plan --input - --catalog .factory/local/models/catalog.json <<'JSON'\n{}\nJSON",
+    "software-factory models validate --kind plan --input -",
+    "software-factory models dispatch --plan .factory/local/models/plan.json --assignment implementer",
+    "software-factory models outcome-record --input -",
+    (
+        "software-factory models template --kind request --profile claude --session WORK-A --id PLAN-001 "
+        "--objective 'Implement it' --output .factory/local/models/request.json"
+    ),
+    "software-factory models --profile claude",
+    "software-factory models",
+    "software-factory mission --help",
+    "software-factory mission create --id M-1 --title 'A title' --kind product --base main",
+    "software-factory mission create --input - <<'JSON'\n{}\nJSON",
+    "software-factory mission status --mission=M-1",
+    "software-factory mission resume --mission M-1 --to PLANNED --resolution fixed --replan-models",
+    "software-factory mission task-transition --mission M-1 --task T-1 --to RUNNING",
+    "software-factory mission ci-result --mission M-1 --head abc --conclusion success --url https://ci/x",
+    "software-factory mission record-doc --mission M-1 --doc plan --input -",
+    "software-factory checks --only lint --require-clean",
+    "software-factory verify --mission M-1 --reconcile-postmerge",
+    "software-factory triage --mission M-1 --check lint --no-network",
+    "software-factory packet --mission M-1 --kind handoff",
+    "software-factory status --mission M-1 --help",
+    "git show HEAD:factory.json",
+    "git diff HEAD..main -- src",
+    "git log main~3..HEAD",
+    "cat .git/config",
+    "cat < /dev/null",
+    "rg --no-search-zip foo src",
+]
+
+OPTION_DENIED = [
+    ("software-factory models discover --client /bin/sh", "models discover"),
+    ("software-factory models discover --profile claude", "models discover"),
+    (f"{VENV} models discover", "models discover"),
+    ("uv run --locked --project .factory software-factory models discover", "models discover"),
+    ("software-factory models plan --client /bin/sh", "--client"),
+    ("software-factory models --timeout-ms 5", "--timeout-ms"),
+    ("software-factory models unknown", "`models unknown`"),
+    ("software-factory verify --candidate-root /other", "--candidate-root"),
+    ("software-factory verify --candidate-root=../x", "--candidate-root"),
+    ("software-factory verify --mission M-1 --cand /x", "--candidate-root"),
+    ("software-factory semantic check --input /etc/passwd", "outside the project"),
+    ("software-factory semantic check --input=/etc/passwd", "outside the project"),
+    ("software-factory semantic verify-claims --input ~/claims.json", "outside the project"),
+    ("software-factory jev check --input ../other/claims.json", "outside the project"),
+    ("software-factory models plan --input - --catalog /tmp/catalog.json", "outside the project"),
+    ("software-factory models dispatch --plan 'C:\\plan.json'", "outside the project"),
+    ("software-factory models validate --input 'a\\..\\..\\b.json'", "outside the project"),
+    ("software-factory mission criteria --mission M-1 --input /etc/hosts", "outside the project"),
+    ("software-factory mission create --request-file ../request.md --id M --title T", "outside the project"),
+    ("software-factory mission brief --mission M-1 --summary x", "--summary"),
+    ("software-factory mission brief --miss M-1", "--miss"),
+    ("software-factory mission bogus --mission M-1", "`mission bogus`"),
+    ("software-factory semantic run", "`semantic run`"),
+    ("software-factory status extra", "'extra'"),
+    ("software-factory status -", "'-'"),
+    ("software-factory status --mission", "needs a value"),
+    ("software-factory status --mission --help", "looks like an option"),
+    ("software-factory gate --mission M-1 --", "option --"),
+    ("software-factory checks --require-clean=yes", "--require-clean"),
+    ("software-factory mission --verbose", "--verbose"),
+    ("software-factory mission list --root /x", "--root"),
+    (f"{VENV} render", "`render`"),
+    (f"{VENV} --root /x status", "--root"),
+    ("./.factory/.venv/bin/software-factory status", "not an allowed"),
+    ("rg --hostname-bin=/bin/sh foo", "--hostname-bin"),
+    ("rg --hostname-bin /bin/sh foo", "--hostname-bin"),
+    ("rg -z foo", "-z/--search-zip"),
+    ("rg -nz foo", "-z/--search-zip"),
+    ("rg --search-zip foo", "-z/--search-zip"),
+    ("cat ~/.ssh/id_rsa", "outside the project"),
+    ("cat /proc/self/environ", "outside the project"),
+    ("head ../secrets.txt", "outside the project"),
+    ("tail src/../../x", "outside the project"),
+    ("ls ~", "outside the project"),
+    ("find / -name id_rsa", "outside the project"),
+    ("find . -newer /etc/passwd", "outside the project"),
+    ("grep -f/etc/passwd file", "outside the project"),
+    ("grep --file=/etc/passwd file", "outside the project"),
+    ("rg foo /home", "outside the project"),
+    ("wc -l ..", "outside the project"),
+    ("git diff --no-index /etc/passwd file", "outside the project"),
+    ("git show HEAD -- ../x", "outside the project"),
+    ("git log -- ~/x", "outside the project"),
+    ("cat < /etc/passwd", "outside the project"),
+    ("cat < ../x", "outside the project"),
+    ("git status;;", "empty command"),
+    ("git status; ;", "empty command"),
+    ("git status &&\n\ngit log", "empty command"),
+]
+
+
+@pytest.mark.parametrize("command", OPTION_ALLOWED)
+def test_allowlisted_factory_options_and_project_paths_are_allowed(command):
+    assert bash(command) == (0, "", "")
+
+
+@pytest.mark.parametrize(("command", "fragment"), OPTION_DENIED)
+def test_unlisted_options_and_outside_paths_are_denied(command, fragment):
+    code, out, err = bash(command)
+    reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert code == 2 and fragment in reason, reason
+    assert err.strip() == reason
+
+
+def _parser_options():
+    """(command path) -> (value options, flags) from the real CLI parser."""
+    import argparse
+
+    from software_factory.cli import build_parser
+
+    found = {}
+
+    def walk(parser, path):
+        values, flags = set(), set()
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for name, child in action.choices.items():
+                    walk(child, (*path, name))
+            elif action.option_strings and not isinstance(action, argparse._HelpAction):
+                (flags if action.nargs == 0 else values).update(action.option_strings)
+        found[path] = (values, flags)
+
+    walk(build_parser(), ())
+    return found
+
+
+# Parser options the guard deliberately refuses; a new CLI option must be classified here or allowed.
+EXCLUDED = {
+    ("verify",): {"--candidate-root"},
+    ("models",): {"--client", "--provider", "--billing", "--picker", "--client-version", "--timeout-ms"},
+}
+
+
+def test_guard_option_allowlist_matches_the_cli_parser():
+    parser = _parser_options()
+    tables = {(c,): options for c, options in guard.FACTORY_COMMANDS.items()}
+    for command, subcommands in guard.FACTORY_SUBCOMMANDS.items():
+        assert {path[1] for path in parser if len(path) == 2 and path[0] == command} >= set(subcommands)
+        tables.update({(command, sub): options for sub, options in subcommands.items()})
+    for path, (values, flags) in tables.items():
+        real_values, real_flags = parser[path]
+        assert values <= real_values and flags <= real_flags, path
+        unlisted = (real_values | real_flags) - values - flags
+        assert unlisted == EXCLUDED.get(path, set()), (path, unlisted)
+    from software_factory.models import MODEL_COMMANDS
+
+    assert guard.MODEL_SUBCOMMANDS == set(MODEL_COMMANDS) - {"discover"}
+    paths = {o for values, _ in tables.values() for o in values if o in guard.FACTORY_PATH_OPTIONS}
+    assert paths == guard.FACTORY_PATH_OPTIONS
+
+
+def test_hook_event_name_is_required():
+    payload = claude("Read")
+    del payload["hook_event_name"]
+    code, out, _ = run(payload)
+    assert code == 2 and "PreToolUse" in json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+    # Checked before the specialist pass-through.
+    code, _, _ = run(
+        claude("Write", {}, agent_type="factory-implementer", agent_id="a2", hook_event_name="Stop")
+    )
+    assert code == 2
+
+
+def test_oversized_payload_names_the_reason():
+    raw = json.dumps(claude("Read", {"file_path": "x" * (1 << 20)}))
+    code, out, err = run(raw)
+    assert (
+        code == 2 and "payload too large" in json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+    )
+    assert "payload too large" in err

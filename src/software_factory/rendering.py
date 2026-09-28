@@ -20,6 +20,15 @@ ORCHESTRATOR_AGENT = ".claude/agents/factory-orchestrator.md"
 GUARD = ".factory/hooks/orchestrator_guard.py"
 SPECIALISTS = ("factory-planner", "factory-implementer", "factory-verifier", "factory-reviewer")
 ENFORCEMENT_FLAGS = {"claude": "claude_orchestrator_agent"}
+# Entry prompts named in the rendered CLAUDE.md and copilot-instructions.md text.
+ENTRY_PROMPTS = ("factory-build", "factory-blueprint", "factory-resume", "factory-status")
+VENV_CLI = ".factory/.venv/bin/software-factory"
+CODEX_INSTRUCTIONS_LIMIT = 32768  # Codex project_doc_max_bytes default.
+GUARD_SELF_TEST = (
+    "First run Bash `true`. The guard must deny it. If it runs, stop and report that enforcement is "
+    "inactive (untrusted folder, -p session or hooks disabled)."
+)
+CRLF_NOTE = "line-ending conversion (CRLF, for example core.autocrlf) also counts as a change"
 
 
 def guard_command(project: str) -> str:
@@ -31,6 +40,10 @@ def guard_command(project: str) -> str:
 
     Prefers the pinned runtime interpreter and falls back to python3 (3.11+) when the
     runtime is not hydrated. Claude Code treats exit 2 from a PreToolUse hook as a deny.
+
+    Fail closed only when run: the command needs a POSIX shell (on Windows, Claude Code's Git
+    Bash). If the shell itself cannot start it, or the hook times out, the exit is not 2 and
+    Claude Code does not block the call; claude.json's limits say so.
     """
     return (
         f'P="{project}/.factory/.venv/bin/python"; [ -x "$P" ] || P=python3; '
@@ -43,19 +56,37 @@ def enforcement_settings(config: dict) -> dict[str, bool]:
     return {flag: settings.get(flag) is True for flag in ENFORCEMENT_FLAGS.values()}
 
 
+def _exported(root: Path, name: str) -> bool:
+    """Whether the factory currently owns and has written the export `name`."""
+    try:
+        manifest = read_manifest(root)
+        return bool(manifest and name in manifest["generated"] and optional(root, name) is not None)
+    except FactoryError:
+        return False
+
+
 def enforcement_summary(root: Path, config: dict) -> dict:
-    """Per-profile orchestrator enforcement layer from vendor capabilities; reads only."""
+    """Per-profile orchestrator enforcement layer from vendor capabilities; reads only.
+
+    `enabled` means the enforcing export is actually rendered: for Claude the opt-in flag is set
+    and the orchestrator agent file is owned and present; Copilot's tool allowlist is always on
+    (the factory agent is always exported); Codex has instructions only.
+    """
     settings = enforcement_settings(config)
     summary = {}
     for profile in profiles(config):
         vendor = json.loads(asset_path(root, f"vendors/{profile}.json").read_text())
         capabilities = vendor.get("capabilities", {})
         flag = ENFORCEMENT_FLAGS.get(profile)
-        enabled = bool(flag and settings[flag] and capabilities.get("orchestrator_enforcement") == "hook")
         layer = capabilities.get("orchestrator_enforcement", "instructions")
+        if layer == "hook":
+            enabled = bool(flag and settings[flag] and _exported(root, ORCHESTRATOR_AGENT))
+        else:
+            enabled = layer == "tool_allowlist"
         summary[profile] = {
             "layer": layer if enabled or layer != "hook" else "instructions",
             "opt_in": f"enforcement.{flag}" if flag else None,
+            "configured": bool(flag and settings[flag]) if flag else None,
             "enabled": enabled,
             "capabilities": capabilities,
             "scope": {
@@ -111,23 +142,58 @@ def allowed_export(name: str) -> bool:
     )
 
 
+TOML_KEYS = ("enabled", "max_concurrent_threads_per_session")  # "enabled": locks before 0.3.2.
+RECORD_FIELDS = {
+    "file": {"kind": str, "sha256": str},
+    "block": {"kind": str, "sha256": str, "separator": str, "existed": bool},
+    "toml": {"kind": str, "values": dict, "created_table": bool, "existed": bool, "appended": str},
+}
+RECORD_REQUIRED = {"file": {"kind", "sha256"}, "block": {"kind", "sha256"}, "toml": {"kind", "values"}}
+
+
+def _check_record(name: str, record) -> None:
+    """Type- and key-check one ownership record; a malformed lock is a FactoryError, never a crash."""
+    if not isinstance(record, dict):
+        raise FactoryError(f"Invalid renderer ownership: {name}")
+    kind = record.get("kind")
+    expected_kind = "block" if name in SHARED else "toml" if name == ".codex/config.toml" else "file"
+    if kind not in RECORD_FIELDS:
+        raise FactoryError(f"Invalid renderer ownership: {name}")
+    if kind != expected_kind:
+        raise FactoryError(f"Invalid ownership kind for {name}")
+    fields = RECORD_FIELDS[kind]
+    if not RECORD_REQUIRED[kind] <= record.keys() or not record.keys() <= fields.keys():
+        raise FactoryError(f"Invalid ownership record for {name}: fields {sorted(record)}")
+    for key, value in record.items():
+        if type(value) is not fields[key]:
+            raise FactoryError(f"Invalid ownership record for {name}: {key}")
+    if "sha256" in record and not re.fullmatch(r"[0-9a-f]{64}", record["sha256"]):
+        raise FactoryError(f"Invalid ownership record for {name}: sha256")
+    if record.get("separator", "") not in ("", "\n", "\n\n"):
+        raise FactoryError(f"Invalid ownership record for {name}: separator")
+    if kind == "toml":
+        for key, value in record["values"].items():
+            if key not in TOML_KEYS or type(value) is not (bool if key == "enabled" else int):
+                raise FactoryError(f"Invalid TOML ownership key in {name}: {key}")
+        if "appended" in record and (len(record["appended"]) > 1024 or not record.get("created_table")):
+            raise FactoryError(f"Invalid ownership record for {name}: appended")
+
+
 def read_manifest(root: Path) -> dict | None:
     if optional(root, "factory.lock.json") is None:
         return None
     data = read_json(root, "factory.lock.json")
-    if data.get("schema_version") != 2 or not isinstance(data.get("generated"), dict):
+    if (
+        not isinstance(data, dict)
+        or data.get("schema_version") != 2
+        or not isinstance(data.get("generated"), dict)
+    ):
         raise FactoryError("Unsupported renderer manifest; no changes applied")
     for name, record in data["generated"].items():
-        if not allowed_export(name) or record.get("kind") not in ("file", "block", "toml"):
+        if not allowed_export(name):
             raise FactoryError(f"Invalid renderer ownership: {name}")
         safe_path(root, name)
-        expected_kind = "block" if name in SHARED else "toml" if name == ".codex/config.toml" else "file"
-        if record["kind"] != expected_kind:
-            raise FactoryError(f"Invalid ownership kind for {name}")
-        if (record["kind"] == "block" and name not in SHARED) or (
-            record["kind"] == "toml" and name != ".codex/config.toml"
-        ):
-            raise FactoryError(f"Invalid shared ownership: {name}")
+        _check_record(name, record)
     relinquished = data.get("relinquished", [])
     if not isinstance(relinquished, list):
         raise FactoryError("Invalid relinquished exports in renderer manifest")
@@ -143,6 +209,15 @@ def read_manifest(root: Path) -> dict | None:
             raise FactoryError(f"Invalid relinquished export: {name}")
         safe_path(root, name)
     return data
+
+
+def _text(data: bytes, name: str) -> str:
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise FactoryError(
+            f"{name} is not valid UTF-8 (byte {exc.start}); save it as UTF-8, then retry"
+        ) from None
 
 
 def _is_whole_file(name: str) -> bool:
@@ -162,10 +237,10 @@ def strip_owned(root: Path, name: str, record: dict) -> bytes | None:
         if sha256(current) != record["sha256"]:
             raise FactoryError(
                 f"Generated file drift: {name}; restore it (for example git checkout -- {name}) "
-                "or delete it to relinquish factory ownership"
+                f"or delete it to relinquish factory ownership ({CRLF_NOTE})"
             )
         return None
-    text = current.decode()
+    text = _text(current, name)
     if record["kind"] == "block":
         if text.count(START) != 1 or text.count(END) != 1:
             raise FactoryError(
@@ -176,31 +251,46 @@ def strip_owned(root: Path, name: str, record: dict) -> bytes | None:
         if last < first or sha256(text[first:last]) != record["sha256"]:
             raise FactoryError(
                 f"Generated section drift: {name}; restore the section between the software-factory "
-                f"markers (for example git checkout -- {name}) and keep local edits outside the markers"
+                f"markers (for example git checkout -- {name}) and keep local edits outside the markers "
+                f"({CRLF_NOTE})"
             )
         suffix = text[last:]
         suffix = suffix.removeprefix("\n")
         prefix = text[:first]
         separator = record.get("separator", "")
-        if separator and not suffix and prefix.endswith(separator):
-            prefix = prefix[: -len(separator)]
+        if separator and prefix.endswith(separator):
+            # The factory added the separator. With user text after the section, one newline
+            # still has to end the preceding line; otherwise the whole separator goes.
+            prefix = prefix[: -len(separator)] + ("\n" if suffix and separator == "\n\n" else "")
         result = prefix + suffix
         return result.encode() if result or record.get("existed") else None
+    appended = record.get("appended")
     try:
         doc = tomlkit.parse(text)
+        agents = doc.get("agents")
         values = record.get("values", {})
         for key, expected in values.items():
-            if key not in ("enabled", "max_concurrent_threads_per_session"):
+            if key not in TOML_KEYS:
                 raise FactoryError("Invalid TOML ownership key")
-            if doc.get("agents", {}).get(key) != expected:
+            found = agents.get(key) if isinstance(agents, dict) else None
+            found = found.unwrap() if hasattr(found, "unwrap") else found
+            if found != expected or type(found) is not type(expected):
                 raise FactoryError(
                     f"Generated TOML key drift: agents.{key} in {name}; restore agents.{key} = "
                     f"{json.dumps(expected)} or restore the file from Git"
                 )
-            del doc["agents"][key]
-        if record.get("created_table") and "agents" in doc and not doc["agents"]:
-            del doc["agents"]
-        result = tomlkit.dumps(doc)
+        if appended and text.endswith(appended):
+            # The factory appended the whole [agents] table: drop exactly those bytes.
+            result = text[: -len(appended)]
+        else:
+            for key in values:
+                del agents[key]
+            removed_table = record.get("created_table") and "agents" in doc and not doc["agents"]
+            if removed_table:
+                del doc["agents"]
+            result = tomlkit.dumps(doc)
+            if removed_table and result.endswith("\n\n"):
+                result = result.rstrip("\n") + "\n"  # The blank line tomlkit put before [agents].
         return result.encode() if result.strip() or record.get("existed") else None
     except (ValueError, TypeError) as exc:
         raise FactoryError(f"Cannot reconcile {name}: {exc}") from exc
@@ -229,12 +319,46 @@ def unmark_section(root: Path, name: str, record: dict) -> bytes | None:
     current = optional(root, name)
     if current is None or record["kind"] != "block":
         raise FactoryError(f"Not an owned section: {name}")
-    text = current.decode()
+    text = _text(current, name)
     if text.count(START) != 1 or text.count(END) != 1 or text.index(END) < text.index(START):
         raise FactoryError(f"Ambiguous or missing owned section: {name}")
     (start_from, start_to), (end_from, end_to) = _marker_span(text, START), _marker_span(text, END)
     result = text[:start_from] + text[start_to:end_from] + text[end_to:]
     return result.encode() if result or record.get("existed") else None
+
+
+def _check_registry(registry, schema: dict) -> None:
+    """Validate registry.json: schema shape plus the cross-list rules a schema cannot express."""
+    from jsonschema import Draft7Validator
+
+    roles = registry.get("roles") if isinstance(registry, dict) else None
+    if isinstance(roles, list) and any(
+        isinstance(r, dict) and r.get("name") == "orchestrator" for r in roles
+    ):
+        raise FactoryError("Invalid registry: role name orchestrator is reserved for the coordinator")
+    errors = sorted(Draft7Validator(schema).iter_errors(registry), key=lambda e: str(e.path))
+    if errors:
+        error = errors[0]
+        raise FactoryError(
+            f"Invalid registry at {'.'.join(map(str, error.path)) or '<root>'}: {error.message}"
+        )
+    roles = [role["name"] for role in registry["roles"]]
+    names = [f"factory-{name}" for name in roles] + registry["skills"] + registry["entries"]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise FactoryError(
+            "Invalid registry: names must be unique across roles (factory-<role>), skills and entries: "
+            + ", ".join(duplicates)
+        )
+    if sorted(f"factory-{name}" for name in roles) != sorted(SPECIALISTS):
+        raise FactoryError(
+            "Invalid registry: roles must be exactly the factory specialists "
+            f"({', '.join(SPECIALISTS)}) that the orchestrator guard and allowlists name"
+        )
+    missing = sorted({role["skill"] for role in registry["roles"]} - set(registry["skills"]))
+    missing += sorted(set(ENTRY_PROMPTS) - set(registry["entries"]))
+    if missing:
+        raise FactoryError("Invalid registry: missing required skills or entries: " + ", ".join(missing))
 
 
 def plan_render(
@@ -251,12 +375,16 @@ def plan_render(
     and checks relinquish it (the ownership record moves to ``relinquished`` in
     factory.lock.json and the file is not recreated). Only an explicit
     ``render`` (``restore=True``) recreates relinquished exports that are absent.
-    A relinquished path that exists again is user-owned and is never overwritten.
+    A relinquished path that exists again is user-owned and is never overwritten,
+    and stays relinquished while another profile set is active (so switching back
+    does not collide with it). The report's ``warnings`` list skipped skill files
+    and size limits; nothing in it blocks the plan.
     """
     config = dict(config or load_config(root))
     selected_profiles = profiles(selected or config)
     config["profile"] = selected_profiles[0] if len(selected_profiles) == 1 else selected_profiles
     source_hashes = {}
+    warnings = []
 
     def source(name: str) -> bytes:
         relative = ".factory/" + name
@@ -264,8 +392,14 @@ def plan_render(
         source_hashes[relative] = sha256(data)
         return data
 
-    registry = json.loads(source("registry.json"))
-    constitution = source("CONSTITUTION.md").decode()
+    def source_text(name: str) -> str:
+        return _text(source(name), ".factory/" + name)
+
+    try:
+        registry = json.loads(source("registry.json"))
+    except ValueError as exc:
+        raise FactoryError(f"Invalid registry: .factory/registry.json is not JSON ({exc})") from None
+    constitution = source_text("CONSTITUTION.md")
     for name in ("policy.json", "workflow.json"):
         source(name)
     for section in ("schemas", "models", "vendors"):
@@ -277,12 +411,16 @@ def plan_render(
         if payload:
             names = [p.removeprefix(".factory/") for p in payload if p.startswith(f".factory/{section}/")]
         else:
-            base = root / ".factory" / section if (root / ".factory" / section).is_dir() else base
             names = [section + "/" + p.relative_to(base).as_posix() for p in base.rglob("*") if p.is_file()]
         for name in names:
             source(name)
+    try:
+        registry_schema = json.loads(source("schemas/registry.schema.json"))
+    except ValueError as exc:
+        raise FactoryError(f"Cannot load registry schema: {exc}") from None
+    _check_registry(registry, registry_schema)
     roles = {
-        name: source(f"roles/{name}.md").decode()
+        name: source_text(f"roles/{name}.md")
         for name in ("orchestrator", *(r["name"] for r in registry["roles"]))
     }
     enforcement = enforcement_settings(config)
@@ -312,9 +450,19 @@ def plan_render(
         "copilot": "factory agent without edit tools; shell writes are instruction-only",
     }
     enforcement_text = "; ".join(f"{labels[p]}: {layers[p]}" for p in selected_profiles)
+    codex_command = (
+        f" Codex sandboxes cannot write the uv cache: there run `{VENV_CLI} ...` with the same arguments."
+        if "codex" in selected_profiles
+        else ""
+    )
+    preamble = (
+        f"The constitution in AGENTS.md applies; read .factory/CONSTITUTION.md (SHA-256 {sha256(constitution)}) "
+        "only if it is not in your context."
+    )
     common = (
         constitution.strip()
-        + "\n\n## Factory session entry\n\nRead factory.json and .factory/roles/orchestrator.md for factory tasks. Use the canonical .factory/skills workflows and delegate bounded tasks to the installed factory specialists. One writer per workspace. Existing product instructions and host permissions remain in force.\n\nPython command: `uv run --locked --project .factory software-factory doctor`.\nEntry prompts: "
+        + "\n\n## Factory session entry\n\nThis entry applies to the main session only; a delegated factory specialist follows its agent file and brief instead. Read factory.json and .factory/roles/orchestrator.md for factory tasks. Use the canonical .factory/skills workflows and delegate bounded tasks to the installed factory specialists. One writer per workspace. Existing product instructions and host permissions remain in force.\n\n"
+        + f"Python command: `uv run --locked --project .factory software-factory doctor` (the pinned `{VENV_CLI}` is equivalent).{codex_command}\nEntry prompts: "
         + entry_text
         + ". Planning is draft-only; status is read-only. Model selection uses `software-factory models plan`;"
         + " `jev.enabled` in factory.json selects JEV instead of the built-in factory-models selector and"
@@ -337,13 +485,16 @@ def plan_render(
         )
     if "copilot" in selected_profiles:
         outputs[".github/copilot-instructions.md"] = (
-            b"Follow AGENTS.md for factory work. Select the factory agent and invoke /factory-build, /factory-blueprint, /factory-resume or /factory-status.\n"
+            b"Follow AGENTS.md for factory work. Factory missions are supported in VS Code Local (the local "
+            b"agent session in VS Code): select the factory agent and invoke /factory-build, /factory-blueprint, "
+            b"/factory-resume or /factory-status. Copilot CLI and the Copilot cloud agent are not supported for "
+            b"missions: do not start or advance a mission there.\n"
         )
     copilot_prefix = "factory-copilot-" if "claude" in selected_profiles else "factory-"
     for role in registry["roles"]:
         name = role["name"]
         body = (
-            f"The constitution in AGENTS.md applies; read .factory/CONSTITUTION.md (SHA-256 {sha256(constitution)}) only if it is not in your context. Your role instructions follow. Assigned skill: {role['skill']}. Work only from the generated brief the orchestrator provides (software-factory mission brief); report missing brief fields instead of guessing.\n\n"
+            f"{preamble} Your role instructions follow. Assigned skill: {role['skill']}. Work only from the generated brief the orchestrator provides (software-factory mission brief); report missing brief fields instead of guessing.\n\n"
             + roles[name]
         )
         if "claude" in selected_profiles:
@@ -352,7 +503,7 @@ def plan_render(
                 if role["capability"] == "read"
                 else "Read, Glob, Grep, Bash, Skill"
                 if role["capability"] == "verify"
-                else "Read, Glob, Grep, Bash, Edit, Write, Skill"
+                else "Read, Glob, Grep, Bash, Edit, Write, WebFetch, WebSearch, Skill"
             )
             outputs[f".claude/agents/factory-{name}.md"] = markdown(
                 {
@@ -386,6 +537,7 @@ def plan_render(
                     "tools": tools,
                     "agents": [],
                     "user-invocable": False,
+                    "include-custom-instructions": True,
                 },
                 body,
             )
@@ -394,10 +546,10 @@ def plan_render(
             {
                 "name": "factory",
                 "description": "Coordinate factory missions, bounded specialists and evidence.",
-                "tools": ["read", "search", "web", "execute", "agent"],
+                "tools": ["read", "search", "execute", "agent"],
                 "agents": [copilot_prefix + r["name"] for r in registry["roles"]],
             },
-            roles["orchestrator"],
+            preamble + "\n\n" + roles["orchestrator"],
         )
     if orchestrator_agent:
         outputs[ORCHESTRATOR_AGENT] = markdown(
@@ -405,7 +557,7 @@ def plan_render(
                 "name": "factory-orchestrator",
                 "description": "Coordinate factory missions: brief, delegate to factory specialists, record "
                 "state, verify and decide. Never edits files.",
-                "tools": f"Agent({', '.join(SPECIALISTS)}), Read, Glob, Grep, Bash",
+                "tools": f"Agent({', '.join(SPECIALISTS)}), Read, Glob, Grep, Bash, AskUserQuestion, TodoWrite",
                 "hooks": {
                     "PreToolUse": [
                         {
@@ -420,23 +572,32 @@ def plan_render(
                     ]
                 },
             },
-            f"The constitution in AGENTS.md applies; read .factory/CONSTITUTION.md (SHA-256 {sha256(constitution)}) only if it is not in your context.\n\n"
+            f"{GUARD_SELF_TEST}\n\n{preamble}\n\n"
             "## Enforced session\n\n"
             "Start this agent as the main session with `claude --agent factory-orchestrator` in a trusted "
             "workspace. The `Agent(...)` allowlist applies only there; frontmatter hooks are skipped until the "
             "workspace trust dialog is accepted and in `-p` sessions. A PreToolUse guard "
             f"(`{GUARD}`) denies Edit, Write, MultiEdit, NotebookEdit, Skill, unknown tools, Agent calls "
             f"for any subagent other than {', '.join(SPECIALISTS)}, and shell commands outside its "
-            "read-only allowlist (project-scoped software-factory commands without init, upgrade, uninstall, "
-            "recover, render, auth or --root; read-only git; ls/cat/head/tail/wc/grep/rg/find). When a call is denied, delegate the work named in the reason; never try to bypass the "
-            "guard. It is a local guardrail: records remain local-unattested and live behaviour is not_run.\n\n"
-            + roles["orchestrator"],
+            "read-only allowlist (project-scoped software-factory commands with their listed options only, "
+            "without init, upgrade, uninstall, recover, render, auth, models discover, verify --candidate-root "
+            f"or --root, through `uv run --locked --project .factory software-factory` or `{VENV_CLI}`; "
+            "read-only git; ls/cat/head/tail/wc/grep/rg/find; project-relative arguments only, with no "
+            "absolute path, leading ~ or .. component). Pass JSON input on stdin with a quoted heredoc "
+            "(`--input - <<'JSON'`) instead of writing files. When a call is denied, delegate the work named "
+            "in the reason; never try to bypass the guard. It is a local guardrail: records remain "
+            "local-unattested and live behaviour is not_run.\n\n" + roles["orchestrator"],
         )
     trees = [
         f".{ {'claude': 'claude', 'codex': 'agents', 'copilot': 'github'}[p] }/skills"
         for p in selected_profiles
         if p != "copilot" or len(selected_profiles) == 1
     ]
+    # Trees where non-entry skills are hidden from the slash menu. Copilot also reads .agents/skills
+    # (Codex ignores frontmatter keys it does not know), so it is included when Copilot is active.
+    hidden_trees = {".claude/skills", ".github/skills"} | (
+        {".agents/skills"} if "copilot" in selected_profiles else set()
+    )
     names = set(registry["skills"] + registry["entries"])
     for name in registry["skills"]:
         if payload is not None:
@@ -452,23 +613,37 @@ def plan_render(
                 for p in base.rglob("*")
                 if p.is_file()
             ]
-        for asset in asset_names:
+        for asset in sorted(asset_names):
+            if not allowed_export(".claude/" + asset):
+                # E.g. an editor backup (SKILL.md~): never exported, so never recorded in the lock.
+                warnings.append(
+                    f"Skipped .factory/{asset}: skill file names may use only letters, digits, _ . / -; "
+                    "rename or remove it"
+                )
+                continue
             content = source(asset)
+            exported = {tree: content for tree in trees}
             if asset.endswith("/SKILL.md"):
                 try:
-                    meta, _ = metadata(content.decode())
+                    meta, skill_body = metadata(_text(content, ".factory/" + asset))
                 except FactoryError as exc:
                     raise FactoryError(f"{exc}: .factory/{asset}") from exc
                 if meta["name"] != name:
                     raise FactoryError(f"Skill folder/name mismatch: {name}")
+                if asset == f"skills/{name}/SKILL.md":
+                    hidden = markdown({**meta, "user-invocable": False}, skill_body)
+                    exported.update({tree: hidden for tree in trees if tree in hidden_trees})
             for tree in trees:
-                outputs[tree + "/" + asset.removeprefix("skills/")] = content
+                outputs[tree + "/" + asset.removeprefix("skills/")] = exported[tree]
     entry_paths = []
     for name in registry["entries"]:
-        header, body = metadata(source(f"prompts/{name}.md").decode())
+        header, body = metadata(source_text(f"prompts/{name}.md"))
+        for key in ("argument-hint", "default-prompt"):
+            if not isinstance(header.get(key), str) or not header[key].strip():
+                raise FactoryError(f"Entry prompt .factory/prompts/{name}.md needs a nonempty {key} field")
         for tree in trees:
             fields = {"name": name, "description": header["description"]}
-            if tree != ".agents/skills":
+            if tree != ".agents/skills" or "copilot" in selected_profiles:
                 fields.update({"argument-hint": header["argument-hint"], "user-invocable": True})
             outputs[f"{tree}/{name}/SKILL.md"] = markdown(fields, body)
             entry_paths.append(f"{tree}/{name}/SKILL.md")
@@ -495,21 +670,27 @@ def plan_render(
                 pending.append(name)
         elif name in relinquished_before and (present or not restore):
             relinquished.add(name)
+    # A relinquished file another profile set does not render stays user-owned while it exists.
+    relinquished |= {n for n in relinquished_before - outputs.keys() if optional(root, n) is not None}
     for name in relinquished:
-        del outputs[name]
+        outputs.pop(name, None)
     for tree in (".claude/skills", ".agents/skills", ".github/skills"):
         base = safe_path(root, tree)
         if base.exists():
-            for item in base.glob("*/SKILL.md"):
+            for item in sorted(base.glob("*/SKILL.md")):
                 rel = item.relative_to(root).as_posix()
+                if item.parent.name in names and rel not in old and rel not in relinquished:
+                    raise FactoryError(f"Existing skill name collision: {rel}")
+                if item.parent.is_symlink() or item.is_symlink():
+                    # A linked personal skill is the user's; its target is not scanned.
+                    warnings.append(f"Skipped symlinked user skill {rel} in the skill name collision check")
+                    continue
                 safe_path(root, rel)
                 if rel in old or rel in relinquished:
                     continue
-                if item.parent.name in names:
-                    raise FactoryError(f"Existing skill name collision: {rel}")
                 try:
                     meta, _ = metadata(item.read_text())
-                except (FactoryError, UnicodeDecodeError):
+                except (FactoryError, UnicodeDecodeError, OSError):
                     continue  # Unrelated user skill; its format is not the factory's concern.
                 if meta["name"] in names:
                     raise FactoryError(f"Existing skill name collision: {rel}")
@@ -523,7 +704,7 @@ def plan_render(
     for name, content in outputs.items():
         base = bases[name] if name in bases else optional(root, name)
         if name in SHARED:
-            text = (base or b"").decode()
+            text = _text(base or b"", name)
             if START in text or END in text:
                 raise FactoryError(
                     f"Unowned factory section: {name}; the factory does not own this section (for example "
@@ -534,7 +715,7 @@ def plan_render(
             block = START + "\n" + content.decode().strip() + "\n" + END
             owned = name in old and optional(root, name) is not None
             if owned:
-                current = optional(root, name).decode()
+                current = _text(optional(root, name), name)
                 first, last = current.index(START), current.index(END) + len(END)
                 changes[name] = (current[:first] + block + current[last:]).encode()
                 separator = old[name].get("separator", "")
@@ -556,38 +737,61 @@ def plan_render(
     if "codex" in selected_profiles:
         name = ".codex/config.toml"
         base = bases[name] if name in bases else optional(root, name)
+        text = _text(base or b"", name)
         try:
-            doc = tomlkit.parse((base or b"").decode())
-            created_table = "agents" not in doc
-            if created_table:
-                doc["agents"] = tomlkit.table()
-            values = {}
-            for key, value in {"enabled": True, "max_concurrent_threads_per_session": 3}.items():
-                if key not in doc["agents"]:
-                    doc["agents"][key] = value
-                    values[key] = value
-                elif key == "enabled" and doc["agents"][key] is not True:
-                    found = doc["agents"][key]
-                    found = found.unwrap() if hasattr(found, "unwrap") else found
-                    raise FactoryError(
-                        f"Existing Codex setting conflicts: `{name}` [agents].{key} is set by you to "
-                        f"{json.dumps(found, default=str)}; the factory needs {json.dumps(value)} — change "
-                        "or remove it, then rerun"
-                    )
-            changes[name] = tomlkit.dumps(doc).encode()
-            generated[name] = {
-                "kind": "toml",
-                "values": values,
-                "created_table": created_table,
-                "existed": base is not None,
-            }
+            doc = tomlkit.parse(text)
         except (ValueError, TypeError) as exc:
             raise FactoryError(f"Invalid Codex configuration: {exc}") from exc
+        agents, features = doc.get("agents"), doc.get("features")
+        if agents is not None and not isinstance(agents, dict):
+            raise FactoryError(f"Invalid Codex configuration: `{name}` agents must be a table ([agents])")
+        if isinstance(features, dict) and features.get("multi_agent") is False:
+            raise FactoryError(
+                f"Existing Codex setting conflicts: `{name}` features.multi_agent = false disables the "
+                "subagents the factory delegates to; remove it or set it to true, then rerun"
+            )
+        if isinstance(agents, dict) and "enabled" in agents and agents["enabled"] is not True:
+            found = agents["enabled"]
+            found = found.unwrap() if hasattr(found, "unwrap") else found
+            raise FactoryError(
+                f"Existing Codex setting conflicts: `{name}` [agents].enabled is set by you to "
+                f"{json.dumps(found, default=str)}; the factory needs true — change or remove it, then rerun"
+            )
+        # The factory no longer writes agents.enabled (older Codex rejects unknown [agents] keys).
+        # Either spelling of the thread limit satisfies it; max_threads is the legacy alias.
+        values = {}
+        record = {"kind": "toml", "values": values, "created_table": False, "existed": base is not None}
+        limits = ("max_concurrent_threads_per_session", "max_threads")
+        if not (isinstance(agents, dict) and any(key in agents for key in limits)):
+            values["max_concurrent_threads_per_session"] = 3
+            if agents is None:
+                # Append the table as text so removing it later restores the user's bytes exactly.
+                lead = "" if not text else "\n" if text.endswith("\n") else "\n\n"
+                appended = lead + "[agents]\nmax_concurrent_threads_per_session = 3\n"
+                record.update({"created_table": True, "appended": appended})
+                text += appended
+            else:
+                agents["max_concurrent_threads_per_session"] = 3
+                text = tomlkit.dumps(doc)
+        try:
+            tomlkit.parse(text)
+        except (ValueError, TypeError) as exc:
+            raise FactoryError(f"Invalid Codex configuration: {exc}") from exc
+        changes[name] = text.encode()
+        generated[name] = record
+        size = len(changes.get("AGENTS.md", b""))
+        if size > CODEX_INSTRUCTIONS_LIMIT:
+            warnings.append(
+                f"AGENTS.md is {size} bytes; Codex reads only the first {CODEX_INSTRUCTIONS_LIMIT} bytes by "
+                "default (project_doc_max_bytes), so later instructions may be ignored"
+            )
     config_bytes = (json.dumps(config, indent=2) + "\n").encode()
     existing_config = optional(root, "factory.json")
     if existing_config is not None and json.loads(existing_config) == config:
         config_bytes = existing_config
-    source_hashes["factory.json"] = sha256(config_bytes)
+    write_config = selected is not None or existing_config is None
+    # The recorded hash is of factory.json as it will be on disk after this plan.
+    source_hashes["factory.json"] = sha256(config_bytes if write_config else existing_config)
     manifest = {
         "schema_version": 2,
         "factory_version": __version__,
@@ -601,7 +805,7 @@ def plan_render(
     if relinquished:
         manifest["relinquished"] = sorted(relinquished)
     changes["factory.lock.json"] = (json.dumps(manifest, indent=2) + "\n").encode()
-    if selected is not None or existing_config is None:
+    if write_config:
         changes["factory.json"] = config_bytes
     return changes, {
         "profiles": selected_profiles,
@@ -610,10 +814,22 @@ def plan_render(
         "relinquished": sorted(relinquished),
         "pending_relinquish": pending,
         "entry_exports": entry_exports,
+        "warnings": warnings,
     }
 
 
 def render(root: Path, *, check=False, selected=None, dry_run=False) -> dict:
+    installation = optional(root, ".factory/installation.json")
+    if check and installation is not None:
+        try:
+            uninstalled = json.loads(installation).get("uninstalled") is True
+        except (ValueError, AttributeError):
+            uninstalled = False  # Reported by doctor's installation checks.
+        if uninstalled:
+            raise FactoryError(
+                "The factory is uninstalled from this project, so there are no generated exports to check; "
+                "run software-factory init to reinstall"
+            )
     if not check:
         ensure_no_journal(root)
     snapshot = planning_snapshot(root)
@@ -631,7 +847,11 @@ def render(root: Path, *, check=False, selected=None, dry_run=False) -> dict:
         if recorded == report["manifest"]:
             drift.remove("factory.lock.json")
     if check and drift:
-        raise FactoryError("Generated exports are stale: " + ", ".join(drift))
+        raise FactoryError(
+            "Generated exports are stale: "
+            + ", ".join(drift)
+            + f"; run software-factory render to regenerate them ({CRLF_NOTE})"
+        )
     if not check and not dry_run:
         apply(root, changes, expected=expected, label="render")
     # A relinquished entry-point skill is either absent or answers the entry prompt
@@ -652,5 +872,6 @@ def render(root: Path, *, check=False, selected=None, dry_run=False) -> dict:
         "prompt_commands": report["prompt_commands"],
         "relinquished": report["relinquished"],
         "relinquished_entry_skills": entry_skills,
+        "warnings": report["warnings"],
         "live_behavior": "not_run",
     }

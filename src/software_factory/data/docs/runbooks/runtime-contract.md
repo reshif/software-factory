@@ -24,11 +24,11 @@ Full runs require at least one required check. Optional failures are reported wi
 ```sh
 uv run --locked --project .factory software-factory checks
 uv run --locked --project .factory software-factory checks --require-clean
-uv run --locked --project .factory software-factory verify --mission M-0001 --revision R-001
+uv run --locked --project .factory software-factory verify --mission M-0001 --revision R-1
 uv run --locked --project .factory software-factory gate --mission M-0001
 ```
 
-`--require-clean` rejects a dirty candidate before setup. Ordinary local runs permit existing changes and fingerprint their bytes; `revision` records the starting HEAD. Only a stable clean run has `exact_revision: true`. Merge CI evidence must represent a complete, exact-commit run. These measurements are locally supplied evidence, not authenticated remote attestations; READY_PR only means this local evidence is consistent. For authoritative assurance, have branch-protected remote CI re-run `software-factory checks --require-clean` (or the product checks) itself rather than trusting a recorded `ci-result`.
+`--require-clean` rejects a dirty candidate before setup. `verify --revision` takes a unique evidence run label (R-1, R-2, …), not a Git revision; reusing a label fails. Ordinary local runs permit existing changes and fingerprint their bytes; the result's `revision` field records the starting HEAD. Only a stable clean run has `exact_revision: true`. Merge CI evidence must represent a complete, exact-commit run. These measurements are locally supplied evidence, not authenticated remote attestations; READY_PR only means this local evidence is consistent. For authoritative assurance, have branch-protected remote CI re-run `software-factory checks --require-clean` (or the product checks) itself rather than trusting a recorded `ci-result`.
 
 Verification binds configuration, specification, constitution, source, governance, runtime and dependency bytes. Schema bytes are loaded from the selected project assets. Before/after snapshots and watchdog filesystem observation cover the check interval. Observation begins before configuration is read, and its final events are collected before evidence is published. Observed transient edits invalidate a run even if the bytes are restored. Ignored output files are excluded; ignored governance and nested instruction files still count.
 
@@ -41,6 +41,10 @@ Configured entry points default to a 1 MiB combined stdout/stderr hard limit per
 Mission verification streams output into exclusive private files under `.factory/local/runs/`, with separate setup logs. Evidence stores their hashes and the gate checks retained bytes. The direct `run_check` API separately allows a bounded in-memory preview. An output-limited command terminates with `truncated: true` and cannot pass. Timeouts and interrupts terminate the process group on POSIX. Inspect private logs before sharing; product command output may contain sensitive data.
 
 Keep summaries and raw logs under ignored `.factory/local/`. Writing a report into candidate source creates a source change. CI can persist its JSON summary and deliberately select artifacts under the hosting service's retention policy.
+
+## Risk tier
+
+`software-factory mission risk --mission ID` reads the candidate against `base_commit` and returns `low` or `high` with reasons: sensitive or protected paths, check-definition changes, deleted or shrunk tests (policy `test_paths`), dependency manifests and lockfiles, CI workflow files, a diff larger than `limits.high_risk_lines` (default 400, excluding tests and lockfiles), or an exhausted repair budget. It changes nothing. A high tier adds acceptance and adversarial reviews to the gate.
 
 ## Repository and platform boundary
 

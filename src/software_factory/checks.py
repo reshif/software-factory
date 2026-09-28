@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import signal
 import subprocess
 import threading
@@ -298,7 +299,19 @@ def run_checks(root, only=None, require_clean=False):
         }
 
 
+def next_run_label(directory, label):
+    """A suggested unused evidence run label after label (R-1 -> R-2, other -> other-2)."""
+    match = re.fullmatch(r"(.*?)(\d+)", label)
+    stem, number = (match.group(1), int(match.group(2))) if match else (label + "-", 1)
+    while True:
+        number += 1
+        candidate = f"{stem}{number}"
+        if not (directory / candidate).exists():
+            return candidate
+
+
 def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=False, resolution=None):
+
     from .workflow import (
         HOLD_STATES,
         POST_MERGE_STATES,
@@ -329,7 +342,10 @@ def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=Fa
     try:
         run_dir.mkdir()
     except FileExistsError as exc:
-        raise FactoryError(f"Evidence revision already exists: {revision}") from exc
+        raise FactoryError(
+            f"Evidence revision already exists: {revision}; --revision is a unique run label, not a git"
+            f" revision: pass a new one such as {next_run_label(run_dir.parent, revision)}"
+        ) from exc
     logs = f".factory/local/runs/{mission_id}/{revision}"
     try:
         safe_path(root, logs).mkdir(parents=True, exist_ok=False, mode=0o700)

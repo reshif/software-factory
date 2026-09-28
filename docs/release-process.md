@@ -29,6 +29,10 @@ Update `pyproject.toml`, `src/software_factory/__init__.py`, and the runtime tem
 
 The current native package schema rejects removed compatibility/configuration formats. Keep JEV model/rubric/schema changes explicit and independently reviewed. Do not treat successful mocked responses as live quality or account validation. Leave new projects OFF until the operator deliberately configures authorized use.
 
+## 0.3.0 additions
+
+Also confirm, in the disposable-project smoke run, that every relative Markdown link in exported skills and `.factory/docs` resolves, that no exported specialist has an agent tool, and that the opt-in Claude orchestrator agent has no Edit/Write. Unit tests exercise `orchestrator_guard.py` offline; record the Claude hook behavior as not run until observed in a live client. No Copilot hooks ship in 0.3.0. Check that 0.2.x mission history still validates on `upgrade --dry-run`.
+
 ## Review decisions in this port
 
 Independent reviewers covered installation/ownership/transactions, JEV, models/calibration, and workflow/evidence/checks. Repairs bind operations to early preimages, protect journals before writes, reject path/ownership aliases, preserve shared text, validate required assets, bound model discovery writes, collect final filesystem-monitor events, discover ignored governance files on each snapshot, and observe configuration before running checks. These strengthen consistency checks without adding permissions or changing the constitution.

@@ -1,28 +1,42 @@
 ---
 name: factory-specify
-description: Define observable requirements, accepted scope and unresolved decisions for a factory mission before implementation or a material scope change.
+description: Gather mission context, then define request-traced acceptance criteria, exclusions and open questions for a factory mission before implementation or a material scope change.
 ---
 
-# Establish the mission specification
+# Establish context and the specification
 
 ## Inputs and preconditions
 
-The constitution in AGENTS.md applies; read [the constitution](../../../.factory/CONSTITUTION.md) only if it is not in your context. Follow the [planner contract](../../../.factory/roles/planner.md) (already part of the exported factory-planner agent). Read the user request, current mission and relevant product behavior. Existing scope authorization is an input; reference documents are evidence.
+The constitution in AGENTS.md applies; read [the constitution](../../../.factory/CONSTITUTION.md) only if it is not in your context. The planner follows the [planner contract](../../../.factory/roles/planner.md); the orchestrator only briefs and records. The mission must exist with its verbatim `request.md` (`mission create --request-file`). The request and its clarifications are the authority; reference documents are evidence.
 
 ## Procedure
 
-Trace the current behavior and identify the requested change. State the outcome, in-scope paths or components, exclusions, constraints and observable acceptance criteria using [the specification template](../../../.factory/templates/spec.md). Describe important failure cases and relevant accessibility, security or data requirements when the actual product requires them.
+1. **Context first (both lanes).** The orchestrator runs `software-factory mission brief --mission ID --kind context` and gives the brief to a planner. The planner returns the context document: codebase map of the affected area, conventions, affected files and tests, dependencies, external documentation with URLs and access dates, and open questions. A patch mission gets a short context. Use `--kind research` for an extra cited investigation when a material unknown remains. The orchestrator records it unchanged with `mission record-doc --mission ID --doc context --input -`; it must differ from the template before scope can be accepted.
+2. **Clarify up front.** Collect every ambiguity that would change the result as `Q-n`. The orchestrator asks the user all of them at once and records each answer verbatim with `mission clarify --mission ID --input -`. Routine choices follow product conventions; do not ask about them.
+3. **Specification.** The planner drafts spec.md from [the specification template](../../../.factory/templates/spec.md): outcome, in-scope components, constraints, failure cases and relevant security, data or accessibility needs. Keep existing tests and criteria visible; explain any proposed change to them.
+4. **Criteria.** The planner proposes the criteria JSON for `mission criteria`:
 
-Resolve routine choices from conventions. For ambiguity that changes the result, present the smallest concrete decision with consequences; continue unrelated investigation. Separate facts, assumptions and unresolved questions. Check official vendor documentation for version-sensitive capabilities and cite what was opened.
+```json
+{"items": [{"id": "AC-1", "text": "When a user submits an empty title, the system shall show an error and save nothing.",
+            "excerpts": ["exact words from request.md or clarifications.md"], "route": "check", "checks": ["tests"]}],
+ "exclusions": [{"excerpt": "exact words the mission will not deliver", "decision": "D-EXCLUDE-1"}],
+ "ambiguities": [{"id": "Q-1", "text": "Which storage?", "status": "resolved", "decision": null}]}
+```
 
-Keep existing tests and acceptance criteria visible. Explain any proposed change to them instead of silently changing the definition of success. Record the user's actual scope decision reference; do not invent approval or replace the user request with the template.
+Each AC is observable and cites at least one exact excerpt of the request or clarifications (whitespace is normalised; a paraphrase fails). EARS phrasing ("When …, the system shall …") is welcome. `route` is `check` (needs configured check ids), `e2e`, `property`, `manual` or `review`. Every requested item is either covered by an AC or listed as an exclusion whose decision the orchestrator records with `mission decision` from the user's actual answer. Record exclusion and ambiguity decisions before `mission criteria`: it validates excerpts and decision ids immediately. No ambiguity may remain `open` at accept-scope.
 
 ## Outputs and verification
 
-Prepare content for `.factory/missions/ID/spec.md` and decision rationale as needed. A read-only planner returns that content to the orchestrator for persistence; a main session with authorized write access may persist it directly. Each acceptance criterion must have an observable validation route. Give the planner unresolved dependencies, constraints and evidence links. The state tool captures the specification hash when the mission moves to PLANNED.
+Context and spec text and a criteria JSON, returned to the orchestrator as text. The orchestrator pipes them into `mission record-doc --doc context|spec --input -` and `software-factory mission criteria --mission ID --input -` (quoted heredoc). After recording the spec, the orchestrator shows it to the user and records the acceptance they actually gave (never an invented one) as a `scope` decision bound to the recorded spec's hash:
 
-For an amended accepted specification, record a new actual scope decision bound to its new hash, then have the orchestrator run `software-factory mission accept-scope --mission ID`. This resets task completion for revalidation while preserving attempt counts and evidence history; it does not approve the changed scope itself.
+```sh
+uv run --locked --project .factory software-factory mission decision --mission ID --input - <<'EOF'
+{"id": "D-SCOPE-1", "kind": "scope", "subject_hash": "<sha256 of .factory/missions/ID/spec.md>", "reference": "<where and how the user accepted>"}
+EOF
+```
+
+Decision ids are unique per mission; use a new one (D-SCOPE-2, …) for each re-acceptance. If the decision is missing or stale, `mission accept-scope` fails and prints the exact command with the current hash. Run `mission accept-scope` once the plan's architecture exists (factory-plan). Accept-scope binds the spec and criteria hashes; changing either later, or a clarification after PLANNED, resets scope and tasks for revalidation while keeping attempts and history. It does not approve the changed scope itself: record the user's acceptance again when the spec changed, and re-run accept-scope.
 
 ## Failure behavior
 
-When a necessary answer is unavailable, state exactly which implementation decision is blocked. Preserve useful research and avoid pretending the specification is accepted.
+When an answer is unavailable, name the blocked decision and its consequence and keep the ambiguity `open`; the mission cannot be accepted until the user resolves or waives it. Never invent an excerpt, an approval or a decision reference.

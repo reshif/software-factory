@@ -3,6 +3,7 @@ import subprocess
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from software_factory.core import FactoryError
 from software_factory.installation import ignore_plan, install, uninstall
@@ -925,3 +926,270 @@ def test_compatible_codex_key_reinstalls(tmp_path, changed):
     assert agents["enabled"] is True
     assert agents["max_concurrent_threads_per_session"] == (5 if changed else 3)
     render(tmp_path, check=True)
+
+
+ORCHESTRATOR = ".claude/agents/factory-orchestrator.md"
+ALL_PROFILES = [
+    "claude",
+    "codex",
+    "copilot",
+    "claude,codex",
+    "claude,copilot",
+    "codex,copilot",
+    "claude,codex,copilot",
+]
+
+
+def set_enforcement(root, **flags):
+    config = json.loads((root / "factory.json").read_text())
+    config["enforcement"] = {"claude_orchestrator_agent": False, **flags}
+    (root / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
+
+
+def frontmatter(path):
+    import yaml
+
+    return yaml.safe_load(path.read_text().split("---\n")[1])
+
+
+@pytest.mark.parametrize("profile", ALL_PROFILES)
+@pytest.mark.parametrize("enforced", [False, True])
+def test_specialists_cannot_dispatch_and_orchestrators_cannot_edit(tmp_path, profile, enforced):
+    install(tmp_path, selected=profile, skip_sync=True)
+    if enforced:
+        set_enforcement(tmp_path, claude_orchestrator_agent=True)
+        render(tmp_path)
+    assert render(tmp_path, check=True)["ok"]
+    selected = profile.split(",")
+    for path in (tmp_path / ".claude/agents").glob("*.md"):
+        tools = [t.strip() for t in frontmatter(path)["tools"].split(", ")]
+        if path.name == "factory-orchestrator.md":
+            assert not {"Edit", "Write", "MultiEdit", "NotebookEdit"} & set(tools)
+            continue
+        assert not any(t.startswith(("Agent", "Task")) for t in tools), path
+    for path in (tmp_path / ".github/agents").glob("*.agent.md"):
+        header = frontmatter(path)
+        if path.name == "factory.agent.md":
+            assert "edit" not in header["tools"] and "agent" in header["tools"]
+            continue
+        assert "agent" not in header["tools"] and header["agents"] == [], path
+    for path in (tmp_path / ".codex/agents").glob("*.toml"):
+        assert "agent" not in path.read_text().split("developer_instructions")[0].lower().replace("name", "")
+    assert (tmp_path / ORCHESTRATOR).is_file() == (enforced and "claude" in selected)
+    assert not (tmp_path / ".github/hooks").exists()
+    assert (tmp_path / ".factory/hooks/orchestrator_guard.py").is_file()
+
+
+def test_orchestrator_agent_export(tmp_path):
+    install(tmp_path, selected="claude", skip_sync=True)
+    assert not (tmp_path / ORCHESTRATOR).exists()
+    assert json.loads((tmp_path / "factory.json").read_text())["model_selection"] == {"mode": "inherit"}
+    set_enforcement(tmp_path, claude_orchestrator_agent=True)
+    assert ORCHESTRATOR in render(tmp_path)["changed"]
+    header = frontmatter(tmp_path / ORCHESTRATOR)
+    assert header["name"] == "factory-orchestrator"
+    assert header["tools"] == (
+        "Agent(factory-planner, factory-implementer, factory-verifier, factory-reviewer), Read, Glob, Grep, Bash"
+    )
+    [entry] = header["hooks"]["PreToolUse"]
+    assert entry["matcher"] == "*"
+    [hook] = entry["hooks"]
+    assert hook["type"] == "command"
+    assert '"${CLAUDE_PROJECT_DIR}/.factory/.venv/bin/python"' in hook["command"]
+    assert "-I -B" in hook["command"] and "--mode" not in hook["command"]
+    assert hook["command"].endswith("|| exit 2")
+    text = (tmp_path / ORCHESTRATOR).read_text()
+    # No YAML line folding: the tools list and the hook command are each one physical line.
+    lines = text.split("---\n")[1].splitlines()
+    assert f"tools: {header['tools']}" in lines
+    [command_line] = [line for line in lines if line.lstrip().startswith("command:")]
+    assert yaml.safe_load(command_line.strip())["command"] == hook["command"]
+    assert "Skill" not in header["tools"]
+    role = (tmp_path / ".factory/roles/orchestrator.md").read_text().strip()
+    assert role in text and "claude --agent factory-orchestrator" in text
+    assert "claude --agent factory-orchestrator" in (tmp_path / "CLAUDE.md").read_text()
+    assert "PreToolUse guard via" in (tmp_path / "AGENTS.md").read_text()
+    lock_data = lock(tmp_path)
+    assert lock_data["generated"][ORCHESTRATOR]["kind"] == "file"
+    assert ".factory/hooks/orchestrator_guard.py" in lock_data["sources"]
+    assert render(tmp_path, check=True)["ok"]
+
+
+def test_exported_agent_frontmatter_is_not_folded(tmp_path):
+    install(tmp_path, selected="claude,copilot", skip_sync=True)
+    set_enforcement(tmp_path, claude_orchestrator_agent=True)
+    render(tmp_path)
+    paths = [*(tmp_path / ".claude/agents").glob("*.md"), *(tmp_path / ".github/agents").glob("*.agent.md")]
+    assert len(paths) >= 9
+    for path in paths:
+        header = frontmatter(path)
+        lines = path.read_text().split("---\n")[1].splitlines()
+        for key in ("name", "description", "tools"):
+            value = header[key]
+            if isinstance(value, str):
+                [line] = [line for line in lines if line.startswith(f"{key}:")]
+                assert yaml.safe_load(line)[key] == value, (path, key)
+
+
+@pytest.mark.parametrize("name", ['we"ird $HOME `id` $(id) dir', "quote'd $1 dir"])
+def test_orchestrator_hook_command_is_safe_for_unusual_project_paths(tmp_path, name):
+    """$CLAUDE_PROJECT_DIR is expanded once inside double quotes; its value is never re-parsed."""
+    import os
+    import sys
+
+    project = tmp_path / name
+    project.mkdir()
+    install(project, selected="claude", skip_sync=True)
+    set_enforcement(project, claude_orchestrator_agent=True)
+    render(project)
+    command = frontmatter(project / ORCHESTRATOR)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    stubs = tmp_path / "stub-bin"
+    stubs.mkdir()
+    (stubs / "python3").symlink_to(sys.executable)
+    # If the path were re-expanded, $HOME/$1/$(id) would change it and the guard would not be found.
+    env = {
+        "PATH": f"{stubs}{os.pathsep}/usr/bin{os.pathsep}/bin",
+        "CLAUDE_PROJECT_DIR": str(project),
+        "HOME": "/x",
+    }
+
+    def call(tool, tool_input):
+        payload = {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": tool_input}
+        return subprocess.run(
+            ["sh", "-c", command],
+            cwd=tmp_path,
+            env=env,
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+    denied = call("Write", {"file_path": "src/a.py", "content": ""})
+    assert denied.returncode == 2
+    assert json.loads(denied.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    allowed = call("Bash", {"command": "software-factory status"})
+    assert (allowed.returncode, allowed.stdout, allowed.stderr) == (0, "", "")
+    # The guard really ran from the unusual path: without it the same call fails closed.
+    (project / ".factory/hooks/orchestrator_guard.py").rename(tmp_path / "guard.saved")
+    missing = call("Bash", {"command": "software-factory status"})
+    assert missing.returncode == 2 and name in missing.stderr
+
+
+def test_orchestrator_hook_command_runs_guard(tmp_path):
+    import os
+    import sys
+
+    install(tmp_path, selected="claude", skip_sync=True)
+    set_enforcement(tmp_path, claude_orchestrator_agent=True)
+    render(tmp_path)
+    command = frontmatter(tmp_path / ORCHESTRATOR)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    stubs = tmp_path.parent / "stub-bin"
+    stubs.mkdir()
+    (stubs / "python3").symlink_to(sys.executable)
+    env = {"PATH": f"{stubs}{os.pathsep}/usr/bin{os.pathsep}/bin", "CLAUDE_PROJECT_DIR": str(tmp_path)}
+
+    def call(tool, tool_input):
+        payload = {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": tool_input}
+        return subprocess.run(
+            ["sh", "-c", command],
+            cwd=tmp_path,
+            env=env,
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+    denied = call("Write", {"file_path": "src/a.py", "content": ""})
+    assert denied.returncode == 2
+    assert json.loads(denied.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert call("Bash", {"command": "software-factory status"}).returncode == 0
+    # A missing guard fails closed.
+    (tmp_path / ".factory/hooks/orchestrator_guard.py").rename(tmp_path / "guard.saved")
+    assert call("Read", {"file_path": "a"}).returncode == 2
+
+
+def test_enforcement_toggle_removes_and_relinquishes_exports(tmp_path):
+    install(tmp_path, selected="claude,copilot", skip_sync=True)
+    before = files(tmp_path)
+    set_enforcement(tmp_path, claude_orchestrator_agent=True)
+    render(tmp_path)
+    assert ORCHESTRATOR in lock(tmp_path)["generated"]
+    set_enforcement(tmp_path)
+    changed = render(tmp_path)["changed"]
+    assert ORCHESTRATOR in changed
+    assert not (tmp_path / ORCHESTRATOR).exists()
+    assert ORCHESTRATOR not in lock(tmp_path)["generated"]
+    after = files(tmp_path)
+    after.pop("factory.json"), before.pop("factory.json")
+    assert after == before
+    # An edited export blocks the toggle until restored or deleted.
+    set_enforcement(tmp_path, claude_orchestrator_agent=True)
+    render(tmp_path)
+    (tmp_path / ORCHESTRATOR).write_text((tmp_path / ORCHESTRATOR).read_text() + "local edit\n")
+    set_enforcement(tmp_path)
+    with pytest.raises(FactoryError, match="drift"):
+        render(tmp_path)
+    # A deleted export is relinquished by upgrade and recreated by an explicit render.
+    set_enforcement(tmp_path, claude_orchestrator_agent=True)
+    (tmp_path / ORCHESTRATOR).unlink()
+    install(tmp_path, upgrade=True, skip_sync=True)
+    assert lock(tmp_path)["relinquished"] == [ORCHESTRATOR]
+    render(tmp_path)
+    assert (tmp_path / ORCHESTRATOR).is_file() and "relinquished" not in lock(tmp_path)
+    # Uninstall removes unchanged enforcement exports.
+    uninstall(tmp_path)
+    assert not (tmp_path / ORCHESTRATOR).exists()
+
+
+def test_user_owned_orchestrator_agent_collides(tmp_path):
+    install(tmp_path, selected="claude", skip_sync=True)
+    (tmp_path / ORCHESTRATOR).write_text("user-owned agent\n")
+    set_enforcement(tmp_path, claude_orchestrator_agent=True)
+    with pytest.raises(FactoryError, match="Unowned file collision"):
+        render(tmp_path)
+    assert (tmp_path / ORCHESTRATOR).read_text() == "user-owned agent\n"
+
+
+def test_doctor_reports_enforcement_read_only(tmp_path):
+    from software_factory.cli import doctor
+
+    install(tmp_path, selected="claude,codex,copilot", skip_sync=True)
+    set_enforcement(tmp_path, claude_orchestrator_agent=True)
+    render(tmp_path)
+    before = files(tmp_path)
+    report = doctor(tmp_path)
+    assert files(tmp_path) == before
+    assert report["enforcement"]["claude"]["layer"] == "hook" and report["enforcement"]["claude"]["enabled"]
+    assert report["enforcement"]["claude"]["capabilities"]["blocking_hooks"] == "fail_closed"
+    assert report["enforcement"]["codex"]["layer"] == "instructions"
+    assert report["enforcement"]["codex"]["opt_in"] is None
+    assert report["enforcement"]["copilot"]["layer"] == "tool_allowlist"
+    assert report["enforcement"]["copilot"]["capabilities"]["blocking_hooks"] == "none"
+    assert "enforcement_inactive" not in {i["code"] for i in report["issues"]}
+    # Without the claude profile the flag has no effect and doctor says so.
+    config = json.loads((tmp_path / "factory.json").read_text())
+    config["profile"] = ["codex", "copilot"]
+    (tmp_path / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
+    codes = {i["code"]: i for i in doctor(tmp_path)["issues"]}
+    assert "claude_orchestrator_agent" in codes["enforcement_inactive"]["message"]
+    assert codes["enforcement_inactive"]["severity"] == "warning"
+
+
+def test_legacy_factory_config_remains_valid(tmp_path):
+    from software_factory.core import validate
+
+    install(tmp_path, selected="claude", skip_sync=True)
+    config = json.loads((tmp_path / "factory.json").read_text())
+    legacy = {k: v for k, v in config.items() if k != "enforcement"}
+    legacy["model_selection"] = {"mode": "recommend"}
+    legacy["limits"] = {k: v for k, v in config["limits"].items() if k != "high_risk_lines"}
+    validate(tmp_path, "factory", legacy)
+    for bad in ({"high_risk_lines": 49}, {"high_risk_lines": "400"}):
+        with pytest.raises(FactoryError, match="Invalid factory"):
+            validate(tmp_path, "factory", {**config, "limits": {**config["limits"], **bad}})
+    with pytest.raises(FactoryError, match="Invalid factory"):
+        validate(tmp_path, "factory", {**config, "enforcement": {"copilot_hooks": True}})

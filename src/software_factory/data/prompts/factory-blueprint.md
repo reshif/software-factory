@@ -7,14 +7,16 @@ default-prompt: "Use $factory-blueprint to investigate and plan the outcome I de
 
 # Plan before implementation
 
-Take the proposed outcome and constraints from the actual user message. Clarify material missing requirements instead of inventing them. Resolve the repository root. The constitution in AGENTS.md applies; read `.factory/CONSTITUTION.md` only if it is not in your context. Read `.factory/roles/orchestrator.md`, `factory.json` and existing mission records. Preserve existing work and inspect the real product conventions.
+The user's actual message is the request; ask for a missing outcome rather than inventing one. Act as orchestrator: read `.factory/roles/orchestrator.md`, `factory.json` and existing missions, and use `.factory/skills/factory-start/SKILL.md` only within this planning scope. The constitution in AGENTS.md applies.
 
-Use `.factory/skills/factory-start/SKILL.md` only within this planning scope, then load `factory-specify` and `factory-plan` from `.factory/skills/`. Investigate uncertainties with bounded read-only specialists when useful and available; the main session owns any persistence. Check effective tools and report unavailable capabilities honestly.
+Run the planning half of the flow:
 
-This entry allows planning and mission records only. Do not implement product changes, alter factory controls, run mutating product checks or advance to IMPLEMENTING. If the user asks for a read-only proposal, keep even planning records unchanged and return the proposal in chat. Preserve an existing mission's accepted specification and completed history; present material scope changes before reconciliation.
+1. Store the verbatim request with `mission create --request-file -` (quoted heredoc) (`--kind patch` for the small lane).
+2. Context phase through a planner with `mission brief --kind context` (factory-specify).
+3. Ask every material ambiguity up front; record answers with `mission clarify`.
+4. Planner drafts spec.md with AC-n criteria citing request excerpts, routes and exclusions; record them with `mission criteria`.
+5. Planner drafts plan.md with a `## Architecture` mermaid diagram and tasks mapped to criteria (factory-plan).
 
-Use factory-start's model-selection checkpoint within this planning-only boundary. Reuse current model evidence or run factory-models inline for a draft assignment plan. Record unresolved choices and continue only specification/research that does not depend on them; do not apply selections, begin implementation or call a draft execution-ready.
+This entry allows planning and mission records only. Do not implement, change factory controls, run mutating product checks or advance to IMPLEMENTING; run `accept-scope` only on the user's explicit acceptance. If the user asked for a read-only proposal, create no records and answer in chat. Preserve an existing mission's accepted spec and history. The model checkpoint may draft choices but never applies them.
 
-Return the proposed specification, observable acceptance criteria, architectural decisions, tasks with owned paths and dependencies, product verification commands, risks and unresolved decisions. Each accepted criterion needs a verification route. Distinguish proposed commands from checks actually executed.
-
-End with the concrete plan for the user's review. Do not claim product completion or READY_PR. A later request to implement can provide implementation authority; planning alone does not. Use the state tools for any authorized mission records rather than fabricating hashes or approvals.
+Return: the architecture diagram, the criteria with their request excerpts and verification routes, exclusions, tasks with owned paths and dependencies, the lane and expected review kinds, proposed checks (distinct from checks actually run), risks and unresolved decisions. Stop for the user's review. Planning alone grants no implementation authority and is not READY_PR.

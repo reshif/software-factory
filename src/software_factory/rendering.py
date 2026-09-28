@@ -16,6 +16,57 @@ from .transactions import apply, ensure_no_journal, optional, planned_preimages,
 START = "<!-- software-factory:start -->"
 END = "<!-- software-factory:end -->"
 SHARED = {"AGENTS.md", "CLAUDE.md", ".github/copilot-instructions.md"}
+ORCHESTRATOR_AGENT = ".claude/agents/factory-orchestrator.md"
+GUARD = ".factory/hooks/orchestrator_guard.py"
+SPECIALISTS = ("factory-planner", "factory-implementer", "factory-verifier", "factory-reviewer")
+ENFORCEMENT_FLAGS = {"claude": "claude_orchestrator_agent"}
+
+
+def guard_command(project: str) -> str:
+    """POSIX shell command running the stdlib guard; any launch failure exits 2 (deny).
+
+    `project` is `${CLAUDE_PROJECT_DIR}`, expanded by the shell inside double quotes: the
+    expanded value is not re-expanded, word-split or globbed, so a project path containing
+    `$`, `"`, backticks or spaces stays one literal path.
+
+    Prefers the pinned runtime interpreter and falls back to python3 (3.11+) when the
+    runtime is not hydrated. Claude Code treats exit 2 from a PreToolUse hook as a deny.
+    """
+    return (
+        f'P="{project}/.factory/.venv/bin/python"; [ -x "$P" ] || P=python3; '
+        f'"$P" -I -B "{project}/{GUARD}" || exit 2'
+    )
+
+
+def enforcement_settings(config: dict) -> dict[str, bool]:
+    settings = config.get("enforcement") or {}
+    return {flag: settings.get(flag) is True for flag in ENFORCEMENT_FLAGS.values()}
+
+
+def enforcement_summary(root: Path, config: dict) -> dict:
+    """Per-profile orchestrator enforcement layer from vendor capabilities; reads only."""
+    settings = enforcement_settings(config)
+    summary = {}
+    for profile in profiles(config):
+        vendor = json.loads(asset_path(root, f"vendors/{profile}.json").read_text())
+        capabilities = vendor.get("capabilities", {})
+        flag = ENFORCEMENT_FLAGS.get(profile)
+        enabled = bool(flag and settings[flag] and capabilities.get("orchestrator_enforcement") == "hook")
+        layer = capabilities.get("orchestrator_enforcement", "instructions")
+        summary[profile] = {
+            "layer": layer if enabled or layer != "hook" else "instructions",
+            "opt_in": f"enforcement.{flag}" if flag else None,
+            "enabled": enabled,
+            "capabilities": capabilities,
+            "scope": {
+                "claude": "claude --agent factory-orchestrator in a trusted workspace (not -p sessions)",
+                "copilot": "factory agent without the edit tool set; shell writes are instruction-only; "
+                "no hooks (preToolUse has no agent identity)",
+                "codex": "instructions only",
+            }[profile],
+            "live_behavior": "not_run",
+        }
+    return summary
 
 
 def metadata(text: str) -> tuple[dict, str]:
@@ -36,8 +87,13 @@ def metadata(text: str) -> tuple[dict, str]:
 
 
 def markdown(header: dict, body: str) -> bytes:
+    # No line folding: clients that read frontmatter line by line (tools, hook commands) see one line.
     return (
-        "---\n" + yaml.safe_dump(header, sort_keys=False).strip() + "\n---\n\n" + body.strip() + "\n"
+        "---\n"
+        + yaml.safe_dump(header, sort_keys=False, width=float("inf")).strip()
+        + "\n---\n\n"
+        + body.strip()
+        + "\n"
     ).encode()
 
 
@@ -229,6 +285,10 @@ def plan_render(
         name: source(f"roles/{name}.md").decode()
         for name in ("orchestrator", *(r["name"] for r in registry["roles"]))
     }
+    enforcement = enforcement_settings(config)
+    orchestrator_agent = "claude" in selected_profiles and enforcement["claude_orchestrator_agent"]
+    if orchestrator_agent:
+        source(GUARD.removeprefix(".factory/"))  # Must exist; its hash pins the rendered hook.
     outputs = {}
     prefix = {"claude": "/", "codex": "$", "copilot": "/"}
     commands = [
@@ -244,6 +304,14 @@ def plan_render(
         "/".join(clients) + ": " + ", ".join(mark + name for name in registry["entries"])
         for mark, clients in groups.items()
     )
+    layers = {
+        "claude": "PreToolUse guard via `claude --agent factory-orchestrator`"
+        if orchestrator_agent
+        else "instructions (opt-in: enforcement.claude_orchestrator_agent)",
+        "codex": "instructions only",
+        "copilot": "factory agent without edit tools; shell writes are instruction-only",
+    }
+    enforcement_text = "; ".join(f"{labels[p]}: {layers[p]}" for p in selected_profiles)
     common = (
         constitution.strip()
         + "\n\n## Factory session entry\n\nRead factory.json and .factory/roles/orchestrator.md for factory tasks. Use the canonical .factory/skills workflows and delegate bounded tasks to the installed factory specialists. One writer per workspace. Existing product instructions and host permissions remain in force.\n\nPython command: `uv run --locked --project .factory software-factory doctor`.\nEntry prompts: "
@@ -251,6 +319,9 @@ def plan_render(
         + ". Planning is draft-only; status is read-only. Model selection uses `software-factory models plan`;"
         + " `jev.enabled` in factory.json selects JEV instead of the built-in factory-models selector and"
         + " also enables optional JEV claim assessment (consult `software-factory semantic status` before use).\n"
+        + "Orchestrator enforcement (local guardrail, unattested): "
+        + enforcement_text
+        + ".\n"
     )
     if len(common.encode()) > 30000:
         raise FactoryError("Factory instructions exceed supported size")
@@ -258,6 +329,11 @@ def plan_render(
     if "claude" in selected_profiles:
         outputs["CLAUDE.md"] = (
             b"@AGENTS.md\n\nUse /factory-build, /factory-blueprint, /factory-resume or /factory-status. The constitution in AGENTS.md applies; read .factory/CONSTITUTION.md only if it is not in your context. Follow the assigned canonical skill.\n"
+            + (
+                b"For hook-enforced orchestration start `claude --agent factory-orchestrator`.\n"
+                if orchestrator_agent
+                else b""
+            )
         )
     if "copilot" in selected_profiles:
         outputs[".github/copilot-instructions.md"] = (
@@ -318,10 +394,43 @@ def plan_render(
             {
                 "name": "factory",
                 "description": "Coordinate factory missions, bounded specialists and evidence.",
-                "tools": ["read", "search", "web", "edit", "execute", "agent"],
+                "tools": ["read", "search", "web", "execute", "agent"],
                 "agents": [copilot_prefix + r["name"] for r in registry["roles"]],
             },
             roles["orchestrator"],
+        )
+    if orchestrator_agent:
+        outputs[ORCHESTRATOR_AGENT] = markdown(
+            {
+                "name": "factory-orchestrator",
+                "description": "Coordinate factory missions: brief, delegate to factory specialists, record "
+                "state, verify and decide. Never edits files.",
+                "tools": f"Agent({', '.join(SPECIALISTS)}), Read, Glob, Grep, Bash",
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "*",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": guard_command("${CLAUDE_PROJECT_DIR}"),
+                                }
+                            ],
+                        }
+                    ]
+                },
+            },
+            f"The constitution in AGENTS.md applies; read .factory/CONSTITUTION.md (SHA-256 {sha256(constitution)}) only if it is not in your context.\n\n"
+            "## Enforced session\n\n"
+            "Start this agent as the main session with `claude --agent factory-orchestrator` in a trusted "
+            "workspace. The `Agent(...)` allowlist applies only there; frontmatter hooks are skipped until the "
+            "workspace trust dialog is accepted and in `-p` sessions. A PreToolUse guard "
+            f"(`{GUARD}`) denies Edit, Write, MultiEdit, NotebookEdit, Skill, unknown tools, Agent calls "
+            f"for any subagent other than {', '.join(SPECIALISTS)}, and shell commands outside its "
+            "read-only allowlist (project-scoped software-factory commands without init, upgrade, uninstall, "
+            "recover, render, auth or --root; read-only git; ls/cat/head/tail/wc/grep/rg/find). When a call is denied, delegate the work named in the reason; never try to bypass the "
+            "guard. It is a local guardrail: records remain local-unattested and live behaviour is not_run.\n\n"
+            + roles["orchestrator"],
         )
     trees = [
         f".{ {'claude': 'claude', 'codex': 'agents', 'copilot': 'github'}[p] }/skills"

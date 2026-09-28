@@ -7,6 +7,8 @@ description: Discover models available in the current Claude Code, Codex or Copi
 
 ## Inputs and preconditions
 
+factory-start skips this skill when `model_selection.mode` is `inherit` and `jev.enabled` is false; it then records a one-line inherited checkpoint.
+
 Read `.factory/CONSTITUTION.md`, `factory.json`, and the objective or current task. Identify the actual client and harness, billing/provider context, exposed delegation tools and existing user constraints. A Claude model in Copilot still uses Copilot controls. The current main model performs this bootstrap; instructions cannot change their own executing model retroactively.
 
 Use the model runbook, `.factory/docs/runbooks/model-selection.md`, and `.factory/docs/jev-routing.md` for commands, inventory fields, selection controls and result examples. `uv run --locked --project .factory software-factory models --help` lists the model tools. Inspect `jev.enabled` before planning. When enabled, `models plan` asks JEV to choose among eligible candidates; when disabled, it uses the factory-models selector. Discovery, validation, calibration and dispatch remain local metadata operations. Planning and status boundaries from the selected entry remain in force.

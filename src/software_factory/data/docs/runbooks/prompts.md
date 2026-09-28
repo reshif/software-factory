@@ -6,7 +6,7 @@ Choose a starter: [Claude Code](#claude-code), [native Codex](#native-codex), or
 
 ## Prepare the workspace
 
-Open the Git repository containing both the factory and the product you want to change. Follow [setup](factory-setup.md) for Python 3.11+ and uv, dependencies, an authenticated client and the initial Git baseline. Checks in `factory.json` must cover your actual product; the default `factory-tests` checks the factory itself.
+Open the Git repository containing both the factory and the product you want to change. Follow [setup](factory-setup.md) for Python 3.11+ and uv, dependencies, an authenticated client and the initial Git baseline. Checks in `factory.json` must cover your actual product. No default product check exists: a new installation starts with a deliberately failing `configure-me` placeholder; replace it with real checks, then run `software-factory render`.
 
 Run the profile command for the client or clients you use from that repository root (several names can be combined, for example `--profile claude,codex,copilot`):
 
@@ -41,7 +41,9 @@ The renderer writes four entry skills alongside the registered workflow skills. 
 | Inspect without changes | `/factory-status` | `$factory-status` | Actual mission ID |
 | Recommend models only | `/factory-models` | `$factory-models` | Objective, task needs and selection constraints |
 
-`factory-build` and direct `factory-start` complete the [model-selection checkpoint](model-selection.md#startup-checkpoint) before dependent work. They inspect whether `factory-models` produced a completed, current result, reuse it when valid, and run the skill inline when missing or stale. You do not have to launch it separately first. Resume revalidates the checkpoint; blueprint keeps planning-only boundaries; status never refreshes model selection. A documented permitted inheritance decision can settle advisory work, while unresolved hard requirements hold the affected work.
+`factory-build` and direct `factory-start` record the model checkpoint first. With the default `model_selection.mode: "inherit"` and JEV off, that is one inherited line. Only when JEV is enabled or the mode is `recommend`/`required` do they run the [model-selection checkpoint](model-selection.md#startup-checkpoint) through factory-models or JEV. Resume revalidates it; blueprint keeps planning-only boundaries; status never refreshes it.
+
+Every build follows one flow. The verbatim request is stored with `mission create --request-file`, then a context phase and all clarifying questions come before the spec. Criteria (AC-n, each quoting your words) and a plan with a `## Architecture` mermaid diagram follow. Implementation works from generated briefs; the orchestrator runs verification and requests reviews by kind. `--kind patch` missions use the small lane: shorter context and a single code review at low risk.
 
 For example, after rendering Codex, send:
 
@@ -77,10 +79,11 @@ Reconcile existing work; do not overwrite it or create a duplicate mission.
 Run diagnostics and check actual skill, agent and tool availability,
 including effective permissions.
 
-Specify, plan, implement and verify this outcome. Use bounded subagents
-where useful and a separate final reviewer; keep one writer per workspace
-and inspect their actual results. Report unavailable capabilities honestly.
-Map acceptance criteria to real product checks and report validation gaps.
+Store this request verbatim, gather context, ask me every open question
+at once, then record criteria and a plan with an architecture diagram.
+Delegate all production to specialists from generated briefs, keep one
+writer per workspace, run verification yourself and obtain the review
+kinds the lane and risk require. Report unavailable capabilities honestly.
 Do not weaken criteria or tests to obtain a pass.
 
 Continue within this scope without repeated confirmation. Ask only for
@@ -111,10 +114,11 @@ Reconcile existing work; do not overwrite it or create a duplicate mission.
 Run diagnostics and check actual skill, agent and tool availability,
 including effective permissions.
 
-Specify, plan, implement and verify this outcome. Use bounded subagents
-where useful and a separate final reviewer; keep one writer per workspace
-and inspect their actual results. Report unavailable capabilities honestly.
-Map acceptance criteria to real product checks and report validation gaps.
+Store this request verbatim, gather context, ask me every open question
+at once, then record criteria and a plan with an architecture diagram.
+Delegate all production to specialists from generated briefs, keep one
+writer per workspace, run verification yourself and obtain the review
+kinds the lane and risk require. Report unavailable capabilities honestly.
 Do not weaken criteria or tests to obtain a pass.
 
 Continue within this scope without repeated confirmation. Ask only for
@@ -145,10 +149,11 @@ Reconcile existing work; do not overwrite it or create a duplicate mission.
 Run diagnostics and check actual skill, agent and tool availability,
 including effective permissions.
 
-Specify, plan, implement and verify this outcome. Use bounded subagents
-where useful and a separate final reviewer; keep one writer per workspace
-and inspect their actual results. Report unavailable capabilities honestly.
-Map acceptance criteria to real product checks and report validation gaps.
+Store this request verbatim, gather context, ask me every open question
+at once, then record criteria and a plan with an architecture diagram.
+Delegate all production to specialists from generated briefs, keep one
+writer per workspace, run verification yourself and obtain the review
+kinds the lane and risk require. Report unavailable capabilities honestly.
 Do not weaken criteria or tests to obtain a pass.
 
 Continue within this scope without repeated confirmation. Ask only for
@@ -186,9 +191,9 @@ Direct invocation: `/factory-blueprint <outcome>` in Claude/Copilot, or `$factor
 ```text
 Use factory-start to prepare a plan for [outcome] in this repository.
 Follow the constitution and inspect the existing code and mission state.
-Use factory-specify and factory-plan. Investigate material uncertainties
-and use a read-only specialist if useful.
-Return the proposed acceptance criteria, architecture, owned paths,
+Store this request verbatim, run the context phase and ask me every open
+question at once. Use factory-specify and factory-plan.
+Return the architecture diagram, criteria quoting my request, owned paths,
 dependencies, verification commands and unresolved decisions.
 Save only planning/mission documents. Do not implement product changes
 or change factory controls yet. End with the concrete plan for my review;
@@ -233,7 +238,7 @@ status from current readiness. Do not infer success from a status label.
 
 ## What a successful implementation run should show
 
-For a build or a resume that completes implementation, expect an actual mission ID, observable scope, bounded tasks, inspected changes, executed checks, a separate review for the final candidate, and a gate result plus handoff. Blueprint ends with a plan; status ends with an inspection report. Ask for the missing evidence if the response only says “done.” Native registration, tool permissions and successful delegation must be observed in the actual client; the prompt cannot grant those capabilities. If separate review is unavailable, record that limitation and obtain a real separate review before claiming READY_PR.
+For a build or a resume that completes implementation, expect an actual mission ID, a stored request, context, answered questions, criteria that quote your request, an architecture diagram, tasks mapped to criteria, executed checks, reviews of each required kind for the final candidate, and a gate result plus a PR packet whose table links each request excerpt to its evidence and verdict. Blueprint ends with a plan including the diagram; status ends with an inspection report. Ask for the missing evidence if the response only says “done.” Native registration, tool permissions and successful delegation must be observed in the actual client; the prompt cannot grant those capabilities. If separate review is unavailable, record that limitation and obtain a real separate review before claiming READY_PR.
 
 READY_PR is the local completion boundary. It does not establish a remote PR, CI success, merge or deployment. The factory operates during an active session; saving a prompt or handoff does not schedule background work. Runtime permissions, host/user instructions and the [constitution](../../CONSTITUTION.md) still govern execution.
 

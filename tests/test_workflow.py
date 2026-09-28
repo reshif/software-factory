@@ -799,15 +799,33 @@ def test_mission_input_is_root_relative(repo, tmp_path, monkeypatch):
 
     from software_factory.workflow import _mission_handler
 
-    write_json(repo, ".factory/local/mission.json", {"id": "M-INPUT", "title": "From input"})
+    # 0.3.0: new missions need a request, so the JSON input names a root-relative request file.
+    (repo / ".factory/local").mkdir(parents=True, exist_ok=True)
+    (repo / ".factory/local/request.md").write_text("Create the input mission.\n")
+    write_json(
+        repo,
+        ".factory/local/mission.json",
+        {"id": "M-INPUT", "title": "From input", "request_file": ".factory/local/request.md"},
+    )
     outside = tmp_path / "outside.json"
-    outside.write_text('{"id": "M-OUTSIDE", "title": "Outside"}')
+    outside.write_text('{"id": "M-OUTSIDE", "title": "Outside", "request_file": ".factory/local/request.md"}')
     args = SimpleNamespace(root=repo, mission_command="create", model_catalog=None, input=str(outside))
     with pytest.raises(FactoryError, match="Unsafe relative path"):
         _mission_handler(args)
     monkeypatch.chdir(tmp_path)
     args.input = ".factory/local/mission.json"
     assert _mission_handler(args)["id"] == "M-INPUT"
+
+
+def test_trailing_slash_owned_path_covers_the_directory():
+    from software_factory.evidence import matches_path
+
+    assert matches_path("tests/test_app.py", "tests/")
+    assert matches_path("tests/unit/deep/test_app.py", "tests/")
+    assert not matches_path("tests", "tests/") and not matches_path("other/tests/x.py", "tests/")
+    assert not matches_path("tests_extra/x.py", "tests/")
+    with pytest.raises(FactoryError, match="Unsafe path pattern"):
+        matches_path("x", "../tests/")
 
 
 def test_transition_has_no_trunk_option():

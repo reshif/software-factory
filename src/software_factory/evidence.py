@@ -33,6 +33,7 @@ EXCLUDED = (".factory/missions/", ".factory/local/", "factory.lock.json")
 _ID = r"[A-Za-z][A-Za-z0-9_-]{0,79}"
 MISSION_RECORD = re.compile(
     rf"\.factory/missions/{_ID}/(?:mission\.json|spec\.md|plan\.md|decisions\.md|handoff\.md|recovery\.md"
+    r"|request\.md|clarifications\.md|context\.md"
     r"|pull-request\.md|(?:handoff|release|recovery)-packet\.md|results/index\.json"
     rf"|results/records/{_ID}-[0-9a-f]{{32}}\.json|evidence/{_ID}/checks\.json|models/{_ID}\.json)"
 )
@@ -50,6 +51,7 @@ GOVERNED_DIRECTORIES = (
     ".factory/prompts",
     ".factory/models",
     ".factory/vendors",
+    ".factory/hooks",
     ".factory/templates",
     ".factory/docs",
     ".claude",
@@ -110,7 +112,11 @@ def matches_path(file, pattern):
         or "\x00" in pattern
     ):
         raise FactoryError(f"Unsafe path pattern: {pattern!r}")
+    if pattern.endswith("/"):
+        # A trailing-slash directory pattern ("tests/") covers everything below it.
+        pattern += "**"
     parts = re.split(r"(\*\*/|\*\*|\*)", pattern)
+
     expression = "".join({"**/": "(?:.*/)?", "**": ".*", "*": "[^/]*"}.get(p, re.escape(p)) for p in parts)
     return re.fullmatch(expression, file) is not None
 
@@ -319,6 +325,8 @@ def fingerprint(root, mission, record_root=None):
     plans = {}
     for task in mission["tasks"]:
         contract = {k: task[k] for k in ("id", "title", "depends_on", "owned_paths", "checks")}
+        if "criteria" in task:
+            contract["criteria"] = task["criteria"]
         if task.get("model_assignment"):
             from .models import resolve_assignment
 
@@ -327,6 +335,9 @@ def fingerprint(root, mission, record_root=None):
             path = task["model_assignment"]["plan_path"]
             plans[path] = hash_file(record_root, path)
         contracts.append(contract)
+    # Request-bearing missions bind their acceptance criteria like task contracts;
+    # legacy missions keep their 0.2.x fingerprint payload.
+    criteria = {"criteria_hash": digest(mission["criteria"])} if "criteria" in mission else {}
     candidate.update(
         {
             "fingerprint_format": "git-mode-v1",
@@ -343,8 +354,10 @@ def fingerprint(root, mission, record_root=None):
                     "spec_hash": spec_hash,
                     "model_plans": plans,
                     "runtime": runtime_fingerprint(),
+                    **criteria,
                 }
             ),
+            "criteria_hash": criteria.get("criteria_hash"),
             "changed_paths": sorted(
                 _content_changes(root, mission["base_commit"], visible) | set(hidden_changes)
             ),
@@ -603,3 +616,91 @@ class CandidateMonitor:
 
     def __exit__(self, *_):
         self.close()
+
+
+_DIFF_OPTIONS = (
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-color",
+    "--no-renames",
+    "--full-index",
+    "--binary",
+    "--diff-algorithm=myers",
+    "--indent-heuristic",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    "-U3",
+)
+
+
+def _scratch_git(root, index, *args, codes=(0,)):
+    """Run Git against a private temporary index; the repository index is never read or refreshed."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update({"GIT_OPTIONAL_LOCKS": "0", "GIT_INDEX_FILE": str(index)})
+    config = ("-c", "core.quotePath=true", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false")
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *config, *args], capture_output=True, check=False, timeout=60, env=env
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise FactoryError(f"Git diff inspection failed: {exc}") from exc
+    if result.returncode not in codes:
+        raise FactoryError("Git diff inspection failed: " + result.stderr.decode(errors="replace").strip())
+    return result.stdout
+
+
+def candidate_diff(root, base, paths):
+    """Content diff of candidate paths against base: a patch plus per-path line counts.
+
+    A fresh temporary index holding the base tree carries no stat cache, so Git
+    compares actual working-tree content. Paths absent from base (untracked or
+    newly added files) are rendered as additions. Metadata paths are excluded.
+    """
+    import tempfile
+
+    root = Path(root).resolve()
+    paths = sorted({p for p in paths if not is_metadata(p)})
+    in_base = {
+        os.fsdecode(p)
+        for p in _git_bytes(root, "ls-tree", "-r", "-z", "--name-only", "--full-tree", base).split(b"\0")
+        if p
+    }
+    tracked = [p for p in paths if p in in_base]
+    added = [p for p in paths if p not in in_base and safe_path(root, p).is_file()]
+    patch, stats = b"", {}
+    with tempfile.TemporaryDirectory(prefix="sf-diff-") as scratch:
+        index = Path(scratch) / "index"
+        if tracked:
+            _scratch_git(root, index, "read-tree", base)
+            specs = [f":(literal){p}" for p in tracked]
+            patch = _scratch_git(root, index, "diff", *_DIFF_OPTIONS, "--", *specs)
+            for row in _scratch_git(
+                root,
+                index,
+                "diff",
+                "--numstat",
+                "-z",
+                "--no-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--",
+                *specs,
+            ).split(b"\0"):
+                if row:
+                    plus, minus, name = row.decode(errors="replace").split("\t", 2)
+                    binary = plus == "-"
+                    stats[name] = (0 if binary else int(plus), 0 if binary else int(minus), binary)
+        for file in added:
+            patch += _scratch_git(
+                root, index, "diff", "--no-index", *_DIFF_OPTIONS, "--", "/dev/null", file, codes=(0, 1)
+            )
+            content = safe_path(root, file).read_bytes()
+            binary = b"\0" in content
+            lines = content.count(b"\n") + (1 if content and not content.endswith(b"\n") else 0)
+            stats[file] = (0 if binary else lines, 0, binary)
+    return {
+        "patch": patch,
+        "stats": stats,
+        "base": base,
+        "deleted": [p for p in tracked if not safe_path(root, p).exists()],
+    }

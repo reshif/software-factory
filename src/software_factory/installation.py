@@ -37,7 +37,12 @@ def starter(name: str, selected) -> dict:
         "profile": selected[0] if len(selected) == 1 else selected,
         "completion_target": "READY_PR",
         "work_types": ["feature", "patch", "maintenance"],
-        "limits": {"repair_attempts": 3, "parallel_writers": 1, "check_timeout_seconds": 300},
+        "limits": {
+            "repair_attempts": 3,
+            "parallel_writers": 1,
+            "check_timeout_seconds": 300,
+            "high_risk_lines": 400,
+        },
         "checks": [
             {
                 "id": "configure-me",
@@ -59,7 +64,8 @@ def starter(name: str, selected) -> dict:
             "recovery_command": None,
         },
         "evidence_exclude": [".factory/missions/", ".factory/local/", "factory.lock.json"],
-        "model_selection": {"mode": "recommend"},
+        "model_selection": {"mode": "inherit"},
+        "enforcement": {"claude_orchestrator_agent": False},
         "jev": {
             "enabled": False,
             "provider": "typesafe",
@@ -72,10 +78,20 @@ def starter(name: str, selected) -> dict:
 def kernel_payload() -> dict[str, bytes]:
     data = asset_root()
     files = {}
-    allowed_dirs = {"schemas", "roles", "skills", "prompts", "vendors", "models", "templates", "docs"}
+    allowed_dirs = {
+        "schemas",
+        "roles",
+        "skills",
+        "prompts",
+        "vendors",
+        "models",
+        "templates",
+        "docs",
+        "hooks",
+    }
     allowed_files = {"CONSTITUTION.md", "registry.json", "policy.json", "workflow.json"}
     for p in sorted(data.rglob("*")):
-        if not p.is_file():
+        if not p.is_file() or "__pycache__" in p.parts or p.suffix == ".pyc":
             continue
         rel = p.relative_to(data)
         if p.is_symlink():

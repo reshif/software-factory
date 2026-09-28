@@ -1,54 +1,44 @@
 # Repository software factory architecture
 
-The main session in the selected VS Code agent client coordinates a supervised mission. Canonical instructions define behavior; specialists provide focused work; local tools validate state and evidence; existing GitHub and delivery systems retain their own authority.
+The main session in the selected client is the orchestrator. It briefs specialists, inspects their output, records state through the CLI, runs verification and decides; it never produces code, tests, docs, research or drafts. Local tools validate state and evidence; existing GitHub and delivery systems retain their own authority.
 
 ```mermaid
 flowchart TD
-    USER["Developer request"] --> SESSION["VS Code session<br/>Claude Code OR native Codex OR Copilot"]
-    PROMPTS["Rendered entry skills<br/>build · blueprint · resume · status"] --> SESSION
-    SESSION --> ENTRY{"Entry scope?"}
-    CON["CONSTITUTION.md<br/>Shared behavior and boundaries"] --> ENTRY
-    ENTRY -->|Status| STATUS["Inspect mission and existing evidence<br/>Read-only report in chat"]
-    ENTRY -->|Blueprint| BLUEPRINT["Investigate and draft model checkpoint<br/>Plan within planning scope only"]
-    BLUEPRINT --> PLAN_ONLY["Return proposed spec and plan<br/>No implementation or applied selection"]
-    ENTRY -->|Build or resume| BOOT["Load product profile, mission<br/>and effective runtime capabilities"]
-    BOOT --> MODELS["JEV when enabled; factory-models when disabled<br/>Inventory + current vendor guidance<br/>Task fit + optional local calibration"]
-    MODELS --> CHOICE{"Selection settled for affected work?"}
-    CHOICE -->|"Selected or permitted inheritance"| ORCH["Main-session orchestrator<br/>Investigate, decide, delegate,<br/>inspect evidence and replan"]
-    CHOICE -->|"Missing hard requirement"| MODEL_BLOCK["Keep dependent assignment unresolved<br/>Continue independent authorized work"]
-    MODEL_BLOCK --> MODELS
-    RECORDS[("Mission files<br/>Scope · Tasks · Decisions<br/>Evidence · Handoff")] <--> ORCH
-    ORCH --> PLAN["Planner<br/>Specification, design and dependencies"]
-    PLAN --> SCOPE{"Within existing authorization?"}
-    SCOPE -->|Yes| TASKS["Validated task contracts"]
-    SCOPE -->|Decision needed| HUMAN["Human resolves concrete decision"]
-    HUMAN -->|Proceed| TASKS
-    HUMAN -->|Revise| PLAN
-    HUMAN -->|Decline| CANCEL["CANCELED with handoff"]
-    TASKS --> ORCH
-    ORCH --> BUILD["Implementer<br/>One active writer per workspace"]
-    BUILD --> VERIFY["Verifier<br/>Execute configured checks<br/>Capture candidate fingerprint"]
-    VERIFY --> REVIEW["Independent reviewer<br/>Examine specification, diff and evidence"]
-    REVIEW --> GATE{"Local gate passes<br/>for the current candidate?"}
-    GATE -->|Repair or replan| ORCH
-    GATE -->|Yes| READY["READY_PR<br/>Local evidence and PR packet"]
-    ORCH -->|Limit or dependency| HELD["BLOCKED with cause and next action<br/>resume needs a resolution"]
-    READY --> PR["Authorized remote PR workflow"]
-    PR --> CI["Existing GitHub CI<br/>Required checks and reviews<br/>on the committed candidate"]
-    CI -->|"Fail: ci-result → IMPLEMENTING"| ORCH
-    CI -->|"Pass: ci-result binds commit"| MERGE["Human merge decision<br/>MERGED verified against the actual merge commit"]
-    MERGE --> STAGE["Configured existing pipeline<br/>Build identified artifact and validate staging"]
-    STAGE --> RELEASE["Human release decision<br/>Exact artifact and recovery plan"]
-    RELEASE --> DEPLOY["Promote same artifact and observe"]
-    DEPLOY --> HEALTH{"Configured observation passes?"}
-    HEALTH -->|Yes| DELIVERED["DELIVERED with external evidence"]
-    HEALTH -->|No| RECOVER["RECOVERING under a recovery decision<br/>Verify outcome, open follow-up mission"]
-    RECOVER --> RECOVERED["RECOVERED, not DELIVERED"]
-    SWITCH["Interrupt, restart or vendor switch"] --> SAVE["Save handoff and reconcile actual state"]
-    SAVE --> BOOT
+    USER["User request"] --> ENTRY{"Entry"}
+    ENTRY -->|status| STATUS["Read-only report"]
+    ENTRY -->|build · blueprint · resume| ORCH["Orchestrator (main session)<br/>brief · inspect · record · verify · decide"]
+    ORCH --> SPAWN{"Can spawn specialists?"}
+    SPAWN -->|No| STOP["Stop and report the limitation"]
+    SPAWN -->|Yes| CREATE["mission create --request-file -<br/>verbatim request.md, hashed"]
+    CREATE --> LANE{"Lane"}
+    LANE -->|"kind patch"| SMALL["Small lane"]
+    LANE -->|"feature / maintenance"| FEAT["Feature lane"]
+    SMALL & FEAT --> MODELS["Model checkpoint<br/>inherit → one line; JEV / factory-models only when enabled"]
+    MODELS --> CTX["mission brief --kind context → planner<br/>context.md (both lanes)"]
+    CTX --> CLAR["Ask all ambiguities up front<br/>mission clarify (verbatim, chained hash)"]
+    CLAR --> SPEC["Planner: spec.md + criteria AC-n citing request excerpts<br/>plan.md with ## Architecture mermaid"]
+    SPEC --> ACCEPT["record-doc · criteria · decision · accept-scope<br/>task-add mapped to AC ids → PLANNED"]
+    ACCEPT --> BRIEF["mission brief --task T → one implementer<br/>one writer per workspace"]
+    BRIEF --> VERIFY["Orchestrator runs software-factory verify"]
+    VERIFY -->|fail| REPAIR{"Budget left and no conflict?"}
+    REPAIR -->|Yes| BRIEF
+    VERIFY -->|pass| RESULT["record-result with criteria_evidence"]
+    RESULT --> RISK["mission risk → low / high"]
+    RISK --> REVIEWS["Review briefs by kind<br/>patch low: code · feature: code + acceptance<br/>high: + acceptance + adversarial"]
+    REVIEWS -->|changes requested| REPAIR
+    REVIEWS --> GATE{"gate: request hash, criteria bound and mapped,<br/>evidence, per-AC verdicts, required kinds"}
+    GATE -->|missing evidence| ORCH
+    GATE -->|pass| READY["READY_PR + PR packet<br/>architecture · request→evidence table"]
+    REPAIR -->|"No: budget exhausted, high-risk action,<br/>spec/test/code conflict"| HELD["BLOCKED or PAUSED<br/>concrete question to the user"]
+    HELD -->|"resume --resolution"| ORCH
+    READY --> REMOTE["Authorized PR, remote CI, human merge<br/>ci-result → MERGED → optional delivery"]
     classDef human fill:#fff3cd,stroke:#a87900,color:#222
-    class HUMAN,MERGE,RELEASE human
+    class CLAR,HELD,REMOTE human
 ```
+
+Blueprint runs the same flow up to the plan and stops before implementation. A mission created before 0.3.0 has no recorded request; it keeps the earlier gate rules and shows a warning. The small lane still needs context, criteria and an architecture diagram, kept short.
+
+The "never produces" rule is an instruction in every client. Claude Code can additionally run the orchestrator as a tool-restricted agent with a guard hook (`claude --agent factory-orchestrator`), and Copilot's `factory` agent has no edit tool; the orchestrator records everything through CLI commands that read stdin; see [enforcement per client](runbooks/vendor-behavior.md#enforcement-per-client) for what each client actually enforces.
 
 READY_PR is a local, unattested gate result: evidence, reviews, decisions and `ci-result` records are caller-supplied. Remote PR creation, GitHub CI, merge and production delivery require separate actual evidence. Delivery is disabled in the default product configuration. A pipeline node in this diagram is an integration boundary, not a deployed service supplied by this repository.
 
@@ -58,10 +48,10 @@ The diagram shows GitHub CI between READY_PR and merge. [Constitution rule 20](.
 
 | Diagram step | Recorded state and command | Required evidence |
 | --- | --- | --- |
-| Local gate passes | `transition --to READY_PR` | Current checks, task results, review, scope, authored risks and recovery plan (gate); then generate the local PR packet |
+| Local gate passes | `transition --to READY_PR` | Current checks, task results with criteria evidence, reviews of each required kind, bound request/criteria/scope, authored risks and recovery plan (gate); then generate the local PR packet |
 | PR opened | optional `delivery.pr_ref` via `record-delivery` | External reference only |
-| CI fails | `ci-result --conclusion failure --reason TEXT` moves READY_PR → IMPLEMENTING | Reason is kept in `ci_failures` |
-| CI passes | `ci-result --conclusion success --head SHA [--trunk REMOTE/BRANCH]` stores `delivery.ci_ref` with branch, trunk ref and `trunk_kind` | Gate passes, candidate is committed, `SHA` equals HEAD, HEAD is a work branch other than the trunk and `SHA` is not already on the trunk |
+| CI fails | `ci-result --mission ID --url URL --head SHA --conclusion failure --reason TEXT` moves READY_PR → IMPLEMENTING | Reason is kept in `ci_failures` |
+| CI passes | `ci-result --mission ID --url URL --head SHA --conclusion success [--trunk REMOTE/BRANCH]` stores `delivery.ci_ref` with branch, trunk ref and `trunk_kind` | Gate passes, candidate is committed, `SHA` equals HEAD, HEAD is a work branch other than the trunk and `SHA` is not already on the trunk |
 | Merge observed | `record-delivery` with `merge_ref`, then `transition --to MERGED` | Merge decision bound to the CI candidate fingerprint; `merge_ref` is reachable from the recorded trunk, is not an ancestor of `base_commit`, equals the candidate only if the candidate reached the trunk, and contains the candidate's changed files |
 | Staging, release | STAGING → AWAITING_RELEASE → DEPLOYING | Artifact digest, staging, release decision and `recovery_ref` before DEPLOYING |
 | Observation | OBSERVING → DELIVERED | `delivery.observation` with `status: healthy` |
@@ -79,8 +69,8 @@ After MERGED the gate command and `software-factory mission status` assess the C
 | Component | Responsibility | Limit |
 | --- | --- | --- |
 | Constitution | Shared behavior, scope, evidence integrity and truthful reporting | Does not override host/user authority or enforce access control |
-| Main orchestrator | Select the next useful action, delegate, inspect results, resolve findings and replan | Does not grant approval or accept subagent claims as proof |
-| Planner/implementer/verifier/reviewer | Bounded specialist work and concrete results | No implicit expanded authority from a role name |
+| Main orchestrator | Brief specialists with generated briefs, inspect status/risk/diffstat, record state, run verification, resolve findings, escalate | Produces no code, tests, docs or research; does not grant approval or accept subagent claims as proof |
+| Planner/implementer/verifier/reviewer | Context and plans, one task's change, extra end-to-end evidence, reviews by kind | No nested agents; no implicit expanded authority from a role name |
 | Workflow skills and entry prompts | Reusable lifecycle procedures and directly callable build/plan/resume/status entries | Loaded when relevant; entry scope does not grant runtime permissions |
 | State tool | Schema-validated local records, dependency/transition rules and locking | No distributed scheduler or authenticated approval service |
 | Verifier and gate | Execute real commands, capture candidate identity, reject incomplete/stale evidence | Host process access is not sandboxed; editable records are not tamper-proof |
@@ -108,8 +98,8 @@ your-product/
 │   ├── roles/ / skills/ / prompts/ # Canonical instructions
 │   ├── schemas/ / models/ / templates/ / vendors/
 │   ├── docs/                       # Installed runbooks and client checklist
-│   ├── missions/M-ID/              # Specifications, tasks, results and evidence
-│   └── local/                      # Ignored private logs, locks and JEV records
+│   ├── missions/M-ID/              # Request, clarifications, context, spec, plan, tasks, results, evidence
+│   └── local/                      # Ignored logs, locks, state inputs, briefs and JEV records
 ├── .claude/agents/ and .claude/skills/   # When selected
 ├── .codex/agents/ and .codex/config.toml # When selected; preserved user settings
 ├── .agents/skills/                     # Native Codex skills when selected

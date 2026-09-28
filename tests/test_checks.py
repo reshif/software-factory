@@ -124,8 +124,30 @@ def test_complete_large_logs_are_private_and_revision_never_overwrites(tmp_path)
     log = root / result["checks"][0]["stdout_log"]["path"]
     assert log.stat().st_size == 100001
     assert "x" * 100 not in (root / result["reference"]).read_text()
-    with pytest.raises(FactoryError, match="already exists"):
+    with pytest.raises(FactoryError, match="already exists: R-ONE; .*pass a new one such as R-ONE-2"):
         verify_mission(root, id, "R-ONE")
+
+
+def test_existing_run_label_suggests_an_unused_label(tmp_path):
+    root = make_repo(tmp_path / "product")
+    id = begin(root)
+    assert verify_mission(root, id, "R-1")["pass"]
+    assert verify_mission(root, id, "R-2")["pass"]
+    with pytest.raises(FactoryError, match=r"not a git revision: pass a new one such as R-3$"):
+        verify_mission(root, id, "R-1")
+
+
+def test_verify_revision_help_names_a_run_label(capsys):
+    import argparse
+
+    from software_factory.workflow import add_parser
+
+    parser = argparse.ArgumentParser()
+    add_parser(parser.add_subparsers(dest="command"))
+    with pytest.raises(SystemExit):
+        parser.parse_args(["verify", "--help"])
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "Evidence run label (unique per run, e.g. R-2); not a git revision" in help_text
 
 
 def test_private_logs_refuse_tracked_directory_and_local_only_ignore(tmp_path):

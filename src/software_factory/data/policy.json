@@ -25,7 +25,8 @@
     ".factory/pyproject.toml",
     ".factory/uv.lock",
     ".factory/run.py",
-    ".factory/docs/**"
+    ".factory/docs/**",
+    ".factory/hooks/**"
   ],
   "sensitive_paths": [
     "src/auth/**",
@@ -35,5 +36,13 @@
   "required_decisions": [
     "scope"
   ],
-  "sensitive_decision": "exception"
+  "sensitive_decision": "exception",
+  "test_paths": [
+    "tests/**",
+    "test/**",
+    "**/*_test.*",
+    "**/test_*.*",
+    "**/*.test.*",
+    "**/*.spec.*"
+  ]
 }

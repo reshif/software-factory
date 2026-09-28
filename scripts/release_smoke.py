@@ -140,6 +140,67 @@ def drift_reinstall_checks(command, project, work, env):
     assert json.loads(run([command, "doctor", "--root", str(project)], cwd=work, env=env))["ok"]
 
 
+def enforcement_checks(command, project, work, env, shell):
+    """The opt-in orchestrator agent renders and its guard runs on the pinned runtime."""
+    runtime = project / ".factory/.venv/bin/python"
+    assert runtime.is_file()
+    factory_json = project / "factory.json"
+    saved = factory_json.read_bytes()
+    config = json.loads(saved)
+    config["enforcement"] = {"claude_orchestrator_agent": True}
+    factory_json.write_text(json.dumps(config, indent=2) + "\n")
+    changed = json.loads(run([command, "render", "--root", str(project)], cwd=work, env=env))["changed"]
+    agent = ".claude/agents/factory-orchestrator.md"
+    assert agent in changed and not (project / ".github/hooks").exists(), changed
+    header = (project / agent).read_text().split("---\n")[1]
+    assert "Agent(factory-planner, factory-implementer, factory-verifier, factory-reviewer)" in header
+    assert "Edit" not in header and "Write" not in header and "PreToolUse" in header
+    import yaml
+
+    claude_hook = yaml.safe_load(header)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    guard_env = {**env, "CLAUDE_PROJECT_DIR": str(project)}
+    # The guard must run on the pinned runtime, never on the python3 fallback.
+    guard_env["PATH"] = str(work / "no-python")
+
+    def hook(command_line, payload, code):
+        result = subprocess.run(
+            [shell, "-c", command_line],
+            cwd=project,
+            env=guard_env,
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert result.returncode == code, (command_line, payload, result.stdout, result.stderr)
+        return result
+
+    write = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Write",
+        "tool_input": {"file_path": "a", "content": ""},
+    }
+    denied = hook(claude_hook, write, 2)
+    assert json.loads(denied.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    status = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "software-factory status"},
+    }
+    assert hook(claude_hook, status, 0).stdout == ""
+    report = json.loads(run([command, "doctor", "--root", str(project)], cwd=work, env=env))
+    assert report["ok"] and report["enforcement"]["claude"]["layer"] == "hook", report
+    assert report["enforcement"]["copilot"]["layer"] == "tool_allowlist"
+    assert report["enforcement"]["codex"]["layer"] == "instructions"
+    copilot_agent = (project / ".github/agents/factory.agent.md").read_text().split("---\n")[1]
+    assert "edit" not in yaml.safe_load(copilot_agent)["tools"]
+    factory_json.write_bytes(saved)
+    run([command, "render", "--root", str(project)], cwd=work, env=env)
+    assert not (project / agent).exists()
+    assert json.loads(run([command, "doctor", "--root", str(project)], cwd=work, env=env))["ok"]
+
+
 def routing_fixture(root):
     """Run only inside the installed project interpreter; provider behavior is mocked."""
     import io
@@ -280,6 +341,7 @@ def main():
         )
         for suffix in (
             "data/runtime/uv.lock",
+            "data/hooks/orchestrator_guard.py",
             "data/skills/factory-semantic/SKILL.md",
             "data/schemas/semantic.schema.json",
             "jev.py",
@@ -290,7 +352,8 @@ def main():
             assert "software_factory/" + suffix in names, suffix
     uv = shutil.which("uv")
     git = shutil.which("git")
-    assert uv and git
+    shell = shutil.which("sh")
+    assert uv and git and shell
     with tempfile.TemporaryDirectory(prefix="sf-wheel-consumer-") as temporary:
         work = Path(temporary)
         environment = {
@@ -424,6 +487,7 @@ def main():
         run([command, "init", str(project), "--profile", "claude,codex,copilot"], cwd=work, env=environment)
         assert json.loads(run([command, "doctor", "--root", str(project)], cwd=work, env=environment))["ok"]
         drift_reinstall_checks(command, project, work, environment)
+        enforcement_checks(command, project, work, environment, shell)
         assert json.loads(run([command, "auth", "status"], cwd=project, env=environment))["configured"]
         assert all(b"synthetic-wheel-fixture" not in data for data in tree(project).values())
         assert json.loads(run([command, "auth", "logout"], cwd=work, env=environment))["removed"]
@@ -442,6 +506,7 @@ def main():
                     "upgrade_noop_relinquish_downgrade_crash_recovery_drift_reinstall": "pass",
                     "jev_toggle_and_offline_plan_validation": "pass (mocked provider)",
                     "persistent_auth_pinned_lookup_preservation_and_logout": "pass",
+                    "orchestrator_agent_export_and_pinned_guard": "pass (live client behaviour not_run)",
                     "live_provider": "not_run",
                 },
                 indent=2,

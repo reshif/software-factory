@@ -8,11 +8,21 @@ Describe the requested user-visible result and current behavior. Reference the o
 
 ## Scope
 
-List included components, relevant paths, constraints and deliberate exclusions. Reference existing authorization; identify any material scope decision still needed.
+List included components, relevant paths and constraints. Reference existing authorization; identify any material scope decision still needed.
 
 ## Acceptance criteria
 
-Give each criterion a stable identifier. Describe an observable condition, representative input, expected result and validation route. Include relevant failure cases. Use configured check IDs when available; explicitly identify any manual/client validation.
+Give each criterion a stable ID `AC-<n>`. Describe an observable condition, representative input, expected result and validation route (`check`, `e2e`, `property`, `manual` or `review`). The EARS form is allowed ("When <trigger>, the <system> shall <response>"). Include relevant failure cases. Use configured check IDs when available; route `check` requires at least one.
+
+Cite for every criterion one or more excerpts copied exactly from `request.md` or `clarifications.md`; `mission criteria` refuses an excerpt that matches nothing (whitespace differences are ignored). Record the same criteria as JSON with `software-factory mission criteria`.
+
+## Exclusions
+
+List requested items that are deliberately out of scope, each quoting its request excerpt and naming the existing decision (`decision` ID) that excluded it.
+
+## Ambiguities
+
+List each open question as `Q-<n>` with status `open`, `resolved` or `waived` (waiving needs a decision). Scope cannot be accepted while any ambiguity is open; resolve it with `mission clarify` or a decision.
 
 ## Dependencies and decisions
 

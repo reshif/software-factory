@@ -1,28 +1,28 @@
 ---
 name: factory-implement
-description: Implement one assigned software-factory task within its accepted scope and produce a verifiable result for the orchestrator.
+description: Implement one assigned software-factory task from its generated brief, within accepted scope, and return a provisional report for the orchestrator.
 ---
 
 # Implement the assigned task
 
 ## Inputs and preconditions
 
-The constitution in AGENTS.md applies; read [the constitution](../../../.factory/CONSTITUTION.md) only if it is not in your context. Follow the [implementer contract](../../../.factory/roles/implementer.md) (already part of the exported factory-implementer agent). Read the task record, accepted specification and relevant code. Confirm dependencies, permitted paths and existing changes before entering RUNNING.
+The constitution in AGENTS.md applies; read [the constitution](../../../.factory/CONSTITUTION.md) only if it is not in your context. Follow the [implementer contract](../../../.factory/roles/implementer.md). Work only from the task brief the orchestrator generated with `software-factory mission brief --mission ID --task TASK` (under `.factory/local/briefs/`): its criteria and request excerpts, owned paths, dependencies, checks, attempt budget, base commit and notes from earlier results. Check current Git status before editing. Do not spawn nested agents.
 
 ## Procedure
 
-Investigate enough to understand the actual change. Verify documentation for version-sensitive APIs before depending on them. Implement the smallest complete solution, follow existing conventions and include meaningful tests for changed behavior and failure cases.
+Read the relevant code and `context.md`. Verify version-sensitive APIs in official documentation before depending on them. Implement the smallest complete change that satisfies the brief's criteria, following existing conventions, with tests for changed behavior and failure cases.
 
-Stay within ownership. Report conflicting edits or required out-of-scope changes; do not overwrite another writer's work. Factory-control edits require explicitly authorized maintenance scope. Explain necessary assertion or fixture changes and preserve the accepted criteria.
+Stay within owned paths. Report conflicting edits or needed out-of-scope changes instead of making them. Factory-control edits need explicitly authorized maintenance scope. Explain any assertion or fixture change; never weaken criteria or tests to obtain a pass.
 
-Run focused checks during development and inspect results. Return a provisional report of completed behavior, touched files, actual commands and unresolved concerns. The orchestrator records the complete `.factory/schemas/result.schema.json` result only after final configured verification for the integrated candidate. Return the candidate to verification rather than marking it independently reviewed.
-
-If the task has a model assignment, preserve its identity and attempt number. Use the supplied supported host selection and report requested versus observed model/effort or unknown. Do not claim an effective model from your own self-description. Supply the model observation for the final result as described in `.factory/docs/runbooks/model-selection.md`.
+Run focused checks while developing. If the task has a model assignment, report requested versus observed model and effort, or unknown; never claim an effective model from self-description (see `.factory/docs/runbooks/model-selection.md`).
 
 ## Outputs and verification
 
-An inspectable diff and provisional task report. Transition to VERIFYING using `software-factory mission task-transition` when implementation is ready. The verifier captures final configured checks; focused tests alone do not satisfy all mission checks. After final integration and passing configured verification, the orchestrator records the structured result through `software-factory mission record-result --mission ID --input PATH` under `.factory/missions/ID/results/` (all result registration uses a hashed record index). Include all schema fields, real changed paths, the final candidate fingerprint and current check evidence. Record the result before transitioning the task to DONE. READY_PR requires complete, current results without unresolved issues.
+A diff within owned paths and a provisional report: changed paths, behavior per AC id, commands actually run with outcomes, and unresolved concerns. The report is a set of claims for the orchestrator to check, not evidence. Do not record results, transition state, claim review or invent a fingerprint.
+
+The orchestrator then moves the task to VERIFYING, runs `software-factory verify --revision R-n` (a new run label), and records the result with `mission record-result --mission ID --input -`, listing `.factory/missions/ID/evidence/R-n/checks.json` in `evidence` and giving `criteria_evidence` for each AC (`check:<id>` for a check that passed in the current verification, `evidence:<path>`, or `note:<text>`), before moving the task to DONE.
 
 ## Failure behavior
 
-Report the failing operation and evidence. Do not weaken checks, claim success on partial output or repeatedly retry without diagnosis. The orchestrator decides repair, replanning or reassignment within the task's configured limit.
+Report the failing operation, its evidence and the smallest decision needed. Do not claim success on partial output or retry equivalent actions without new evidence. The orchestrator decides repair, replanning or reassignment within the task's limit.

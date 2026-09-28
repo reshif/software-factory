@@ -37,7 +37,11 @@ def test_native_events_reject_transient_source_and_governance_mutations(tmp_path
     root = make_repo(tmp_path / "product", code, extra_ignore=".codex/\n")
     result = run_checks(root, require_clean=True)
     assert not result["pass"]
-    assert result["source_changed"] or result["monitoring_uncertain"]
+    if sys.platform.startswith("linux"):
+        # inotify reports each of these mutations; only other backends may be merely uncertain.
+        assert result["source_changed"], result
+    else:
+        assert result["source_changed"] or result["monitoring_uncertain"]
 
 
 # A tool cache created the way pytest creates .pytest_cache: files written in a
@@ -321,15 +325,11 @@ def test_monitor_shutdown_uncertainty_is_final_and_idempotent(tmp_path):
 
     from software_factory.evidence import CandidateMonitor
 
-    monitor = object.__new__(CandidateMonitor)
-    monitor.root = tmp_path
-    monitor.known = set()
-    monitor.metadata_prefixes = ()
-    monitor.source_changed = False
-    monitor.monitoring_reasons = []
+    monitor = CandidateMonitor(tmp_path)
+    # Replace the running observer with one that never stops.
+    monitor.observer.stop()
+    monitor.observer.join(timeout=2)
     monitor._lock = Lock()
-    monitor._pending = set()
-    monitor._closed = False
     monitor.observer = SimpleNamespace(
         emitters=(),
         event_queue=SimpleNamespace(unfinished_tasks=0),

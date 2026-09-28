@@ -16,6 +16,9 @@
     "started_at",
     "finished_at",
     "source_changed",
+    "monitoring_uncertain",
+    "monitoring_reasons",
+    "fingerprint_format",
     "checks",
     "trust"
   ],
@@ -24,12 +27,10 @@
       "const": 1
     },
     "id": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      "$ref": "#/definitions/id"
     },
     "mission_id": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      "$ref": "#/definitions/id"
     },
     "fingerprint": {
       "$ref": "#/definitions/hash"
@@ -39,12 +40,10 @@
       "$ref": "#/definitions/hash"
     },
     "head": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{40,64}$"
+      "$ref": "#/definitions/commit"
     },
     "base_commit": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{40,64}$"
+      "$ref": "#/definitions/commit"
     },
     "spec_hash": {
       "$ref": "#/definitions/hash"
@@ -108,8 +107,7 @@
         ],
         "properties": {
           "id": {
-            "type": "string",
-            "minLength": 1
+            "$ref": "#/definitions/id"
           },
           "command": {
             "type": "array",
@@ -131,7 +129,6 @@
               "fail",
               "timeout",
               "error",
-              "skipped",
               "output_limit",
               "interrupted",
               "background_process"
@@ -161,6 +158,18 @@
           },
           "truncated": {
             "type": "boolean"
+          },
+          "resolved_program": {
+            "description": "Absolute path the command's program resolved to on the check's PATH before it ran; null when it did not resolve.",
+            "type": ["string", "null"],
+            "minLength": 1
+          },
+          "program_sha256": {
+            "anyOf": [{ "$ref": "#/definitions/hash" }, { "type": "null" }]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
           }
         }
       }
@@ -180,6 +189,19 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "ignored_writes": {
+      "description": "Git-ignored paths (directories end in /) the monitor saw written during checks, at most 200; reads are not observable.",
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "ignored_writes_total": {
+      "type": "integer",
+      "minimum": 0
     },
     "reconciliation": {
       "type": "object",
@@ -203,6 +225,14 @@
     }
   },
   "definitions": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,79}$"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"
+    },
     "hash": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"

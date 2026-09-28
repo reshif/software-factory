@@ -6,7 +6,9 @@ module does not publish a PR, merge a branch, or execute deployment commands.
 
 from __future__ import annotations
 
+import argparse
 import copy
+import difflib
 import json
 import os
 import posixpath
@@ -186,6 +188,55 @@ def require_text(value, label):
     if not isinstance(value, str) or not value.strip():
         raise FactoryError(f"{label} requires concrete text")
     return value.strip()
+
+
+TASK_MANAGED_FIELDS = (
+    "status",
+    "attempts",
+    "attempt_base",
+    "budget_resets",
+    "repair_required",
+    "model_attempts",
+)
+
+
+def schema_fields(root, kind, *pointer):
+    """Property names of a (sub)schema, in schema order."""
+    try:
+        node = json.loads(asset_path(root, f"schemas/{kind}.schema.json").read_text())
+    except (OSError, ValueError) as exc:
+        raise FactoryError(f"Cannot load {kind} schema: {exc}") from exc
+    for key in pointer:
+        node = node[key]
+    return tuple(node["properties"])
+
+
+def task_input_fields(root):
+    return tuple(
+        f
+        for f in schema_fields(root, "mission", "properties", "tasks", "items")
+        if f not in TASK_MANAGED_FIELDS
+    )
+
+
+def reject_unknown_fields(record, allowed, label, aliases=None):
+    """Reject keys outside allowed with a hint and the full list of accepted keys."""
+    if not isinstance(record, dict):
+        raise FactoryError(f"{label[0].upper() + label[1:]} input must be a JSON object")
+    unknown = [key for key in record if key not in allowed]
+    if not unknown:
+        return
+    key = unknown[0]
+    hint = (aliases or {}).get(key)
+    if hint is None:
+        matches = [a for a in allowed if a.endswith("_" + key)] or difflib.get_close_matches(key, allowed, 1)
+        hint = f"did you mean {matches[0]}?" if matches else None
+    raise FactoryError(
+        f"Unknown {label} field '{key}'"
+        + (f" ({hint})" if hint else "")
+        + "; allowed fields: "
+        + ", ".join(allowed)
+    )
 
 
 def control_json(root, name):
@@ -580,6 +631,40 @@ def criterion_ids(mission):
     return [item["id"] for item in mission.get("criteria", {}).get("items", [])]
 
 
+EXCLUSION_DECISION_KINDS = ("exclusion", "exception", "decline")
+
+
+def exclusion_subject_problem(mission, subject_hash):
+    """Why an exclusion decision's subject_hash does not bind the current request chain, or None."""
+    chain = (mission.get("request") or {}).get("chain")
+    if not chain:
+        return "an exclusion decision requires a request-bearing mission (mission.request.chain)"
+    if subject_hash != chain:
+        return (
+            "an exclusion decision's subject_hash must equal the current request chain head "
+            f"(mission.request.chain): expected {chain}, got {subject_hash}"
+        )
+    return None
+
+
+def exclusion_decision_problem(mission, decision_id):
+    """Raise unless decision_id names a decision that can support an exclusion.
+
+    Kind "exclusion" binds the current request chain; "exception" and "decline"
+    decisions remain accepted for exclusions recorded before 0.3.0.
+    """
+    decision = next(d for d in mission["decisions"] if d["id"] == decision_id)
+    if decision["kind"] not in EXCLUSION_DECISION_KINDS:
+        raise FactoryError(
+            f"Exclusion decision {decision_id} has kind {decision['kind']}; use one of: "
+            + ", ".join(EXCLUSION_DECISION_KINDS)
+        )
+    if decision["kind"] == "exclusion":
+        problem = exclusion_subject_problem(mission, decision["subject_hash"])
+        if problem:
+            raise FactoryError(f"Exclusion decision {decision_id} is stale: {problem}")
+
+
 def validate_criteria(root, mission, value, config, texts=None):
     """Validate criteria against the verbatim request, clarifications, checks and decisions."""
     if not mission.get("request"):
@@ -621,6 +706,7 @@ def validate_criteria(root, mission, value, config, texts=None):
         cited(exclusion["excerpt"], "Exclusion")
         if exclusion["decision"] not in decisions:
             raise FactoryError(f"Exclusion needs an existing decision: {exclusion['decision']}")
+        exclusion_decision_problem(mission, exclusion["decision"])
     questions = [a["id"] for a in value["ambiguities"]]
     if len(set(questions)) != len(questions):
         raise FactoryError("Ambiguity IDs must be unique")
@@ -1351,6 +1437,7 @@ def _task_criteria(mission, value):
 
 def add_task(root, id, input):
     config = load_config(root)
+    reject_unknown_fields(input, task_input_fields(root), "task")
 
     def mutate(mission):
         if mission["state"] not in {"PROPOSED", "PLANNED", "IMPLEMENTING"}:
@@ -1379,6 +1466,14 @@ def add_task(root, id, input):
 
 def edit_task(root, id, task_id, patch):
     config = load_config(root)
+    if not isinstance(patch, dict):
+        raise FactoryError("Task update input must be a JSON object")
+    managed = [k for k in patch if k == "id" or k in TASK_MANAGED_FIELDS]
+    if managed:
+        raise FactoryError("Task identity, status and attempts cannot be edited: " + ", ".join(managed))
+    reject_unknown_fields(
+        patch, tuple(f for f in task_input_fields(root) if f != "id") + ("reason",), "task update"
+    )
 
     def mutate(mission):
         held = mission["state"] in HOLD_STATES and effective_state(mission) in {
@@ -1403,16 +1498,6 @@ def edit_task(root, id, task_id, patch):
         history = [h for h in mission.get("task_history", []) if h["task"]["id"] == task_id]
         if any(h["reason"] == reason for h in history):
             raise FactoryError("Task update reason must differ from earlier updates")
-        if set(patch) - {
-            "title",
-            "depends_on",
-            "owned_paths",
-            "checks",
-            "reason",
-            "model_assignment",
-            "criteria",
-        }:
-            raise FactoryError("Task identity, status and attempts cannot be edited")
         prior = copy.deepcopy(task)
         for key in ("title", "depends_on", "owned_paths", "checks"):
             if key in patch:
@@ -1593,6 +1678,13 @@ def transition_mission(root, id, to, reason=None, next=None, decision=None):
     workflow = control_json(root, "workflow.json")
     if to in HOLD_STATES | {"CANCELED"}:
         reason = require_text(reason, f"{to} transition reason")
+    else:
+        for flag, value in (("--reason", reason), ("--next", next)):
+            if value is not None:
+                raise FactoryError(
+                    f"{flag} is recorded only for PAUSED, BLOCKED or CANCELED transitions; "
+                    f"omit it when moving to {to}"
+                )
     if next is not None:
         next = require_text(next, "Next action")
 
@@ -1791,10 +1883,56 @@ def validate_completed_result(root, mission, task, candidate_fingerprint, refere
     return result
 
 
+RESULT_ALIASES = {"task": "use task_id", "mission": "use mission_id"}
+RESULT_EPILOG = """\
+Minimal accepted JSON (schema_version, mission_id, fingerprint and created_at
+default to 1, --mission, the current candidate fingerprint and now; an explicit
+fingerprint must equal the current one):
+
+  {
+    "task_id": "T-1",
+    "status": "complete",
+    "summary": "What changed and how it was checked",
+    "changed_files": ["src/app.py"],
+    "checks": ["unit"],
+    "evidence": [".factory/missions/M-1/evidence/R-1/checks.json"],
+    "unresolved": []
+  }
+
+Every evidence[] entry must be an existing repository file outside .git/,
+.factory/local/ and other mission records (this mission's evidence/ directory
+is allowed). A completed task's result must include the current verification
+evidence (the latest `software-factory verify` checks.json); the gate enforces
+this and record-result warns when it is missing. Request-bearing missions also
+map criteria with "criteria_evidence": {"AC-1": ["check:unit"]}. Print a
+skeleton with: software-factory mission template --kind result
+"""
+
+
+def _result_evidence_problem(root, id, path):
+    problem = evidence_path_problem(path)
+    if problem:
+        return problem
+    normalized = posixpath.normpath(path)
+    if normalized.startswith(".factory/missions/") and not normalized.startswith(
+        f".factory/missions/{id}/evidence/"
+    ):
+        return f"another mission's record as evidence, which cannot count as evidence: {path}"
+    try:
+        exists = safe_path(root, normalized).is_file()
+    except FactoryError as exc:
+        return f"an unsafe evidence path: {path} ({exc})"
+    return None if exists else f"a missing evidence file: {path}"
+
+
 def record_results(root, id, records):
     if not isinstance(records, list) or not records:
         raise FactoryError("Results must be a nonempty array")
+    allowed = schema_fields(root, "result")
+    for record in records:
+        reject_unknown_fields(record, allowed, "result", RESULT_ALIASES)
     records = copy.deepcopy(records)
+    warnings = []
     with state_lock(root):
         mission = load_mission(root, id)
         if effective_state(mission) in POST_MERGE_STATES | TERMINAL_STATES:
@@ -1810,6 +1948,10 @@ def record_results(root, id, records):
             monitor.known.update(candidate["source_paths"])
             seen = set()
             for record in records:
+                record.setdefault("schema_version", 1)
+                record.setdefault("mission_id", id)
+                record.setdefault("fingerprint", candidate["fingerprint"])
+                record.setdefault("created_at", now())
                 validate(root, "result", record)
                 if record["mission_id"] != id or record["task_id"] in seen:
                     raise FactoryError("Result mission mismatch or duplicate task in batch")
@@ -1836,6 +1978,17 @@ def record_results(root, id, records):
                 _validate_observation(root, mission, task, record.get("model_observation"))
                 if record["fingerprint"] != candidate["fingerprint"]:
                     raise FactoryError("Result fingerprint is stale")
+                for path in record["evidence"]:
+                    problem = _result_evidence_problem(root, id, path)
+                    if problem:
+                        raise FactoryError(f"Result {record['task_id']} evidence[] cites {problem}")
+                current = next(iter(mission["evidence"][-1:]), None)
+                if record["status"] == "complete" and current not in record["evidence"]:
+                    warnings.append(
+                        f"Result {record['task_id']} does not include the current verification evidence"
+                        + (f" {current}" if current else " (none registered; run software-factory verify)")
+                        + "; the readiness gate will reject it until it does"
+                    )
             index = result_index(root, id)
             before_index = copy.deepcopy(index)
             created = []
@@ -1865,6 +2018,7 @@ def record_results(root, id, records):
                     "recorded": created,
                     "fingerprint": candidate["fingerprint"],
                     "trust": "local-unattested",
+                    **({"warnings": warnings} if warnings else {}),
                 }
             except BaseException:
                 for path in created:
@@ -1873,8 +2027,14 @@ def record_results(root, id, records):
 
 
 def record_result(root, id, record):
+    if not isinstance(record, dict):
+        raise FactoryError("Result input must be a JSON object")
     result = record_results(root, id, [record])
-    return {"recorded": result["recorded"][0], "trust": result["trust"]}
+    return {
+        "recorded": result["recorded"][0],
+        "trust": result["trust"],
+        **({"warnings": result["warnings"]} if "warnings" in result else {}),
+    }
 
 
 def register_model_plan(root, id, plan):
@@ -2125,16 +2285,32 @@ def _request_gate(root, mission, candidate, config, checked, results):
 
 
 def record_decision(root, id, record):
+    if not isinstance(record, dict):
+        raise FactoryError("Decision input must be a JSON object")
+
     def mutate(mission):
         if any(d["id"] == record.get("id") for d in mission["decisions"]):
             raise FactoryError("Duplicate decision ID")
         require_text(record.get("reference"), "Decision external reference")
+        if record.get("kind") == "exclusion":
+            problem = exclusion_subject_problem(mission, record.get("subject_hash"))
+            if problem:
+                raise FactoryError(problem[0].upper() + problem[1:])
         mission["decisions"].append({**record, "recorded_at": now()})
 
     return update_mission(root, id, mutate)
 
 
+REVIEW_AUTHOR_REQUIRED = "Review author is required (the reviewer's actual agent/session or human name)"
+
+
 def record_review(root, id, record):
+    if not isinstance(record, dict):
+        raise FactoryError("Review input must be an object with a new review ID")
+    reject_unknown_fields(record, schema_fields(root, "mission", "properties", "reviews", "items"), "review")
+    if not isinstance(record.get("author"), str) or not record["author"].strip():
+        raise FactoryError(REVIEW_AUTHOR_REQUIRED)
+
     def mutate(mission):
         # Review belongs to REVIEWING; READY_PR also accepts a review so a reviewer
         # can still reject (or re-pass) the candidate before merge.
@@ -2142,10 +2318,14 @@ def record_review(root, id, record):
             raise FactoryError(
                 f"Reviews can only be recorded in REVIEWING or READY_PR, not {mission['state']}"
             )
-        if not isinstance(record, dict) or any(r["id"] == record.get("id") for r in mission["reviews"]):
+        if any(r["id"] == record.get("id") for r in mission["reviews"]):
             raise FactoryError("Review input must be an object with a new review ID")
         earlier = copy.deepcopy(mission["reviews"])
-        mission["reviews"].append({**record, "created_at": now()})
+        # The recorded time is the factory's; an omitted fingerprint names the current candidate.
+        defaults = (
+            {} if "fingerprint" in record else {"fingerprint": fingerprint(root, mission)["fingerprint"]}
+        )
+        mission["reviews"].append({**defaults, **record, "created_at": now()})
         validate(root, "mission", mission)
         known = {finding_id(r, n) for r in earlier for n in range(len(r["findings"]))}
         for finding in record["findings"]:
@@ -2166,7 +2346,6 @@ def record_review(root, id, record):
                 )
             require_text(resolution["reason"], "Finding resolution reason")
             resolved.add(resolution["finding"])
-        require_text(record.get("author"), "Independent reviewer identity")
         unknown = [c for c in record.get("criteria_verdicts", {}) if c not in criterion_ids(mission)]
         if unknown:
             raise FactoryError("Review criteria_verdicts name unknown criteria: " + ", ".join(unknown))
@@ -2982,6 +3161,65 @@ def _input(args):
 
 
 MISSION_DOCS = ("context", "spec", "plan", "recovery", "handoff")
+# Minimal --input skeletons; every "<...>" is a placeholder the orchestrator replaces.
+INPUT_TEMPLATES = {
+    "task": {
+        "id": "<task id, e.g. T-1>",
+        "title": "<what the task delivers>",
+        "depends_on": [],
+        "owned_paths": ["<owned path or glob, e.g. src/**>"],
+        "checks": ["<configured check id>"],
+        "criteria": ["<acceptance criterion id, e.g. AC-1>"],
+    },
+    "result": {
+        "task_id": "<task id>",
+        "status": "complete",
+        "summary": "<what changed and how it was checked>",
+        "changed_files": ["<changed repository path>"],
+        "checks": ["<configured check id>"],
+        "evidence": [".factory/missions/<mission-id>/evidence/<run-label>/checks.json"],
+        "unresolved": [],
+        "criteria_evidence": {"<acceptance criterion id, e.g. AC-1>": ["check:<configured check id>"]},
+    },
+    "review": {
+        "id": "<review id, e.g. V-1>",
+        "kind": "<code|acceptance|adversarial>",
+        "status": "<pass|changes_requested>",
+        "author": "<the reviewer's actual agent/session or human name>",
+        "brief_hash": "<brief_hash printed by mission brief --kind KIND>",
+        "findings": [],
+        "criteria_verdicts": {"<acceptance criterion id, e.g. AC-1>": "<pass|fail|needs_human>"},
+    },
+    "decision": {
+        "id": "<decision id, e.g. D-1>",
+        "kind": "<scope|merge|release|recovery|exception|decline|exclusion>",
+        "reference": "<who decided, and where: link or quoted authorization>",
+        "subject_hash": "<sha256 the decision binds: spec.md for scope, mission.request.chain for exclusion>",
+    },
+    "criteria": {
+        "items": [
+            {
+                "id": "<acceptance criterion id, e.g. AC-1>",
+                "text": "<observable acceptance criterion>",
+                "excerpts": ["<verbatim request excerpt, at least 8 characters>"],
+                "route": "<check|e2e|property|manual|review>",
+                "checks": ["<configured check id>"],
+            }
+        ],
+        "exclusions": [],
+        "ambiguities": [],
+    },
+}
+
+
+def input_template(kind, mission=None):
+    """A deterministic minimal --input skeleton for kind, with the mission ID filled when given."""
+    if kind not in INPUT_TEMPLATES:
+        raise FactoryError("Template kind must be one of: " + ", ".join(INPUT_TEMPLATES))
+    text = json.dumps(INPUT_TEMPLATES[kind])
+    if mission is not None:
+        text = text.replace("<mission-id>", assert_id(mission))
+    return json.loads(text)
 
 
 def record_doc(root, id, doc, relative):
@@ -3034,6 +3272,8 @@ def _mission_handler(args):
         return record_doc(root, id, args.doc, args.input)
     if command == "brief":
         return mission_brief(root, id, args.kind, args.task)
+    if command == "template":
+        return input_template(args.kind, id)
     if command == "risk":
         return mission_risk(root, id)
     if command == "list":
@@ -3107,6 +3347,7 @@ def add_parser(subparsers):
         "model-plan": "Register a validated model plan from --input",
         "ci-result": "Record an external CI result for a revision",
         "record-delivery": "Record delivery evidence from --input JSON",
+        "template": "Print a minimal --input JSON skeleton (task, result, review, decision or criteria)",
     }
     options = {
         "mission": ("ID", "Mission ID"),
@@ -3157,11 +3398,29 @@ def add_parser(subparsers):
         "model-plan",
         "ci-result",
         "record-delivery",
+        "template",
     ):
-        parser = actions.add_parser(command, help=summaries[command], description=summaries[command])
+        parser = actions.add_parser(
+            command,
+            help=summaries[command],
+            description=summaries[command],
+            **(
+                {"epilog": RESULT_EPILOG, "formatter_class": argparse.RawDescriptionHelpFormatter}
+                if command == "record-result"
+                else {}
+            ),
+        )
         parser.set_defaults(handler=_mission_handler)
-        if command not in {"create", "list", "recover-lock"}:
+        if command not in {"create", "list", "recover-lock", "template"}:
             option(parser, "mission", required=True)
+        if command == "template":
+            option(parser, "mission", help="Mission ID to fill into the skeleton (optional)")
+            parser.add_argument(
+                "--kind",
+                required=True,
+                choices=tuple(INPUT_TEMPLATES),
+                help="Input kind: " + ", ".join(INPUT_TEMPLATES),
+            )
         if command == "create":
             for name in ("id", "title", "kind", "base", "input", "request-file"):
                 option(parser, name)

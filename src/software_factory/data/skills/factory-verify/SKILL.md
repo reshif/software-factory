@@ -21,7 +21,7 @@ Optional, when JEV is enabled: after results are recorded, `uv run --locked --pr
 
 ## Outputs and verification
 
-Evidence under `.factory/missions/ID/evidence/RUN/` with run identity and candidate fingerprint. Raw logs stay in ignored `.factory/local/runs/`; the gate checks their hashes, so another machine without them must rerun verification. Checks that passed here are what `check:<id>` criteria evidence may cite; the task result lists `.factory/missions/ID/evidence/RUN/checks.json` in `evidence`. `uv run --locked --project .factory software-factory gate --mission ID` lists what remains; verification is not review.
+Evidence under `.factory/missions/ID/evidence/RUN/` with run identity and candidate fingerprint. Raw logs stay in ignored `.factory/local/runs/`; the gate checks their hashes, so another machine without them must rerun verification. Checks that passed here are what `check:<id>` criteria evidence may cite; the task result lists `.factory/missions/ID/evidence/RUN/checks.json` in `evidence` (result JSON shape: factory-implement, or `software-factory mission template --kind result`). A DONE task's result may be recorded again only after a new verification run; the new record replaces the earlier one, so it can make a READY_PR mission not ready, which `gate` and `mission status` (`live_gate`) show. `uv run --locked --project .factory software-factory gate --mission ID` lists what remains; verification is not review.
 
 ## Failure behavior
 

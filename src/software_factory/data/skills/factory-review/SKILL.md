@@ -26,7 +26,17 @@ The lane and `mission risk` decide which kinds the gate requires.
 
 ## Outputs and verification
 
-A review JSON for the actual fingerprint: `kind`, `status` (`pass` or `changes_requested`), `criteria_verdicts` (`{"AC-1": "pass"}`), `brief_hash` (the `sha256` that `mission brief` returned for your brief; required for acceptance), findings, author/source and creation time. Return it as text; the orchestrator records it with `software-factory mission review --mission ID --input -` while the mission is REVIEWING or READY_PR. The latest review of each required kind must be current, pass and have no unresolved blocking finding; the acceptance-bearing review needs `pass` for every AC. A later review must list each earlier unresolved blocking finding in `resolutions` as `{"finding": ID, "reason": TEXT}`, even for a new fingerprint. A blocking finding recorded without an `id` by an earlier release is resolved as `REVIEW-ID-FN` (its 1-based position N). A local author string does not authenticate a human or prove independence.
+A review JSON for the actual fingerprint: `kind`, `status` (`pass` or `changes_requested`), `criteria_verdicts` (`{"AC-1": "pass"}`), `brief_hash` (the `sha256` that `mission brief` returned for your brief; required for acceptance), findings, author/source and creation time. Return it as text; the orchestrator records it with `software-factory mission review --mission ID --input -` while the mission is REVIEWING or READY_PR. The latest review of each required kind must be current, pass and have no unresolved blocking finding; the acceptance-bearing review needs `pass` for every AC. A later review must list each earlier unresolved blocking finding in `resolutions` as `{"finding": ID, "reason": TEXT}`, even for a new fingerprint. A blocking finding recorded without an `id` by an earlier release is resolved as `REVIEW-ID-FN` (its 1-based position N). A local author string does not authenticate a human or prove independence. A minimal review (`created_at` and `fingerprint` are filled in by the tool; `author` is required; `software-factory mission template --kind review` prints a skeleton):
+
+```json
+{"id": "REV-2", "kind": "acceptance", "status": "changes_requested", "author": "reviewer session S-7",
+ "brief_hash": "<sha256 reported by mission brief>", "criteria_verdicts": {"AC-1": "fail"},
+ "findings": [{"id": "F-3", "severity": "blocking", "path": "src/app/form.py",
+               "message": "A whitespace-only title is saved; reproduced with ' ' in tests/test_form.py.", "verified": true}],
+ "resolutions": [{"finding": "F-1", "reason": "Fixed in the current candidate; test_empty_title covers it."}]}
+```
+
+Unknown keys are rejected with the allowed list.
 
 If code changes during review, repeat the affected kinds against the new fingerprint. Optional JEV claim assessment (`semantic verify-claims`) is advisory and never gate evidence.
 

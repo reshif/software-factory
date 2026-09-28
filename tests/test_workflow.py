@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -839,3 +840,42 @@ def test_transition_has_no_trunk_option():
         parser.parse_args(
             ["mission", "transition", "--mission", "M-ONE", "--to", "MERGED", "--trunk", "main"]
         )
+
+
+def test_reason_and_next_are_rejected_for_non_hold_transitions(repo):
+    create_mission(repo, {"id": "M-REASON", "title": "Reason flags", "kind": "feature"})
+    before = load_mission(repo, "M-REASON")
+    for flags, flag in (({"reason": "Planned it"}, "--reason"), ({"next": "Implement"}, "--next")):
+        message = (
+            f"{flag} is recorded only for PAUSED, BLOCKED or CANCELED transitions; "
+            "omit it when moving to PLANNED"
+        )
+        with pytest.raises(FactoryError, match=re.escape(message)):
+            transition_mission(repo, "M-REASON", "PLANNED", **flags)
+    assert load_mission(repo, "M-REASON") == before
+    transition_mission(repo, "M-REASON", "PAUSED", reason="Waiting for the user", next="Ask again")
+    assert load_mission(repo, "M-REASON")["blockers"][-1]["reason"] == "Waiting for the user"
+
+
+def test_task_input_rejects_unknown_and_managed_fields(repo):
+    id = begin(repo)
+    allowed = "id, title, depends_on, owned_paths, checks, criteria, model_assignment"
+    task = {"id": "T-TWO", "title": "Second", "paths": ["src/**"], "checks": ["unit"]}
+    with pytest.raises(FactoryError) as error:
+        add_task(repo, id, task)
+    assert str(error.value) == (
+        f"Unknown task field 'paths' (did you mean owned_paths?); allowed fields: {allowed}"
+    )
+    with pytest.raises(FactoryError, match=r"Unknown task field 'status'; allowed fields: id, title"):
+        add_task(repo, id, {"id": "T-TWO", "title": "Second", "owned_paths": ["src/**"], "status": "DONE"})
+    assert [t["id"] for t in load_mission(repo, id)["tasks"]] == ["T-ONE"]
+    with pytest.raises(FactoryError) as error:
+        edit_task(repo, id, "T-ONE", {"paths": ["src/**"], "reason": "Narrow scope"})
+    assert str(error.value) == (
+        "Unknown task update field 'paths' (did you mean owned_paths?); allowed fields: "
+        "title, depends_on, owned_paths, checks, criteria, model_assignment, reason"
+    )
+    with pytest.raises(FactoryError, match="Task identity, status and attempts cannot be edited: status"):
+        edit_task(repo, id, "T-ONE", {"status": "DONE", "reason": "Skip"})
+    with pytest.raises(FactoryError, match="Task update input must be a JSON object"):
+        edit_task(repo, id, "T-ONE", ["title"])

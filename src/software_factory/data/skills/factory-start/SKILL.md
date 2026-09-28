@@ -16,7 +16,7 @@ Use the user's request or active mission ID. Resolve the Git repository root. Th
 3. Settle the model checkpoint below.
 4. For new work, store the verbatim request with `software-factory mission create --id ID --title T --kind K --request-file -` before anything else, passing the user's words in a quoted heredoc (`<<'EOF'`); `--kind patch` selects the small lane. Never fabricate hashes or copy a template as a live mission.
 5. Load only the next skill: specify (context, clarifications, criteria), plan, implement, verify, review, repair or handoff. Use release/recover only when delivery is in scope and configured.
-6. Record every transition with the state commands. PAUSED, BLOCKED (or `mission block`) and CANCELED need `--reason`; resume needs `--resolution`.
+6. Record every transition with the state commands, in the order of the orchestrator role's [mission states](../../../.factory/roles/orchestrator.md#mission-states). Only PAUSED, BLOCKED (or `mission block`) and CANCELED take `--reason`, and they need it; resume needs `--resolution`.
 
 ## Model checkpoint
 

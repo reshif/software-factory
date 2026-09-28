@@ -17,7 +17,7 @@ Follow the orchestrator flow in order:
 2. Context phase before any spec (factory-specify).
 3. Ask every material ambiguity up front and record answers with `mission clarify`.
 4. Spec with AC-n criteria (`mission criteria`) and a plan whose `## Architecture` has a mermaid diagram (factory-plan); record the user's actual spec acceptance as a `scope` decision (`mission decision`, never invented), then `accept-scope` and tasks mapped to criteria.
-5. Implement from generated task briefs, run `software-factory verify` yourself, record results with criteria evidence, and obtain the review kinds the lane and `mission risk` require.
+5. Implement from generated task briefs, run `software-factory verify` yourself, record results with criteria evidence, and obtain the review kinds the lane and `mission risk` require. Move mission and task states in the order the orchestrator role's `## Mission states` lists; `software-factory mission template --kind …` prints valid JSON skeletons.
 
 Delegate all production to specialists; if the client cannot spawn them, stop and report. Map criteria to real product checks. There is no default one: new installs carry a failing `configure-me` placeholder until a human replaces it with real checks and runs `software-factory render`. Never weaken tests or criteria to obtain a pass. Continue within the user's authorization without repeated confirmation; escalate per the orchestrator role.
 

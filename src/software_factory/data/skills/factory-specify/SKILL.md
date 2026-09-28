@@ -23,7 +23,15 @@ The constitution in AGENTS.md applies; read [the constitution](../../../.factory
  "ambiguities": [{"id": "Q-1", "text": "Which storage?", "status": "resolved", "decision": null}]}
 ```
 
-Each AC is observable and cites at least one exact excerpt of the request or clarifications (whitespace is normalised; a paraphrase fails). EARS phrasing ("When …, the system shall …") is welcome. `route` is `check` (needs configured check ids), `e2e`, `property`, `manual` or `review`. Every requested item is either covered by an AC or listed as an exclusion whose decision the orchestrator records with `mission decision` from the user's actual answer. Record exclusion and ambiguity decisions before `mission criteria`: it validates excerpts and decision ids immediately. No ambiguity may remain `open` at accept-scope.
+Each AC is observable and cites at least one exact excerpt of the request or clarifications (whitespace is normalised; a paraphrase fails). EARS phrasing ("When …, the system shall …") is welcome. `route` is `check` (needs configured check ids), `e2e`, `property`, `manual` or `review`. Every requested item is either covered by an AC or listed as an exclusion whose decision the orchestrator records with `mission decision` from the user's actual answer. Record exclusion and ambiguity decisions before `mission criteria`: it validates excerpts and decision ids immediately. No ambiguity may remain `open` at accept-scope. An exclusion decision binds the request as it currently stands: `subject_hash` is the request chain head, `request.chain` in `mission status --mission ID` (a later clarification moves it):
+
+```sh
+uv run --locked --project .factory software-factory mission decision --mission ID --input - <<'EOF'
+{"id": "D-EXCLUDE-1", "kind": "exclusion", "subject_hash": "<request.chain from mission status>", "reference": "<where and how the user agreed to exclude it>"}
+EOF
+```
+
+Earlier `exception` or `decline` exclusion decisions are still accepted. `software-factory mission template --kind criteria` and `--kind decision` print minimal skeletons; unknown keys are rejected with the allowed list.
 
 ## Outputs and verification
 
@@ -35,7 +43,7 @@ uv run --locked --project .factory software-factory mission decision --mission I
 EOF
 ```
 
-Decision ids are unique per mission; use a new one (D-SCOPE-2, …) for each re-acceptance. If the decision is missing or stale, `mission accept-scope` fails and prints the exact command with the current hash. Run `mission accept-scope` once the plan's architecture exists (factory-plan). Accept-scope binds the spec and criteria hashes; changing either later, or a clarification after PLANNED, resets scope and tasks for revalidation while keeping attempts and history. It does not approve the changed scope itself: record the user's acceptance again when the spec changed, and re-run accept-scope.
+Every decision has exactly `id`, `kind`, `subject_hash` and `reference` (the tool adds `recorded_at`). Decision ids are unique per mission; use a new one (D-SCOPE-2, …) for each re-acceptance. If the decision is missing or stale, `mission accept-scope` fails and prints the exact command with the current hash. Run `mission accept-scope` once the plan's architecture exists (factory-plan). Accept-scope binds the spec and criteria hashes; changing either later, or a clarification after PLANNED, resets scope and tasks for revalidation while keeping attempts and history. It does not approve the changed scope itself: record the user's acceptance again when the spec changed, and re-run accept-scope.
 
 ## Failure behavior
 

@@ -433,6 +433,18 @@ def _install_inotify_hooks():
     return True
 
 
+CHANGED_PATHS_SHOWN = 20
+IGNORE_PROBE = ".software-factory-ignore-probe"
+
+
+def changed_paths_reason(when, paths):
+    """A bounded, human-readable list of candidate paths that changed."""
+    paths = sorted(set(paths))
+    shown = ", ".join(paths[:CHANGED_PATHS_SHOWN])
+    more = f" (+{len(paths) - CHANGED_PATHS_SHOWN} more)" if len(paths) > CHANGED_PATHS_SHOWN else ""
+    return f"Candidate paths changed {when}: {shown}{more}"
+
+
 class CandidateMonitor:
     """Observe writes, including write-and-restore, with native OS events.
 
@@ -448,6 +460,11 @@ class CandidateMonitor:
         self.monitoring_reasons = []
         self._lock = threading.Lock()
         self._pending = set()
+        self._moves = []
+        self._sequence = 0
+        self._suspects = {}
+        self._changed = set()
+        self._offending = set()
         self._closed = False
         self.observer = None
         self._loss_detection = _install_inotify_hooks()
@@ -467,21 +484,30 @@ class CandidateMonitor:
                         "moved",
                     ):
                         return
+                    files = []
                     for raw in (event.src_path, getattr(event, "dest_path", "")):
                         if not raw:
                             continue
                         try:
-                            file = Path(raw).relative_to(monitor.root).as_posix()
+                            files.append(Path(raw).relative_to(monitor.root).as_posix())
                         except ValueError:
                             monitor.uncertain("Filesystem monitor observed an out-of-root event")
-                            continue
-                        if event.is_directory and event.event_type == "modified":
-                            continue
-                        with monitor._lock:
-                            if len(monitor._pending) >= 65536:
-                                monitor.monitoring_reasons.append("Filesystem monitor event bound exceeded")
-                            else:
-                                monitor._pending.add((file, event.is_directory, event.event_type))
+                    if event.is_directory and event.event_type == "modified":
+                        return
+                    with monitor._lock:
+                        if len(monitor._pending) + len(monitor._moves) >= 65536:
+                            monitor.monitoring_reasons.append("Filesystem monitor event bound exceeded")
+                            return
+                        monitor._sequence += 1
+                        moved = event.event_type == "moved" and len(files) == 2
+                        if moved:
+                            # Remember the pair so a path written inside a directory that
+                            # was later moved is judged at the location it ended up in.
+                            monitor._moves.append((monitor._sequence, files[0], files[1]))
+                        for position, file in enumerate(files):
+                            # The source side of a move is not itself a write at that path.
+                            written = None if moved and position == 0 else monitor._sequence
+                            monitor._pending.add((file, event.is_directory, written))
 
             self.observer = Observer()
             self.observer.schedule(Handler(), str(self.root), recursive=True)
@@ -497,31 +523,70 @@ class CandidateMonitor:
     def _drain(self):
         with self._lock:
             batch, self._pending = self._pending, set()
-        unknown = []
-        for file, directory, event in batch:
+        changed = getattr(self, "_changed", set())
+        suspects = getattr(self, "_suspects", {})
+        known_directories = None
+        for file, directory, written in batch:
             if file == ".git" or file.startswith(".git/"):
                 continue
             observed = any(file.startswith(p) or p.startswith(file + "/") for p in self.metadata_prefixes)
+            if directory and not observed and file not in self.known:
+                if known_directories is None:
+                    known_directories = {parent.as_posix() for p in self.known for parent in Path(p).parents}
+                observed = file in known_directories
             if observed or file in self.known or _governed_event(file):
                 self.source_changed = True
+                changed.add(file)
             elif not is_mission_record_event(file, directory) and file != ".":
-                unknown.append((file, directory, event))
-        if not unknown:
+                key = (file, bool(directory))
+                previous = suspects.get(key, 0)
+                suspects[key] = max(previous if previous is not None else 0, written or 0) or None
+        self._changed, self._suspects = changed, suspects
+        self._classify_suspects()
+
+    @staticmethod
+    def _final_location(moves, file, written):
+        """Where content written at file ended up after later moves of it or a parent directory.
+
+        moves maps a source path to its (sequence, destination) moves in event
+        order; each step follows the earliest move after the previous one.
+        """
+        since = written or 0
+        for _ in range(64):
+            parts, step = file.split("/"), None
+            for length in range(len(parts), 0, -1):
+                source = "/".join(parts[:length])
+                later = next(((q, d) for q, d in moves.get(source, ()) if q > since), None)
+                if later and (step is None or later[0] < step[0]):
+                    step = (later[0], source, later[1])
+            if step is None:
+                break
+            since, source, destination = step
+            file = destination + file[len(source) :]
+        return file
+
+    def _classify_suspects(self):
+        """Judge unknown event paths against the ignore rules in force now.
+
+        Tools such as pytest create a cache directory and only then write its
+        own ``.gitignore``; judging each event as it arrives would call the
+        cache a candidate change. Known candidate and governance paths are
+        never re-judged here: a write-and-restore of them stays a change.
+        """
+        suspects = getattr(self, "_suspects", {})
+        if not suspects:
+            self._offending = set()
             return
-        try:
-            env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-            paths = sorted({file + ("/" if directory else "") for file, directory, _ in unknown})
+        moves = {}
+        for sequence, source, destination in getattr(self, "_moves", ()):
+            moves.setdefault(source, []).append((sequence, destination))
+        final = {key: self._final_location(moves, key[0], written) for key, written in suspects.items()}
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+        def git_output(*args, data=None):
             result = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.root),
-                    "check-ignore",
-                    "--no-index",
-                    "--stdin",
-                    "-z",
-                ],
-                input=("\0".join(paths) + "\0").encode(),
+                ["git", "-C", str(self.root), *args],
+                input=data,
                 capture_output=True,
                 check=False,
                 timeout=20,
@@ -529,9 +594,62 @@ class CandidateMonitor:
             )
             if result.returncode not in (0, 1):
                 raise FactoryError(result.stderr.decode(errors="replace"))
-            ignored = {os.fsdecode(p) for p in result.stdout.split(b"\0") if p}
-            if any(p not in ignored for p in paths):
-                self.source_changed = True
+            return {os.fsdecode(p) for p in result.stdout.split(b"\0") if p}
+
+        try:
+            paths = sorted({path + ("/" if key[1] else "") for key, path in final.items()})
+            ignored = git_output(
+                "check-ignore", "--no-index", "--stdin", "-z", data=("\0".join(paths) + "\0").encode()
+            )
+            # A directory whose ignore rules now ignore any new file in it (for
+            # example a cache that wrote its own "*" .gitignore) and that holds
+            # no candidate content is not a change by itself; files written
+            # inside it are judged on their own events. Other directories still
+            # count, since a file created and removed before a watch was added
+            # may be visible only through its directory's event.
+            candidates = sorted(
+                {
+                    path
+                    for key, path in final.items()
+                    if key[1] and path + "/" not in ignored and (self.root / path).is_dir()
+                }
+            )
+            probes = (
+                git_output(
+                    "check-ignore",
+                    "--no-index",
+                    "--stdin",
+                    "-z",
+                    data=b"".join(f"{d}/{IGNORE_PROBE}\0".encode() for d in candidates),
+                )
+                if candidates
+                else set()
+            )
+            directories = [d for d in candidates if f"{d}/{IGNORE_PROBE}" in probes]
+            content = (
+                git_output(
+                    "ls-files",
+                    "-z",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                    "--",
+                    *(f":(literal){d}" for d in directories),
+                )
+                if directories
+                else set()
+            )
+            empty = {
+                d
+                for d in directories
+                if not any(f.startswith(d + "/") for f in content)
+                and not any(k.startswith(d + "/") for k in self.known)
+            }
+            self._offending = {
+                key[0] if key[0] == path else f"{key[0]} -> {path}"
+                for key, path in final.items()
+                if (path + "/" if key[1] else path) not in ignored and not (key[1] and path in empty)
+            }
         except (FactoryError, OSError, subprocess.SubprocessError) as exc:
             self.uncertain(f"Could not classify filesystem events: {exc}")
 
@@ -562,10 +680,13 @@ class CandidateMonitor:
             self.uncertain("Filesystem observer stopped before assessment completed")
         if not self._closed:
             self._check_losses()
+        paths = sorted(getattr(self, "_changed", set()) | getattr(self, "_offending", set()))
+        reasons = list(dict.fromkeys(self.monitoring_reasons))
         return {
-            "source_changed": self.source_changed,
-            "monitoring_uncertain": bool(self.monitoring_reasons),
-            "monitoring_reasons": list(dict.fromkeys(self.monitoring_reasons)),
+            "source_changed": self.source_changed or bool(paths),
+            "monitoring_uncertain": bool(reasons),
+            "monitoring_reasons": reasons
+            + ([changed_paths_reason("during monitoring", paths)] if paths else []),
         }
 
     def close(self):

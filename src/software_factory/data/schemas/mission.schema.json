@@ -19,7 +19,7 @@
     }}},
     "task_history": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["task", "reason", "updated_at"], "properties": {"task": {"$ref": "#/properties/tasks/items"}, "reason": {"type": "string", "minLength": 1}, "updated_at": {"type": "string", "minLength": 1}}}},
     "decisions": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["id", "kind", "reference", "subject_hash", "recorded_at"], "properties": {
-      "id": {"$ref": "#/definitions/id"}, "kind": {"enum": ["scope", "merge", "release", "recovery", "exception", "decline"]}, "reference": {"type": "string", "minLength": 1}, "subject_hash": {"$ref": "#/definitions/hash"}, "recorded_at": {"type": "string", "minLength": 1}
+      "id": {"$ref": "#/definitions/id"}, "kind": {"enum": ["scope", "merge", "release", "recovery", "exception", "decline", "exclusion"]}, "reference": {"type": "string", "minLength": 1}, "subject_hash": {"$ref": "#/definitions/hash"}, "recorded_at": {"type": "string", "minLength": 1}
     }}},
     "evidence": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "reviews": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["id", "fingerprint", "status", "findings", "author", "created_at"], "properties": {

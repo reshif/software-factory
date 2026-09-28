@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import sys
 from types import SimpleNamespace
 
@@ -1071,3 +1072,276 @@ def test_packet_lists_exclusions_with_decisions(repo):
         "- Excluded: Keep the module importable. — decision D-OUT (exception: User: importability is out of scope)"
         in section
     )
+
+
+def fill(value, mapping):
+    """Replace every <placeholder> in keys and strings; an unmapped placeholder fails the test."""
+
+    def text(item):
+        def replace(match):
+            assert match.group(0) in mapping, f"unfilled placeholder {match.group(0)}"
+            return mapping[match.group(0)]
+
+        return re.sub(r"<[^<>]+>", replace, item)
+
+    if isinstance(value, dict):
+        return {text(k): fill(v, mapping) for k, v in value.items()}
+    if isinstance(value, list):
+        return [fill(v, mapping) for v in value]
+    return text(value) if isinstance(value, str) else value
+
+
+def template(root, kind, *mission):
+    return cli(root, "mission", "template", "--kind", kind, *(("--mission", mission[0]) if mission else ()))
+
+
+def test_templates_are_deterministic_and_filled_templates_record(repo):
+    from software_factory.core import validate
+
+    kinds = ("task", "result", "review", "decision", "criteria")
+    for kind in kinds:
+        assert template(repo, kind) == template(repo, kind)
+    assert template(repo, "result")["evidence"] == [
+        ".factory/missions/<mission-id>/evidence/<run-label>/checks.json"
+    ]
+    with pytest.raises(SystemExit):
+        template(repo, "plan")
+    create(repo)
+    id = "M-REQ"
+    author(repo, id)
+    chain = load_mission(repo, id)["request"]["chain"]
+    common = {
+        "<acceptance criterion id, e.g. AC-1>": "AC-1",
+        "<configured check id>": "unit",
+        "<task id>": "T-ONE",
+        "<task id, e.g. T-1>": "T-ONE",
+    }
+    decision = fill(
+        template(repo, "decision", id),
+        {
+            "<decision id, e.g. D-1>": "D-EXCL",
+            "<scope|merge|release|recovery|exception|decline|exclusion>": "exclusion",
+            "<who decided, and where: link or quoted authorization>": "User: importability is out of scope",
+            "<sha256 the decision binds: spec.md for scope, mission.request.chain for exclusion>": chain,
+        },
+    )
+    cli(repo, "mission", "decision", "--mission", id, "--input", put(repo, ".factory/local/d.json", decision))
+    value = fill(
+        template(repo, "criteria", id),
+        {
+            **common,
+            "<observable acceptance criterion>": "VALUE equals 2",
+            "<verbatim request excerpt, at least 8 characters>": "change VALUE to 2 in src/app.py",
+            "<check|e2e|property|manual|review>": "check",
+        },
+    )
+    value["exclusions"] = [{"excerpt": "Keep the module importable.", "decision": "D-EXCL"}]
+    criteria(repo, id, value)
+    cli(repo, "mission", "accept-scope", "--mission", id)
+    task = fill(
+        template(repo, "task", id),
+        {**common, "<what the task delivers>": "Change app", "<owned path or glob, e.g. src/**>": "src/**"},
+    )
+    cli(repo, "mission", "task-add", "--mission", id, "--input", put(repo, ".factory/local/t.json", task))
+    transition_mission(repo, id, "IMPLEMENTING")
+    transition_task(repo, id, "T-ONE", "RUNNING")
+    (repo / "src/app.py").write_text("VALUE = 2\n")
+    transition_task(repo, id, "T-ONE", "VERIFYING")
+    transition_mission(repo, id, "VERIFYING")
+    verified = verify_mission(repo, id, "R-ONE")
+    assert verified["pass"], verified
+    result = fill(
+        template(repo, "result", id),
+        {
+            **common,
+            "<what changed and how it was checked>": "VALUE is 2; the unit check passed.",
+            "<changed repository path>": "src/app.py",
+            "<run-label>": "R-ONE",
+        },
+    )
+    assert result["evidence"] == [verified["reference"]]
+    recorded = cli(
+        repo,
+        "mission",
+        "record-result",
+        "--mission",
+        id,
+        "--input",
+        put(repo, ".factory/local/x.json", result),
+    )
+    assert "warnings" not in recorded
+    transition_task(repo, id, "T-ONE", "DONE")
+    transition_mission(repo, id, "REVIEWING")
+    code_brief = brief(repo, id, "code")
+    review_input = fill(
+        template(repo, "review", id),
+        {
+            **common,
+            "<review id, e.g. V-1>": "V-1",
+            "<code|acceptance|adversarial>": "code",
+            "<pass|changes_requested>": "pass",
+            "<the reviewer's actual agent/session or human name>": "independent-reviewer",
+            "<brief_hash printed by mission brief --kind KIND>": code_brief["sha256"],
+            "<pass|fail|needs_human>": "pass",
+        },
+    )
+    cli(
+        repo,
+        "mission",
+        "review",
+        "--mission",
+        id,
+        "--input",
+        put(repo, ".factory/local/r.json", review_input),
+    )
+    mission = load_mission(repo, id)
+    validate(repo, "mission", mission)
+    assert mission["decisions"][-1]["kind"] == "exclusion"
+    gate = assess_gate(repo, id)
+    assert gate["pass"], gate
+
+
+def test_exclusion_decision_binds_the_request_chain(repo):
+    create(repo)
+    id = "M-REQ"
+    author(repo, id)
+    chain = load_mission(repo, id)["request"]["chain"]
+    wrong = {"id": "D-EXCL", "kind": "exclusion", "reference": "User: out of scope", "subject_hash": "c" * 64}
+    with pytest.raises(FactoryError) as error:
+        record_decision(repo, id, wrong)
+    assert str(error.value) == (
+        "An exclusion decision's subject_hash must equal the current request chain head "
+        f"(mission.request.chain): expected {chain}, got {'c' * 64}"
+    )
+    record_decision(repo, id, {**wrong, "subject_hash": chain})
+    scope_id = load_mission(repo, id)["decisions"][0]["id"]
+    excluded = {**CRITERIA, "exclusions": [{"excerpt": "Keep the module importable.", "decision": scope_id}]}
+    with pytest.raises(
+        FactoryError,
+        match=f"Exclusion decision {scope_id} has kind scope; use one of: exclusion, exception, decline",
+    ):
+        criteria(repo, id, excluded)
+    criteria(repo, id, {**CRITERIA, "exclusions": [{**excluded["exclusions"][0], "decision": "D-EXCL"}]})
+    cli(
+        repo,
+        "mission",
+        "clarify",
+        "--mission",
+        id,
+        "--input",
+        put(repo, ".factory/local/q.md", "Keep it small."),
+    )
+    current = load_mission(repo, id)["request"]["chain"]
+    assert current != chain
+    with pytest.raises(FactoryError) as error:
+        cli(repo, "mission", "accept-scope", "--mission", id)
+    assert (
+        "Exclusion decision D-EXCL is stale: an exclusion decision's subject_hash must equal the current "
+        f"request chain head (mission.request.chain): expected {current}, got {chain}"
+    ) in str(error.value)
+
+
+def test_review_defaults_author_and_unknown_fields(repo):
+    id = plan_mission(repo)
+    implement(repo, id)
+    minimal = {
+        "id": "V-1",
+        "kind": "code",
+        "status": "pass",
+        "findings": [],
+        "criteria_verdicts": {"AC-1": "pass"},
+    }
+    path = put(repo, ".factory/local/r.json", minimal)
+    with pytest.raises(FactoryError) as error:
+        cli(repo, "mission", "review", "--mission", id, "--input", path)
+    assert str(error.value) == "Review author is required (the reviewer's actual agent/session or human name)"
+    path = put(repo, ".factory/local/r.json", {**minimal, "author": "reviewer-session", "source": "chat"})
+    with pytest.raises(FactoryError) as error:
+        cli(repo, "mission", "review", "--mission", id, "--input", path)
+    assert str(error.value).startswith(
+        "Unknown review field 'source'; allowed fields: id, fingerprint, status, author, created_at, kind"
+    )
+    assert load_mission(repo, id)["reviews"] == []
+    cli(
+        repo,
+        "mission",
+        "review",
+        "--mission",
+        id,
+        "--input",
+        put(repo, ".factory/local/r.json", {**minimal, "author": "reviewer-session"}),
+    )
+    stored = load_mission(repo, id)["reviews"][-1]
+    assert stored["fingerprint"] == load_mission_fingerprint(repo, id) and stored["created_at"]
+    assert assess_gate(repo, id)["pass"]
+
+
+def test_result_defaults_evidence_files_and_field_errors(repo):
+    id = plan_mission(repo)
+    transition_mission(repo, id, "IMPLEMENTING")
+    transition_task(repo, id, "T-ONE", "RUNNING")
+    (repo / "src/app.py").write_text("VALUE = 2\n")
+    transition_task(repo, id, "T-ONE", "VERIFYING")
+    transition_mission(repo, id, "VERIFYING")
+    verified = verify_mission(repo, id, "R-ONE")
+    minimal = {
+        "task_id": "T-ONE",
+        "status": "complete",
+        "summary": "VALUE is 2.",
+        "changed_files": ["src/app.py"],
+        "checks": ["unit"],
+        "evidence": [verified["reference"]],
+        "unresolved": [],
+        "criteria_evidence": {"AC-1": ["check:unit"]},
+    }
+
+    def record(value):
+        return cli(
+            repo,
+            "mission",
+            "record-result",
+            "--mission",
+            id,
+            "--input",
+            put(repo, ".factory/local/x.json", value),
+        )
+
+    with pytest.raises(
+        FactoryError, match=r"^Unknown result field 'task' \(use task_id\); allowed fields: schema_version"
+    ):
+        record({**minimal, "task": "T-ONE"})
+    for evidence, problem in (
+        ("notes/missing.txt", "a missing evidence file: notes/missing.txt"),
+        (".factory/local/runs/x.log", "evidence under .git/ or .factory/local/"),
+        (".factory/missions/M-OTHER/evidence/R-1/checks.json", "another mission's record as evidence"),
+        (f".factory/missions/{id}/mission.json", "a mission record as evidence"),
+    ):
+        with pytest.raises(FactoryError, match=re.escape(f"Result T-ONE evidence[] cites {problem}")):
+            record({**minimal, "evidence": [verified["reference"], evidence]})
+    with pytest.raises(FactoryError, match="Result fingerprint is stale"):
+        record({**minimal, "fingerprint": "d" * 64})
+    with pytest.raises(FactoryError, match="Result mission mismatch"):
+        record({**minimal, "mission_id": "M-OTHER"})
+    warned = record({**minimal, "evidence": []})
+    assert warned["warnings"] == [
+        (
+            f"Result T-ONE does not include the current verification evidence {verified['reference']}; "
+            "the readiness gate will reject it until it does"
+        )
+    ]
+    recorded = record(minimal)
+    assert "warnings" not in recorded
+    stored = read_json(repo, recorded["recorded"])
+    assert stored["schema_version"] == 1 and stored["mission_id"] == id
+    assert stored["fingerprint"] == load_mission_fingerprint(repo, id) and stored["created_at"]
+    transition_task(repo, id, "T-ONE", "DONE")
+
+
+def test_record_result_help_documents_minimal_json(capsys):
+    parser = argparse.ArgumentParser()
+    add_parser(parser.add_subparsers(dest="command"))
+    with pytest.raises(SystemExit):
+        parser.parse_args(["mission", "record-result", "--help"])
+    text = capsys.readouterr().out
+    assert "Minimal accepted JSON" in text and '"task_id": "T-1"' in text
+    assert "software-factory mission template --kind result" in text

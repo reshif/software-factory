@@ -40,6 +40,89 @@ def test_native_events_reject_transient_source_and_governance_mutations(tmp_path
     assert result["source_changed"] or result["monitoring_uncertain"]
 
 
+# A tool cache created the way pytest creates .pytest_cache: files written in a
+# temporary directory first, the directory renamed into place, its own
+# ".gitignore" (containing "*") ignoring everything inside it, and further files
+# written afterwards.
+TOOL_CACHE = (
+    "import os, tempfile; from pathlib import Path; "
+    "t=Path(tempfile.mkdtemp(prefix='tool-cache-files-', dir='.')); "
+    "(t/'README.md').write_text('cache'); (t/'.gitignore').write_text('*'); "
+    "os.rename(t, '.tool_cache'); d=Path('.tool_cache/v/cache'); d.mkdir(parents=True); "
+    "(d/'nodeids').write_text('[]'); Path('.pytest_cache').mkdir(); "
+    "Path('.pytest_cache/v').mkdir(); Path('.pytest_cache/v/lastfailed').write_text('{}'); "
+    "Path('.pytest_cache/.gitignore').write_text('*')"
+)
+
+
+@pytest.mark.parametrize("operation", ["checks", "verify"])
+def test_tool_cache_with_its_own_ignore_file_is_not_a_source_change(tmp_path, operation):
+    root = make_repo(tmp_path / "product", TOOL_CACHE)
+    if operation == "checks":
+        result = run_checks(root, require_clean=True)
+    else:
+        result = verify_mission(root, begin(root), "R-CACHE")
+    assert (root / ".tool_cache/v/cache/nodeids").exists()
+    assert (root / ".pytest_cache/v/lastfailed").exists()
+    assert result["fingerprint"] == result["post_fingerprint"]
+    assert result["pass"], result
+    assert not result["source_changed"] and not result["monitoring_uncertain"]
+    assert result["monitoring_reasons"] == []
+
+
+def test_restored_source_mutation_names_the_changed_path(tmp_path):
+    code = (
+        "from pathlib import Path; p=Path('src/app.py'); original=p.read_bytes(); "
+        "p.write_text('mutated'); p.write_bytes(original); " + TOOL_CACHE
+    )
+    root = make_repo(tmp_path / "product", code)
+    result = run_checks(root, require_clean=True)
+    assert result["fingerprint"] == result["post_fingerprint"]
+    assert not result["pass"] and result["source_changed"]
+    assert not result["monitoring_uncertain"]
+    assert any(
+        r.startswith("Candidate paths changed during monitoring: ") and "src/app.py" in r
+        for r in result["monitoring_reasons"]
+    ), result["monitoring_reasons"]
+    assert not any(".tool_cache" in r or ".pytest_cache" in r for r in result["monitoring_reasons"])
+
+
+def test_transient_unignored_file_is_named_and_still_a_change(tmp_path):
+    code = "from pathlib import Path; p=Path('temporary-source.py'); p.write_text('transient'); p.unlink()"
+    root = make_repo(tmp_path / "product", code)
+    id = begin(root)
+    result = verify_mission(root, id, "R-TRANSIENT")
+    stored = read_json(root, result["reference"])
+    assert not result["pass"] and stored["source_changed"]
+    assert "Candidate paths changed during monitoring: temporary-source.py" in stored["monitoring_reasons"]
+
+
+def test_file_written_into_a_directory_after_it_moved_is_judged_where_written(tmp_path):
+    # The first "work" directory is renamed into an ignored cache; a second one
+    # created afterwards at the same path is candidate content and must count.
+    code = (
+        "import os; from pathlib import Path; os.mkdir('work'); Path('work/a').write_text('1'); "
+        "os.rename('work', 'dist'); os.mkdir('work'); p=Path('work/keep.py'); p.write_text('x'); p.unlink()"
+    )
+    root = make_repo(tmp_path / "product", code, extra_ignore="dist/\n")
+    result = run_checks(root)
+    assert result["fingerprint"] == result["post_fingerprint"]
+    assert not result["pass"] and result["source_changed"]
+    reason = next(r for r in result["monitoring_reasons"] if r.startswith("Candidate paths changed"))
+    assert "work" in reason.split(": ", 1)[1].split(", ")[0], reason
+
+
+def test_fingerprint_change_lists_paths(tmp_path):
+    root = make_repo(tmp_path / "product", "from pathlib import Path; Path('src/new.py').write_text('x')")
+    result = run_checks(root)
+    assert result["fingerprint"] != result["post_fingerprint"]
+    assert not result["pass"] and result["source_changed"]
+    assert (
+        "Candidate paths changed between the pre- and post-check fingerprints: src/new.py"
+        in result["monitoring_reasons"]
+    )
+
+
 def test_ignored_build_output_and_setup_are_allowed(tmp_path):
     setup = [
         {

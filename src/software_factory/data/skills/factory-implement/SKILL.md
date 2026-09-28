@@ -21,7 +21,16 @@ Run focused checks while developing. If the task has a model assignment, report 
 
 A diff within owned paths and a provisional report: changed paths, behavior per AC id, commands actually run with outcomes, and unresolved concerns. The report is a set of claims for the orchestrator to check, not evidence. Do not record results, transition state, claim review or invent a fingerprint.
 
-The orchestrator then moves the task to VERIFYING, runs `software-factory verify --revision R-n` (a new run label), and records the result with `mission record-result --mission ID --input -`, listing `.factory/missions/ID/evidence/R-n/checks.json` in `evidence` and giving `criteria_evidence` for each AC (`check:<id>` for a check that passed in the current verification, `evidence:<path>`, or `note:<text>`), before moving the task to DONE.
+The orchestrator then moves the task to VERIFYING, runs `software-factory verify --revision R-n` (a new run label), and records the result with `mission record-result --mission ID --input -`, listing `.factory/missions/ID/evidence/R-n/checks.json` in `evidence` and giving `criteria_evidence` for each AC (`check:<id>` for a check that passed in the current verification, `evidence:<path>`, or `note:<text>`), before moving the task to DONE. A minimal result (`schema_version`, `mission_id`, `fingerprint` and `created_at` are filled in by the tool; `software-factory mission template --kind result` prints a skeleton):
+
+```json
+{"task_id": "T-1", "status": "complete", "summary": "Empty titles are rejected with an error; nothing is saved.",
+ "changed_files": ["src/app/form.py", "tests/test_form.py"], "checks": ["tests"],
+ "evidence": [".factory/missions/M-0001/evidence/R-1/checks.json"], "unresolved": [],
+ "criteria_evidence": {"AC-1": ["check:tests", "evidence:.factory/missions/M-0001/evidence/R-1/checks.json"]}}
+```
+
+`status` is `complete`, `blocked` or `needs_review`; only a `complete` result with empty `unresolved`, every assigned check in `checks` and the current run's `checks.json` in `evidence` lets the task reach DONE. Unknown keys are rejected with the allowed list.
 
 ## Failure behavior
 

@@ -20,7 +20,14 @@ For model-bound work, include the immutable `model_assignment` returned by `soft
 
 ## Outputs and verification
 
-plan.md content and schema-compatible task inputs, returned to the orchestrator. A read-only specialist never runs state commands or edits files. The orchestrator records the plan with `mission record-doc --mission ID --doc plan --input -`, runs `mission accept-scope --mission ID`, then `software-factory mission task-add --mission ID --input -` per task; the tool validates dependencies and criteria ids, and the gate requires every AC to be mapped.
+plan.md content and schema-compatible task inputs, returned to the orchestrator. A read-only specialist never runs state commands or edits files. The orchestrator records the plan with `mission record-doc --mission ID --doc plan --input -`, runs `mission accept-scope --mission ID`, then `software-factory mission task-add --mission ID --input -` per task; the tool validates dependencies and criteria ids, and the gate requires every AC to be mapped. One task input (the tool sets `status` and `attempts`; `software-factory mission template --kind task` prints a skeleton):
+
+```json
+{"id": "T-1", "title": "Reject empty titles", "depends_on": [], "owned_paths": ["src/app/**", "tests/**"],
+ "checks": ["tests"], "criteria": ["AC-1"]}
+```
+
+`checks` are configured check ids from `factory.json` (omitted, every required check applies); `owned_paths` needs at least one entry; `model_assignment` is added only for model-bound work.
 
 For pending work the orchestrator uses `software-factory mission task-update --mission ID --task TASK --input -` with a concrete `reason` and only the changed fields. Stop active tasks before replanning. Attempts and identity cannot be reset; earlier contracts stay in task history. If accepted scope removes planned work, convert its pending task into an explicit reconciliation task and report that truthfully.
 

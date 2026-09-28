@@ -19,6 +19,7 @@ from .core import (
     load_config,
     profiles,
     read_json,
+    runtime_critical,
     safe_path,
     sha256,
     validate,
@@ -27,6 +28,7 @@ from .rendering import SHARED, plan_render, read_manifest, strip_owned, unmark_s
 from .transactions import apply, ensure_no_journal, optional, planned_preimages, planning_snapshot
 
 MANIFEST = ".factory/installation.json"
+IGNORE_MARKER = "# software-factory private/runtime files"
 
 
 def starter(name: str, selected) -> dict:
@@ -118,7 +120,7 @@ def kernel_payload() -> dict[str, bytes]:
     return files
 
 
-def _target(root: Path, allow_dirty: bool, *, allow_no_git=True):
+def _target(root: Path, allow_dirty: bool):
     if root.is_symlink():
         raise FactoryError("Target must not be a symlink")
     if root.exists() and not root.is_dir():
@@ -130,8 +132,6 @@ def _target(root: Path, allow_dirty: bool, *, allow_no_git=True):
         return False
     top = git(root, "rev-parse", "--show-toplevel", check=False)
     if not top:
-        if not allow_no_git:
-            raise FactoryError("This operation requires an existing Git working tree")
         return False
     top = Path(top).resolve()
     if top != root.resolve():
@@ -158,11 +158,26 @@ def ignore_plan(root: Path) -> bytes:
                 raise
     # Appending after negations ensures the root rule wins; a nested conflicting
     # rule is independently tested in an isolated Git tree below.
-    marker = "# software-factory private/runtime files"
-    block = marker + "\n" + "\n".join(needed) + "\n"
-    # Idempotent: user rules may follow the block; its presence is sufficient
-    # because the shadow check below still proves the effective result.
-    if block not in text:
+    block = IGNORE_MARKER + "\n" + "\n".join(needed) + "\n"
+    lines = text.splitlines(keepends=True)
+    if any(line.rstrip("\r\n") == IGNORE_MARKER for line in lines):
+        # Replace the existing block in place (user rules may follow it) rather than
+        # appending a duplicate; a block is the marker plus the factory rules after it.
+        # Duplicates left by earlier releases collapse into the first block.
+        kept, index, placed = [], 0, False
+        while index < len(lines):
+            if lines[index].rstrip("\r\n") != IGNORE_MARKER:
+                kept.append(lines[index])
+                index += 1
+                continue
+            index += 1
+            while index < len(lines) and lines[index].rstrip("\r\n") in needed:
+                index += 1
+            if not placed:
+                kept.append(block)
+                placed = True
+        text = "".join(kept)
+    else:
         text += ("\n" if text and not text.endswith("\n") else "") + block
     with tempfile.TemporaryDirectory(prefix="sf-ignore-") as temporary:
         shadow = Path(temporary)
@@ -196,6 +211,10 @@ def ignore_plan(root: Path) -> bytes:
                 )
             except (OSError, subprocess.TimeoutExpired) as exc:
                 raise FactoryError(f"Git unavailable: {exc}") from exc
+            if result.returncode > 1:
+                raise FactoryError(
+                    f"Git check-ignore failed (exit {result.returncode}) while checking {name}"
+                )
             if result.returncode:
                 raise FactoryError(f"Nested ignore rules expose {name}; resolve before installation")
     return text.encode()
@@ -245,7 +264,12 @@ def _sync(path: Path, *, offline=False):
     command = [executable, "sync", "--locked", "--no-dev", "--project", str(path), "--python", sys.executable]
     if offline:
         command.append("--offline")
-    result = subprocess.run(check=False, args=command, capture_output=True, timeout=180)
+    try:
+        result = subprocess.run(check=False, args=command, capture_output=True, timeout=180)
+    except subprocess.TimeoutExpired as exc:
+        raise FactoryError(
+            "uv runtime setup timed out; inspect uv sync --locked --no-dev --project .factory locally", 2
+        ) from exc
     if result.returncode:
         # Package-manager output may contain private index URLs; keep it out of
         # records and explain the exact recovery command instead.
@@ -437,14 +461,15 @@ def install(
     ):
         raise FactoryError("A different release is installed; use upgrade")
     if optional(root, "factory.json") is not None:
-        config = load_config(root)
+        # This release's schema stands in for a deleted project copy, which install restores.
+        config = load_config(root, packaged_fallback=True)
         if selected is not None and profiles(config) != profiles(selected):
             raise FactoryError("Installed profiles differ; use render --profile explicitly")
     else:
         if selected is None:
             raise FactoryError("Select --profile claude, codex, copilot, or a comma-separated combination")
         config = starter(root.name, selected)
-        validate(root, "factory", config)
+        validate(root, "factory", config, packaged_fallback=True)
     operations = {}
     effective = {}
     records = {}
@@ -459,7 +484,10 @@ def install(
             if local is not None:
                 effective[name] = local
         elif baseline:
-            if prior.get("uninstalled") and local is None:
+            if local is None and (
+                prior.get("uninstalled") or (upstream is not None and runtime_critical(name))
+            ):
+                # A reinstall, or a deleted file the pinned runtime needs: nothing local to keep.
                 operations[name] = upstream
             elif local_hash == upstream_hash:
                 pass
@@ -484,16 +512,12 @@ def install(
     reconcile = constitution_reconcile(root, effective.get(CONSTITUTION)) if upgrade else None
     if upgrade:
         missions = safe_path(root, ".factory/missions")
-        has_missions = missions.is_dir() and any(missions.iterdir())
+        has_missions = missions.is_dir() and any(missions.glob("*/mission.json"))
         # factory.json is always present, so a factory schema change is validated even
-        # without missions; schemas new to this release are validated when records use them.
+        # without missions. Only schemas of persisted records matter; input schemas
+        # (semantic, claims-verify, ...) never validate history.
         schema_changes = [
-            n
-            for n in operations
-            if n.startswith(".factory/schemas/")
-            and n != ".factory/schemas/installation.schema.json"
-            and (has_missions or n == FACTORY_SCHEMA)
-            and (n in HISTORY_RECORDS or optional(root, n) is not None)
+            n for n in operations if n in HISTORY_RECORDS and (has_missions or n == FACTORY_SCHEMA)
         ]
         if schema_changes:
             history = validate_history(root, schema_changes, effective)
@@ -559,10 +583,16 @@ def install(
             _sync(stage)
     planned_preimages(root, snapshot, operations)
     root.mkdir(parents=True, exist_ok=True)
-    if git_init and not has_git:
-        git(root, "init", "-q")
-        has_git = True
     apply(root, operations, expected=expected, label="upgrade" if upgrade else "init")
+    # Only after a successful apply: a failed install leaves no new repository behind.
+    if git_init and not has_git:
+        try:
+            git(root, "init", "-q")
+        except FactoryError as exc:
+            raise FactoryError(
+                f"Project files installed; git init failed ({exc}); run git init, then doctor"
+            ) from exc
+        has_git = True
     if not skip_sync:
         try:
             _sync(root / ".factory", offline=True)
@@ -646,19 +676,50 @@ def uninstall(root: Path, *, dry_run=False) -> dict:
     archive["preserved"] = sorted(preserved)
     operations[MANIFEST] = (json.dumps(archive, indent=2) + "\n").encode()
     expected = planned_preimages(root, snapshot, operations)
+    emptied = _emptied_directories(root, [n for n, v in operations.items() if v is None])
     if not dry_run:
         apply(root, operations, expected=expected, label="uninstall")
+        for directory in emptied:
+            try:
+                os.rmdir(safe_path(root, directory))
+            except OSError:
+                pass  # Something appeared since planning; a non-empty directory is kept.
     return {
         "dry_run": dry_run,
         "removed_or_detached": sorted(n for n in operations if n != MANIFEST),
+        "removed_directories": emptied,
         "preserved": sorted(preserved),
         "unmarked_sections": sorted(unmarked),
         "retained": [
             "factory.json",
             ".factory/missions",
             ".factory/local",
+            ".factory/local/.gitignore",
             ".factory/.venv",
             ".gitignore",
+            f".gitignore rules under '{IGNORE_MARKER}'",
             MANIFEST,
         ],
     }
+
+
+def _emptied_directories(root: Path, removed: list[str]) -> list[str]:
+    """Directories that hold only removed files (or other such directories), deepest first.
+
+    Only ancestors of removed files qualify, so a directory that was already empty or
+    still holds anything else, including user files and caches, is never removed.
+    """
+    candidates = {
+        parent.as_posix() for name in removed for parent in Path(name).parents if parent != Path(".")
+    }
+    gone = set(removed)
+    emptied = []
+    for directory in sorted(candidates, key=lambda n: (-n.count("/"), n)):
+        path = root / directory
+        if path.is_symlink() or not path.is_dir():
+            continue
+        entries = [f"{directory}/{entry}" for entry in os.listdir(path)]
+        if entries and all(entry in gone for entry in entries):
+            gone.add(directory)
+            emptied.append(directory)
+    return emptied

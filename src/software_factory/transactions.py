@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
 
-from .core import FactoryError, git, now, read_json, safe_path, sha256, write_bytes, write_json
+from .core import FactoryError, git, now, process_alive, safe_path, sha256, write_bytes, write_json
 
 JOURNAL = ".factory/local/installation-transaction.json"
 LOCK = ".factory-install.lock"
@@ -130,34 +131,58 @@ def apply(
     return {"changed": sorted(operations), "operation": label}
 
 
+def _journal_record(name, record) -> tuple[bytes | None, bytes | None, int]:
+    """Decode one journal entry, refusing anything that is not a well-formed record."""
+    if not isinstance(record, dict) or set(record) != {"before", "after", "mode"}:
+        raise FactoryError(f"Invalid installation recovery journal entry: {name}")
+    mode = record["mode"]
+    if not isinstance(mode, int) or isinstance(mode, bool) or not 0 <= mode <= 0o777:
+        raise FactoryError(f"Invalid installation recovery journal mode: {name}")
+    values = []
+    for key in ("before", "after"):
+        if record[key] is not None and not isinstance(record[key], str):
+            raise FactoryError(f"Invalid installation recovery journal entry: {name}")
+        try:
+            values.append(decoded(record[key]))
+        except ValueError as exc:
+            raise FactoryError(f"Invalid installation recovery journal entry: {name}") from exc
+    return values[0], values[1], mode
+
+
 def recover(root: Path, *, apply_recovery=False) -> dict:
+    from .rendering import allowed_export
+
     journal_path = safe_path(root, JOURNAL)
     lock = safe_path(root, LOCK)
     if lock.exists():
         try:
             pid = int(lock.read_text().strip())
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            pass
-        except (ValueError, PermissionError, OSError) as exc:
+            alive = process_alive(pid)
+        except (ValueError, OSError, FactoryError) as exc:
             raise FactoryError(
                 "Cannot establish that the installation owner has stopped; inspect lock manually"
             ) from exc
-        else:
+        if alive:
             raise FactoryError(f"Installation process {pid} still exists; recovery refused")
     if not journal_path.exists():
+        stale_lock = lock.exists()
         if apply_recovery:
             lock.unlink(missing_ok=True)
-        return {"status": "no_journal", "stale_lock": lock.exists(), "dry_run": not apply_recovery}
-    journal = read_json(root, JOURNAL)
-    if journal.get("schema_version") != 1 or not isinstance(journal.get("files"), dict):
+        return {"status": "no_journal", "stale_lock": stale_lock, "dry_run": not apply_recovery}
+    try:
+        raw = journal_path.read_bytes()
+        journal = json.loads(raw)
+    except (OSError, ValueError) as exc:
+        raise FactoryError(f"Invalid installation recovery journal: {exc}") from exc
+    if (
+        not isinstance(journal, dict)
+        or journal.get("schema_version") != 1
+        or not isinstance(journal.get("files"), dict)
+    ):
         raise FactoryError("Invalid installation recovery journal")
-    changes = {}
-    conflicts = []
+    records = {}
     for name, record in journal["files"].items():
         safe_path(root, name)
-        from .rendering import allowed_export
-
         permitted = (
             name in ("factory.json", "factory.lock.json", ".gitignore")
             or allowed_export(name)
@@ -168,7 +193,10 @@ def recover(root: Path, *, apply_recovery=False) -> dict:
         )
         if not permitted:
             raise FactoryError(f"Invalid recovery path: {name}")
-        before, after = decoded(record["before"]), decoded(record["after"])
+        records[name] = _journal_record(name, record)
+    changes = {}
+    conflicts = []
+    for name, (before, after, _mode) in records.items():
         current = optional(root, name)
         if current == after:
             changes[name] = before
@@ -180,18 +208,28 @@ def recover(root: Path, *, apply_recovery=False) -> dict:
         lock.unlink(missing_ok=True)
         with operation_lock(root):
             for name, value in changes.items():
-                current = optional(root, name)
-                record = journal["files"][name]
-                if current != decoded(record["after"]):
+                _before, after, mode = records[name]
+                if optional(root, name) != after:
                     raise FactoryError(f"Changed during recovery: {name}")
-                _replace(root, name, value, record["mode"])
+                _replace(root, name, value, mode)
             journal_path.unlink()
     return {
         "status": "recovered" if apply_recovery else "planned",
         "dry_run": not apply_recovery,
         "restored": sorted(changes),
-        "journal_sha256": sha256(str(journal)),
+        "journal_sha256": sha256(raw),
     }
+
+
+def _factory_owned(rel: str, directory: bool) -> bool:
+    """Whether a path is (or may contain) a factory-owned file rather than user content."""
+    from .rendering import allowed_export
+
+    return (
+        rel.startswith(".factory/")
+        or allowed_export(rel)
+        or (directory and allowed_export(rel + "/SKILL.md"))
+    )
 
 
 def planning_snapshot(root: Path) -> dict[str, bytes]:
@@ -222,15 +260,24 @@ def planning_snapshot(root: Path) -> dict[str, bytes]:
         if not base.exists():
             continue
         for current, dirs, names in os.walk(base, followlinks=False):
-            dirs[:] = [
-                name
-                for name in dirs
-                if name not in (".venv", "local", "missions", "node_modules", "__pycache__")
-            ]
+            kept = []
             for name in dirs:
-                safe_path(root, (Path(current) / name).relative_to(root).as_posix())
+                if name in (".venv", "local", "missions", "node_modules", "__pycache__"):
+                    continue
+                path = Path(current) / name
+                rel = path.relative_to(root).as_posix()
+                # A user's symlinked skill or agent directory is not factory input; only a
+                # symlink where the factory owns (or will write) the path is refused.
+                if path.is_symlink() and not _factory_owned(rel, True):
+                    continue
+                safe_path(root, rel)
+                kept.append(name)
+            dirs[:] = kept
             for name in names:
-                rel = (Path(current) / name).relative_to(root).as_posix()
+                path = Path(current) / name
+                rel = path.relative_to(root).as_posix()
+                if path.is_symlink() and not _factory_owned(rel, False):
+                    continue
                 value = optional(root, rel)
                 if value is not None:
                     result[rel] = value

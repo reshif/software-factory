@@ -141,25 +141,71 @@ def asset_root() -> Path:
     return Path(__file__).parent / "data"
 
 
+# Installed files the pinned runtime needs to start and validate records. init and
+# upgrade restore them when deleted; other deleted assets stay deleted as deliberate.
+RUNTIME_CRITICAL_PREFIXES = (".factory/src/", ".factory/schemas/", ".factory/hooks/")
+RUNTIME_CRITICAL_FILES = (
+    ".factory/run.py",
+    ".factory/README.md",
+    ".factory/pyproject.toml",
+    ".factory/uv.lock",
+    ".factory/CONSTITUTION.md",
+    ".factory/registry.json",
+)
+
+
+INVALID_INSTALLATION = (
+    "Invalid .factory/installation.json; restore it from Git (git checkout -- .factory/installation.json)"
+)
+
+
+def runtime_critical(name: str) -> bool:
+    return name.startswith(RUNTIME_CRITICAL_PREFIXES) or name in RUNTIME_CRITICAL_FILES
+
+
 def asset_path(root: Path | str, relative: str) -> Path:
     """Prefer reviewed project assets, with package fallback before init."""
     candidate = safe_path(root, f".factory/{relative}")
     if candidate.is_file():
         return candidate
     installation = safe_path(root, ".factory/installation.json")
-    if installation.is_file() and not json.loads(installation.read_text()).get("uninstalled", False):
-        raise FactoryError(
-            f"Missing installed project asset: .factory/{relative}; restore it or perform a reviewed upgrade"
-        )
+    if installation.is_file():
+        try:
+            manifest = json.loads(installation.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            manifest = None
+        if not isinstance(manifest, dict):
+            raise FactoryError(INVALID_INSTALLATION)
+        if not manifest.get("uninstalled", False):
+            name = f".factory/{relative}"
+            restore = (
+                "; software-factory upgrade (or init) restores it"
+                if runtime_critical(name)
+                else "; upgrade keeps deleted assets deleted"
+            )
+            raise FactoryError(
+                f"Missing installed project asset: {name}; restore it from Git (git checkout -- {name})"
+                + restore
+            )
     return asset_root() / relative
 
 
-def validate(root: Path | str, kind: str, value: Any) -> Any:
+def validate(root: Path | str, kind: str, value: Any, *, packaged_fallback: bool = False) -> Any:
+    """Validate with the project's schema copy.
+
+    ``packaged_fallback`` uses this release's schema when the project copy is absent;
+    install relies on it so a deleted schema does not block the upgrade that restores it.
+    """
     from jsonschema import Draft7Validator
 
     assert_id(kind)
     try:
-        schema = json.loads(asset_path(root, f"schemas/{kind}.schema.json").read_text())
+        relative = f"schemas/{kind}.schema.json"
+        if packaged_fallback and not safe_path(root, f".factory/{relative}").is_file():
+            path = asset_root() / relative
+        else:
+            path = asset_path(root, relative)
+        schema = json.loads(path.read_text())
         errors = sorted(Draft7Validator(schema).iter_errors(value), key=lambda e: str(e.path))
     except (OSError, ValueError) as exc:
         raise FactoryError(f"Cannot load {kind} schema: {exc}") from exc
@@ -184,8 +230,8 @@ def profiles(value: Any) -> list[str]:
     return [p for p in ("claude", "codex", "copilot") if p in value]
 
 
-def load_config(root: Path | str) -> dict:
-    result = validate(root, "factory", read_json(root, "factory.json"))
+def load_config(root: Path | str, *, packaged_fallback: bool = False) -> dict:
+    result = validate(root, "factory", read_json(root, "factory.json"), packaged_fallback=packaged_fallback)
     profiles(result)
     for key in ("checks", "setup"):
         items = result.get(key, [])
@@ -209,7 +255,9 @@ def git(root: Path | str, *args: str, check: bool = True) -> str:
             timeout=20,
             env=env,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        raise FactoryError(f"Git timed out after {exc.timeout} seconds: git {' '.join(args[:2])}") from exc
+    except OSError as exc:
         raise FactoryError(f"Git unavailable: {exc}") from exc
     if check and result.returncode:
         raise FactoryError(f"Git {' '.join(args[:2])} failed: {result.stderr.strip()}")
@@ -295,7 +343,13 @@ def runtime_fingerprint() -> str:
                 except importlib.metadata.PackageNotFoundError:
                     continue  # Environment-specific dependency not installed here.
                 queue.append(match.group())
-        for entry in dist.files or []:
+        if dist.files is None:
+            # Without a RECORD the installed content cannot be verified or fingerprinted.
+            raise FactoryError(
+                f"Runtime dependency {name} has no installed file record; "
+                "run uv sync --locked --no-dev --project .factory"
+            )
+        for entry in dist.files:
             if entry.suffix == ".pyc" or "__pycache__" in entry.parts or ".." in entry.parts:
                 continue
             location = Path(dist.locate_file(entry))

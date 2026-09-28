@@ -9,6 +9,7 @@ import os
 import re
 import signal
 import stat
+import sys
 import threading
 import time
 import uuid
@@ -39,6 +40,7 @@ from .redaction import bound_text, redact
 
 RUBRIC = "skills/factory-semantic/resources/claim-support.json"
 LOCAL = ".factory/local/semantic"
+LOCK = LOCAL + "/request.lock"
 DEFAULTS = {
     "enabled": False,
     "provider": "typesafe",
@@ -55,6 +57,29 @@ DEFAULTS = {
     # confidence >= 0.8 and send lower-confidence results to human review.
     "claim_accept_confidence": 0.8,
 }
+# Input packets, from a file or stdin, like mission --input.
+INPUT_BYTES = 262144
+PRIVATE_MODE = 0o700
+
+
+def settings_digest(settings, extra=()):
+    """Digest only the jev keys semantic uses, so unrelated keys keep caches and requests valid."""
+    return digest({key: settings[key] for key in (*DEFAULTS, *extra)})
+
+
+def private_mkdir(root, relative):
+    """Create ``relative`` (under .factory/local) with every missing level private (0700)."""
+    parts = Path(relative).parts
+    for index in range(2, len(parts) + 1):
+        level = Path(*parts[:index])
+        try:
+            safe_path(root, level).mkdir(mode=PRIVATE_MODE)
+        except FileExistsError:
+            pass
+        if index >= len(Path(LOCAL).parts):
+            # Semantic record directories are also tightened when an older run created them.
+            os.chmod(safe_path(root, level), PRIVATE_MODE)
+    return safe_path(root, relative)
 
 
 class _TooLarge(FactoryError):
@@ -138,6 +163,28 @@ def read_bounded_json(root, relative, limit=262144):
         raise FactoryError("Invalid semantic JSON") from exc
 
 
+def read_input(root, relative, limit=INPUT_BYTES):
+    """The ``--input`` packet: a root-relative regular file, or ``-`` for at most 256 KiB of stdin."""
+    if relative == "-":
+        data = sys.stdin.buffer.read(limit + 1)
+        if len(data) > limit:
+            raise FactoryError(f"Semantic input on stdin exceeds {limit // 1024} KiB")
+        try:
+            return strict_json(data)
+        except UnicodeError as exc:
+            raise FactoryError("Semantic input on stdin is not valid UTF-8") from exc
+        except ValueError as exc:
+            raise FactoryError("Invalid semantic JSON") from exc
+    if not isinstance(relative, str) or not relative:
+        raise FactoryError("--input requires a repository-relative JSON file path or - for stdin")
+    try:
+        return read_bounded_json(root, relative, limit)
+    except (FileNotFoundError, NotADirectoryError):
+        raise FactoryError(f"Semantic input file not found: {relative}") from None
+    except OSError as exc:
+        raise FactoryError(f"Cannot read semantic input file: {relative}") from exc
+
+
 def _time(value):
     if not isinstance(value, str) or not re.fullmatch(
         r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z", value
@@ -205,6 +252,28 @@ def _validate_relations(packet, settings, timestamp):
     return rows, pairs
 
 
+def _mask_pairs(rows, pairs):
+    """Mask the claim text, locators and excerpts sent for each pair, in place.
+
+    Hashes, quote matching and ``sources[].sha256`` still use the raw excerpt, as the
+    supplied packet does; only the request carries masked text. Each row records its
+    mask count; the total is returned.
+    """
+    by_id = {row["id"]: row for row in rows}
+    for row in rows:
+        row["masks"] = 0
+    total = 0
+    for pair in pairs:
+        pair["claim"], count = redact(pair["claim"])
+        for source in pair["sources"]:
+            for field in ("locator", "excerpt"):
+                source[field], number = redact(source[field])
+                count += number
+        by_id[pair["id"]]["masks"] = count
+        total += count
+    return total
+
+
 def _check_rubric(rubric):
     if (
         not isinstance(rubric, dict)
@@ -265,9 +334,8 @@ def _private(root):
 @contextmanager
 def _local_lock(root):
     _private(root)
-    target = safe_path(root, LOCAL + "/request.lock")
-    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    safe_path(root, LOCAL + "/request.lock")
+    private_mkdir(root, LOCAL)
+    target = safe_path(root, LOCK)
     try:
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
@@ -280,10 +348,24 @@ def _local_lock(root):
         yield True
     finally:
         try:
-            if read_bounded_json(root, LOCAL + "/request.lock", 2048).get("token") == token:
-                safe_path(root, LOCAL + "/request.lock").unlink()
-        except FileNotFoundError:
+            record = read_bounded_json(root, LOCK, 2048)
+            # A lock that is not this invocation's own record is left for the operator.
+            if isinstance(record, dict) and record.get("token") == token:
+                safe_path(root, LOCK).unlink()
+        except (FactoryError, OSError):
+            # Missing, unreadable or corrupt: another writer replaced it; later runs report busy.
             pass
+
+
+def _busy():
+    # Names the lock so an operator can check its recorded PID before removing a stale one.
+    return {
+        "schema_version": 1,
+        "status": "unavailable",
+        "reason": "local_request_busy",
+        "lock": LOCK,
+        "advisory_only": True,
+    }
 
 
 def _skipped(reason):
@@ -369,7 +451,7 @@ def _publication_reason(root, settings, control):
         return "disabled_during_request"
     if (
         control.changed.is_set()
-        or digest(latest) != digest(settings)
+        or settings_digest(latest) != settings_digest(settings)
         or control.configuration is not None
         and configuration != control.configuration
     ):
@@ -385,13 +467,15 @@ def _persist(root, relative, value, artifacts, backup_limit=None):
             raise FactoryError("Semantic report path already exists")
     except _TooLarge:
         if backup_limit is not None:
-            return
+            return None
         raise
     except FileNotFoundError:
         pass
     data = (json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode()
     artifacts.append({"relative": relative, "previous": previous, "bytes": data})
+    private_mkdir(root, Path(relative).parent)
     write_bytes(root, relative, data)
+    return data
 
 
 def _rollback_owned(root, artifacts):
@@ -487,15 +571,7 @@ def _guarded(root, settings, cancel, no_persist, work):
             result = work(control)
         else:
             with _local_lock(root) as acquired:
-                if not acquired:
-                    result = {
-                        "schema_version": 1,
-                        "status": "unavailable",
-                        "reason": "local_request_busy",
-                        "advisory_only": True,
-                    }
-                else:
-                    result = work(control)
+                result = work(control) if acquired else _busy()
         # Stop the observer before the final synchronous observations. Joining
         # a worker is cleanup work and must not follow the publication checks.
         control.close()
@@ -503,7 +579,10 @@ def _guarded(root, settings, cancel, no_persist, work):
         reason = _publication_reason(root, settings, control)
         if reason or inputs_changed:
             _rollback(root, control.artifacts)
-            return _skipped(reason or "inputs_changed")
+            if reason:
+                return _skipped(reason)
+            # Changed inputs are invalid here too, as when detected before persistence.
+            return {**_skipped("inputs_changed"), "status": "invalid"}
         return result
     except BaseException:
         _rollback(root, control.artifacts)
@@ -518,13 +597,16 @@ def _evaluate_enabled(
     started, timestamp = time.monotonic(), time.time() * 1000
     identity = _context(root, mission)
     control.configuration = identity["configuration"]
-    packet = read_bounded_json(root, input_path) if input_data is None else copy.deepcopy(input_data)
+    # Stdin is read once, so it is rechecked like supplied data rather than re-read.
+    rereadable = input_data is None and input_path != "-"
+    packet = read_input(root, input_path) if input_data is None else copy.deepcopy(input_data)
     # Avoid schema error messages echoing excerpts or other private input.
     try:
         validate(root, "semantic", packet)
     except FactoryError as exc:
         raise FactoryError("Invalid semantic input; inspect the local semantic schema") from exc
     rows, pairs = _validate_relations(packet, settings, timestamp)
+    masked = _mask_pairs(rows, pairs)
     report = {
         "schema_version": 1,
         "operation": "claim_support",
@@ -540,6 +622,7 @@ def _evaluate_enabled(
         "usage": None,
         "elapsed_ms": 0,
         "claims": rows,
+        "masked": masked,
         "coverage": None,
         "review": None,
     }
@@ -567,7 +650,7 @@ def _evaluate_enabled(
     report["provenance"] = {
         **identity,
         "input": digest(packet),
-        "settings": digest(settings),
+        "settings": settings_digest(settings),
         "rubric_id": rubric["id"],
         # Explicit (also inside the settings digest) so the cache key and the
         # record bind the acceptance threshold used for review decisions.
@@ -658,10 +741,8 @@ def _evaluate_enabled(
     def inputs_current():
         try:
             current = digest(_context(root, mission)) == digest(identity)
-            if input_data is None:
-                current = (
-                    current and digest(read_bounded_json(root, input_path)) == report["provenance"]["input"]
-                )
+            if rereadable:
+                current = current and digest(read_input(root, input_path)) == report["provenance"]["input"]
             if control.caller_cancel is not None and control.caller_cancel.is_set():
                 return False
             current_rows, _ = _validate_relations(packet, settings, time.time() * 1000)
@@ -670,7 +751,9 @@ def _evaluate_enabled(
         except (FactoryError, OSError, ValueError, TypeError, KeyError):
             return False
 
-    if not inputs_current():
+    # Without an evaluated claim there is no advice to protect, so the candidate is not
+    # fingerprinted again (a second full snapshot doubled a credential_missing run).
+    if any(row["status"] == "evaluated" for row in rows) and not inputs_current():
         _unavailable(rows, "invalid", "inputs_changed")
         report["reason"], response = "inputs_changed", None
     for status_name in ("invalid", "unavailable", "unresolved"):
@@ -707,7 +790,7 @@ def _evaluate_enabled(
                 settings["max_response_bytes"] + 4096,
             )
         report_path = LOCAL + "/" + settings["claim_mode"] + "/" + key + "-" + str(uuid.uuid4()) + ".json"
-        _persist(root, report_path, report, control.artifacts)
+        written = _persist(root, report_path, report, control.artifacts)
         if settings["claim_mode"] == "shadow":
             return {
                 **{
@@ -726,7 +809,8 @@ def _evaluate_enabled(
                 },
                 "judgments_withheld": True,
                 "report": report_path,
-                "report_hash": digest(report),
+                # SHA-256 of the report file's exact bytes.
+                "report_hash": sha256(written),
             }
         report["record"] = report_path
     return report
@@ -757,8 +841,6 @@ VERIFY_CRITERIA = {
     "or absent where the claim says it was made.",
     "says_nothing": "The supplied diffs neither confirm nor refute the claim.",
 }
-# An abstain answer is never requested; if a future criteria set allows it, it needs review.
-VERIFY_ABSTAIN = "abstain"
 _UNAVAILABLE_REASONS = frozenset(
     {
         "credential_missing",
@@ -832,20 +914,25 @@ def _path_diff(root, claim_id, relative, base):
         reject("exists neither at the mission base nor in the working tree")
     tracked = bool(git(root, "ls-files", "-z", "--", literal))
     if at_base or tracked:
-        return git(
+        diff = git(
             root, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=3", base, "--", literal
         )
+        return diff, False
     if git(root, "check-ignore", "--no-index", "--", relative, check=False):
         reject("is ignored by version control")
     data = _read_prefix(root, relative, VERIFY_RAW_BYTES)
     if b"\0" in data:
-        return f"new untracked binary file {relative}"
+        return f"new untracked binary file {relative}", False
     text = data.decode("utf-8", "replace")
-    if len(data) > VERIFY_RAW_BYTES:
+    truncated = len(data) > VERIFY_RAW_BYTES
+    if truncated:
         # Keep whole lines only, so masking never sees a secret cut in half.
         text = bound_text(text, VERIFY_RAW_BYTES)[0]
+        if not text:
+            # One line longer than the bound: nothing sendable, but still a change.
+            return "", True
     lines = text.splitlines()
-    return "\n".join([f"new untracked file {relative}", *("+" + line for line in lines)])
+    return "\n".join([f"new untracked file {relative}", *("+" + line for line in lines)]), truncated
 
 
 def _collect_evidence(root, packet, base):
@@ -860,8 +947,8 @@ def _collect_evidence(root, packet, base):
         claim_text, masks = redact(claim["claim"])
         evidence, changes, budget, truncated = [], [], VERIFY_CLAIM_BYTES, False
         for relative in claim["paths"]:
-            raw = diffs[relative]
-            if not raw:
+            raw, raw_cut = diffs[relative]
+            if not raw and not raw_cut:
                 evidence.append({"path": relative, "changed": False, "sha256": None, "truncated": False})
                 continue
             # Mask whole lines of a generous raw bound, then cut the masked text on a line.
@@ -869,9 +956,10 @@ def _collect_evidence(root, packet, base):
             masked, count = redact(bounded)
             masks += count
             excerpt, cut = bound_text(masked, min(VERIFY_PATH_BYTES, budget))
+            cut = cut or over or raw_cut
+            # A cut excerpt this small (often only the diff header) is not useful evidence.
             if cut and len(excerpt.encode()) < VERIFY_MIN_EXCERPT_BYTES:
                 excerpt = ""
-            cut = cut or over
             budget -= len(excerpt.encode())
             truncated = truncated or cut
             if excerpt:
@@ -885,13 +973,22 @@ def _collect_evidence(root, packet, base):
                     "sent": bool(excerpt),
                 }
             )
+        # A changed path whose excerpt could not be sent is unknown, never "no changes".
+        changed = any(item["changed"] for item in evidence)
+        status, verdict, reason = (
+            ("pending", None, None)
+            if changes
+            else ("unresolved", "unresolved", "excerpt_unavailable")
+            if changed
+            else ("deterministic", "no_evidence", "no_changes_since_base")
+        )
         row = {
             "id": claim["id"],
             "task_id": claim.get("task_id"),
             "paths": list(claim["paths"]),
-            "status": "pending" if changes else "deterministic",
-            "verdict": None if changes else "no_evidence",
-            "reason": None if changes else "no_changes_since_base",
+            "status": status,
+            "verdict": verdict,
+            "reason": reason,
             "review": None,
             "confidence": None,
             "probabilities": None,
@@ -981,16 +1078,12 @@ def _set_unresolved(rows, reason):
 
 
 def _verify_answer(row, answer, threshold):
-    choice = answer["choice"]
-    if choice == VERIFY_ABSTAIN:
-        verdict, reason, review = "unresolved", "abstained", "needs_review"
-    else:
-        verdict, reason, review = choice, None, _review(answer["confidence"], threshold)
+    # validate_jev_response admits only VERIFY_CRITERIA choices, so there is no abstain here.
     row.update(
         status="evaluated",
-        verdict=verdict,
-        reason=reason,
-        review=review,
+        verdict=answer["choice"],
+        reason=None,
+        review=_review(answer["confidence"], threshold),
         confidence=answer["confidence"],
         probabilities=answer["probabilities"],
     )
@@ -1066,7 +1159,8 @@ def _verify_enabled(
     started, timestamp = time.monotonic(), time.time() * 1000
     identity, task_ids = _verify_context(root, mission)
     control.configuration = identity["configuration"]
-    packet = read_bounded_json(root, input_path) if input_data is None else copy.deepcopy(input_data)
+    rereadable = input_data is None and input_path != "-"
+    packet = read_input(root, input_path) if input_data is None else copy.deepcopy(input_data)
     # Schema error messages could echo claim text or paths; keep them generic.
     try:
         validate(root, "claims-verify", packet)
@@ -1123,7 +1217,7 @@ def _verify_enabled(
         **identity,
         "input": digest(packet),
         "evidence": evidence_digest,
-        "settings": digest(settings),
+        "settings": settings_digest(settings),
         "model": settings["model"],
         "claim_accept_confidence": settings["claim_accept_confidence"],
     }
@@ -1180,15 +1274,16 @@ def _verify_enabled(
                     row, response["answers"]["q" + str(index)], settings["claim_accept_confidence"]
                 )
             report.update(returned_model=response["model"], usage=response["usage"])
-    if report["reason"] is None and any(row["status"] == "unresolved" for row in rows):
-        report["reason"] = "request_too_large"
+    if report["reason"] is None:
+        # First locally unresolved claim: request_too_large or excerpt_unavailable.
+        report["reason"] = next((row["reason"] for row in rows if row["status"] == "unresolved"), None)
 
     def inputs_current():
         try:
             current, _ = _verify_context(root, mission)
             if digest(current) != digest(identity):
                 return False
-            if input_data is None and digest(read_bounded_json(root, input_path)) != digest(packet):
+            if rereadable and digest(read_input(root, input_path)) != digest(packet):
                 return False
             if control.caller_cancel is not None and control.caller_cancel.is_set():
                 return False
@@ -1197,7 +1292,8 @@ def _verify_enabled(
         except (FactoryError, OSError, ValueError, TypeError, KeyError):
             return False
 
-    if not inputs_current():
+    # Only an evaluated or deterministic verdict needs its inputs rechecked.
+    if any(row["status"] in ("evaluated", "deterministic") for row in rows) and not inputs_current():
         _set_unresolved(rows, "inputs_changed")
         for row in rows:
             if row["status"] == "deterministic":
@@ -1232,7 +1328,7 @@ def _verify_enabled(
             settings["max_response_bytes"] + 4096,
         )
     report_path = VERIFY_LOCAL + "/" + settings["claim_mode"] + "/" + key + "-" + str(uuid.uuid4()) + ".json"
-    _persist(root, report_path, report, control.artifacts)
+    written = _persist(root, report_path, report, control.artifacts)
     if settings["claim_mode"] == "shadow":
         # No verdicts, review states, counts, usage or cache state: each could reveal a judgment.
         return {
@@ -1244,7 +1340,7 @@ def _verify_enabled(
             "elapsed_ms": report["elapsed_ms"],
             "judgments_withheld": True,
             "report": report_path,
-            "report_hash": digest(report),
+            "report_hash": sha256(written),
         }
     report["record"] = report_path
     return report
@@ -1324,7 +1420,12 @@ def add_parser(subparsers):
         command = commands.add_parser(name, help=summaries[name], description=summaries[name])
         command.set_defaults(handler=handler)
         if name in ("check", "verify-claims"):
-            command.add_argument("--input", required=True, metavar="PATH", help="Input packet JSON")
+            command.add_argument(
+                "--input",
+                required=True,
+                metavar="PATH",
+                help="Repository path of the input packet JSON, or - for stdin (at most 256 KiB)",
+            )
             command.add_argument(
                 "--mission",
                 required=name == "verify-claims",

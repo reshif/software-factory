@@ -5,6 +5,7 @@ As in test_semantic, candidate_snapshot is replaced by a deterministic module st
 
 import argparse
 import copy
+import io
 import json
 import os
 import shutil
@@ -646,7 +647,8 @@ class VerifyClaimsTests(unittest.TestCase):
         head += "#" * (prefix - len(head) - 1) + "\n"
         self.assertEqual(len(head), prefix)
         (self.root / "src/big.py").write_text(head + line + "y\n" * 100)
-        diff = semantic._path_diff(self.root, "C1", "src/big.py", self.base)
+        diff, cut = semantic._path_diff(self.root, "C1", "src/big.py", self.base)
+        self.assertTrue(cut)
         self.assertNotIn("sk_live", diff)
         self.assertNotIn("4eC", diff)
         self.assertEqual(diff.splitlines()[-1], "+" + head.rsplit("\n", 2)[-2])
@@ -715,7 +717,7 @@ class VerifyClaimsTests(unittest.TestCase):
             result = self.run_verify(request=self.responder((choice,), confidence), no_cache=True)
             hidden = json.loads((self.root / result["report"]).read_text())
             self.assertEqual(hidden["claims"][0]["verdict"], choice)
-            self.assertEqual(result["report_hash"], digest(hidden))
+            self.assertEqual(result["report_hash"], sha256((self.root / result["report"]).read_bytes()))
             self.assertTrue(result["judgments_withheld"])
             text = json.dumps(result)
             for leaked in ("verdict", "review", "accepted", "confidence", "supports", "contradicts", "usage"):
@@ -819,13 +821,19 @@ class VerifyClaimsTests(unittest.TestCase):
                     [("unresolved", None), ("no_evidence", None)],
                 )
 
-    def test_abstain_answer_needs_review(self):
-        row = {"status": "pending"}
-        semantic._verify_answer(
-            row, {"choice": "abstain", "confidence": 0.99, "probabilities": {"abstain": 0.99}}, 0.8
-        )
+    def test_abstain_answer_is_an_invalid_response(self):
+        # Only the three criteria are admitted; an abstain answer never becomes a verdict.
+        def abstain(body, **options):
+            self.calls.append(copy.deepcopy(body))
+            response = response_for(body)
+            for answer in response["answers"].values():
+                answer.update(choice="abstain", probabilities={"abstain": 0.99})
+            return response
+
+        result = self.run_verify(request=abstain, no_cache=True)
+        row = result["claims"][0]
         self.assertEqual(
-            (row["verdict"], row["reason"], row["review"]), ("unresolved", "abstained", "needs_review")
+            (result["status"], row["verdict"], row["reason"]), ("invalid", "unresolved", "invalid_response")
         )
 
     def test_never_modifies_mission_records_or_candidate(self):
@@ -904,6 +912,139 @@ class VerifyClaimsTests(unittest.TestCase):
         self.setting(enabled=False)
         result = args.handler(args)
         self.assertEqual((result["status"], result["_exit_code"]), ("unavailable", 2))
+
+    # --- 0.3.2 hardening ---
+
+    def test_changed_path_with_nothing_sendable_is_unresolved_not_unchanged(self):
+        (self.root / "src/stable.py").write_text("VALUE = '" + "v" * 6000 + "'\n")
+        result = self.run_verify(self.claims(("stable changed", ["src/stable.py"])), request=self.never)
+        row = result["claims"][0]
+        self.assertEqual(
+            (row["status"], row["verdict"], row["reason"]),
+            ("unresolved", "unresolved", "excerpt_unavailable"),
+        )
+        self.assertEqual(row["evidence"][0]["changed"], True)
+        self.assertEqual((row["evidence"][0]["sent"], row["evidence"][0]["truncated"]), (False, True))
+        self.assertEqual((result["status"], result["reason"]), ("unresolved", "excerpt_unavailable"))
+
+    def test_untracked_one_line_file_over_the_bound_is_truncated_and_not_sent(self):
+        (self.root / "src/blob.txt").write_text("b" * (semantic.VERIFY_RAW_BYTES + 10))
+        self.assertEqual(semantic._path_diff(self.root, "C1", "src/blob.txt", self.base), ("", True))
+        result = self.run_verify(self.claims(("blob added", ["src/blob.txt"])), request=self.never)
+        row = result["claims"][0]
+        self.assertTrue(row["truncated"])
+        self.assertEqual(row["evidence"][0]["sha256"], None)
+        self.assertEqual(row["reason"], "excerpt_unavailable")
+
+    def test_verify_claims_reads_input_from_stdin(self):
+        parser = argparse.ArgumentParser()
+        parser.set_defaults(root=self.root)
+        semantic.add_parser(parser.add_subparsers())
+        args = parser.parse_args(["semantic", "verify-claims", "--mission", "M-0001", "--input", "-"])
+        stdin = types.SimpleNamespace(buffer=io.BytesIO(json.dumps(self.claims()).encode()))
+        with (
+            patch.object(sys, "stdin", stdin),
+            patch.object(semantic.auth, "request_credential", return_value=("mock-not-a-secret", None)),
+            patch.object(semantic, "request_jev", side_effect=self.responder()),
+        ):
+            result = args.handler(args)
+        self.assertEqual(result["claims"][0]["verdict"], "supports")
+        args = parser.parse_args(["semantic", "verify-claims", "--mission", "M-0001", "--input", "gone.json"])
+        with self.assertRaisesRegex(FactoryError, "Semantic input file not found"):
+            args.handler(args)
+
+    def test_credential_missing_does_not_fingerprint_the_candidate_twice(self):
+        original, calls = semantic._verify_context, []
+
+        def counted(*args, **kwargs):
+            calls.append(1)
+            return original(*args, **kwargs)
+
+        with patch.object(semantic, "_verify_context", side_effect=counted):
+            result = self.run_verify(get_api_key=lambda: None, no_cache=True)
+        self.assertEqual((result["reason"], len(calls)), ("credential_missing", 1))
+
+
+class RedactionHardeningTests(unittest.TestCase):
+    KEY_LINES = (
+        "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj",
+        "MzEfYyjiWA4R4/M2bS1GB4t7NXp98C3SC6dVMvDuictGeurT8jNbvJZHtCSuYEvu",
+        "NMoSfm76oqFvAp8Gy0iz5sxjZmSnXyCdPEovGhLa0VzMaQ8s+CLOyS56YyCFGeJZ",
+    )
+
+    def test_key_body_without_begin_line_is_masked(self):
+        for prefix in ("", "+", " "):
+            with self.subTest(prefix=repr(prefix)):
+                text = "".join(prefix + line + "\n" for line in self.KEY_LINES) + prefix + "tail\n"
+                masked, count = redact(text)
+                for line in self.KEY_LINES:
+                    self.assertNotIn(line[:20], masked)
+                self.assertEqual((masked, count), (MASK_PREFIX + "private_key]\n" + prefix + "tail\n", 1))
+        text = "log start\n+" + self.KEY_LINES[0] + "\n+abc==\n+-----END RSA PRIVATE KEY-----\n+after\n"
+        masked, count = redact(text)
+        self.assertEqual((masked, count), ("log start\n" + MASK_PREFIX + "private_key]\n+after\n", 1))
+        # Two long lines, repeated letters and lower-case hex digests are not key material.
+        for text in (
+            self.KEY_LINES[0] + "\n" + self.KEY_LINES[1] + "\n",
+            ("x" * 99 + "\n") * 5,
+            ("0123456789abcdef" * 4 + "\n") * 5,
+        ):
+            with self.subTest(text=text[:10]):
+                self.assertEqual(redact(text), (text, 0))
+
+    def test_authorization_value_never_spans_a_newline(self):
+        self.assertEqual(redact("Authorization:\nnext line"), ("Authorization:\nnext line", 0))
+        self.assertEqual(redact("Authorization: \t Bearer abc12345xyz")[1], 1)
+
+    def test_a_following_option_is_not_a_flag_value(self):
+        self.assertEqual(redact("tool --token --host=db"), ("tool --token --host=db", 0))
+        self.assertEqual(redact_argv(["tool", "--token", "--host=db"]), (["tool", "--token", "--host=db"], 0))
+        self.assertEqual(redact("tool --token=--odd")[1], 1)
+        self.assertEqual(redact_argv(["tool", "--token", "value1"])[0][2], MASK_PREFIX + "password_flag]")
+
+    def test_prose_password_is_not_a_netrc_password(self):
+        for text in (
+            "password must be 8 characters",
+            "password is required",
+            "login first password reset now",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text), (text, 0))
+        for text in (
+            "password hunter2",
+            "  password hunter2 account x",
+            "machine h login u password hunter2",
+            "machine h password hunter2",
+        ):
+            with self.subTest(text=text):
+                masked, count = redact(text)
+                self.assertEqual(count, 1)
+                self.assertNotIn("hunter2", masked)
+
+    def test_attached_short_option_value_does_not_mark_the_next_item(self):
+        self.assertEqual(redact_argv(["tool", "-pSecret", "target"]), (["tool", "-pSecret", "target"], 0))
+        masked, count = redact_argv(["mysql", "-pSecret", "db"])
+        self.assertEqual((masked, count), (["mysql", "-p" + MASK_PREFIX + "password_flag]", "db"], 1))
+        for flag in ("-password", "-db-token", "--dbpassword"):
+            with self.subTest(flag=flag):
+                self.assertEqual(redact_argv(["tool", flag, "v1"])[0][2], MASK_PREFIX + "password_flag]")
+
+    def test_single_component_actual_home_is_masked(self):
+        with patch.dict(os.environ, {"HOME": "/root"}):
+            self.assertEqual(redact("cd /root/app; ls /rooted; /root"), ("cd ~/app; ls /rooted; ~", 2))
+        with patch.dict(os.environ, {"HOME": "/"}):
+            self.assertEqual(redact("cd /app"), ("cd /app", 0))
+
+    def test_tail_keeps_the_end_of_an_overlong_final_line(self):
+        text, cut = bound_text("first\n" + "x" * 100, 10, tail=True)
+        self.assertEqual((text, cut), ("x" * 10, True))
+        text, cut = bound_text("first\n" + "\u00e9" * 10 + "\n", 6, tail=True)
+        self.assertEqual((text, cut), ("\u00e9" * 2 + "\n", True))
+        masked = "a" * 50 + MASK_PREFIX + "password_flag]" + "b" * 3
+        self.assertEqual(bound_text(masked, 10, tail=True), ("bbb", True))
+        self.assertEqual(bound_text(masked, 27, tail=True), (MASK_PREFIX + "password_flag]bbb", True))
+        self.assertEqual(bound_text("", 0, tail=True), ("", False))
+        self.assertEqual(bound_text("abc\ndef\n", 4, tail=True), ("def\n", True))
 
 
 if __name__ == "__main__":

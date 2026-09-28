@@ -6,6 +6,7 @@ these tests verify semantic revalidation independently of the evidence module.
 
 import argparse
 import copy
+import io
 import json
 import os
 import shutil
@@ -360,7 +361,7 @@ class SemanticTests(unittest.TestCase):
             self.assertNotIn(key, result)
         hidden = json.loads((self.root / result["report"]).read_text())
         self.assertEqual(hidden["claims"][0]["relation"], "supports")
-        self.assertEqual(result["report_hash"], digest(hidden))
+        self.assertEqual(result["report_hash"], sha256((self.root / result["report"]).read_bytes()))
         self.assertEqual(self.run_packet(value, no_persist=True)["reason"], "shadow_requires_local_record")
         shutil.rmtree(self.root / ".factory/local")
         self.setting(claim_mode="advisory")
@@ -624,7 +625,8 @@ class SemanticTests(unittest.TestCase):
         with patch.object(semantic, "write_bytes", side_effect=change_after_report):
             result = self.run_packet(no_cache=True)
         self.assertEqual(result["reason"], "inputs_changed")
-        self.assertEqual(result["status"], "skipped")
+        # Invalid (exit 2), as for inputs that change before persistence.
+        self.assertEqual(result["status"], "invalid")
         self.assertEqual(self.files("cache") + self.files("advisory"), [])
 
     def test_successor_cache_and_oversized_previous_cache_are_preserved(self):
@@ -767,7 +769,7 @@ class SemanticTests(unittest.TestCase):
             self.assertEqual(
                 hidden["claims"][0]["review"], "accepted" if confidence >= 0.8 else "needs_review"
             )
-            self.assertEqual(result["report_hash"], digest(hidden))
+            self.assertEqual(result["report_hash"], sha256((self.root / result["report"]).read_bytes()))
             results[confidence] = result
         for result in results.values():
             text = json.dumps(result)
@@ -849,6 +851,122 @@ class SemanticTests(unittest.TestCase):
         result = args.handler(args)
         self.assertEqual(result["status"], "skipped")
         self.assertNotIn("_exit_code", result)
+
+    # --- 0.3.2 hardening ---
+
+    def parser(self):
+        parser = argparse.ArgumentParser()
+        parser.set_defaults(root=self.root)
+        semantic.add_parser(parser.add_subparsers())
+        return parser
+
+    def test_input_dash_reads_bounded_utf8_json_from_stdin(self):
+        args = self.parser().parse_args(["semantic", "check", "--input", "-", "--no-persist"])
+        stdin = types.SimpleNamespace(buffer=io.BytesIO(json.dumps(packet()).encode()))
+        with (
+            patch.object(sys, "stdin", stdin),
+            patch.object(semantic.auth, "request_credential", return_value=("mock-not-a-secret", None)),
+            patch.object(semantic, "request_jev", side_effect=self.request),
+        ):
+            result = args.handler(args)
+        self.assertEqual(result["claims"][0]["relation"], "supports")
+        self.assertEqual(len(self.calls), 1)
+        for data, message in (
+            (b" " * (semantic.INPUT_BYTES + 1), "exceeds 256 KiB"),
+            (b'{"schema_version": 1, "x": "\xff"}', "not valid UTF-8"),
+            (b"{", "Invalid semantic JSON"),
+        ):
+            with (
+                self.subTest(message=message),
+                patch.object(sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(data))),
+                self.assertRaisesRegex(FactoryError, message),
+            ):
+                args.handler(args)
+
+    def test_missing_input_path_is_a_factory_error(self):
+        with self.assertRaisesRegex(FactoryError, "Semantic input file not found: missing.json"):
+            self.run_packet(input_data=None, input_path="missing.json", no_persist=True)
+        self.assertEqual(self.calls, [])
+
+    def test_claim_text_locators_and_excerpts_are_masked_before_sending(self):
+        value = packet()
+        excerpt = "Staging uses api_key=Zq8vLr3xNw5tKp2m for deployments."
+        source = value["sources"][0]
+        source.update(excerpt=excerpt, sha256=sha256(excerpt), locator="token: Yh7tRe4wQa9sLk2p")
+        value["claims"][0].update(text="Deploy with password = hunter2hunter2", quote="Staging uses api_key")
+        result = self.run_packet(value, no_cache=True)
+        sent = json.dumps(self.calls[0])
+        for secret in ("Zq8vLr3xNw5tKp2m", "Yh7tRe4wQa9sLk2p", "hunter2hunter2"):
+            self.assertNotIn(secret, sent)
+        self.assertIn("[REDACTED:", sent)
+        self.assertEqual(result["claims"][0]["masks"], 3)
+        self.assertEqual(result["masked"], 3)
+        # The source hash still binds the raw excerpt, and the quote matched the raw text.
+        self.assertEqual(result["sources"][0]["sha256"], sha256(excerpt))
+        self.assertEqual(result["claims"][0]["relation"], "supports")
+
+    def test_corrupt_lock_does_not_escape_and_busy_names_the_lock(self):
+        lock = self.root / semantic.LOCK
+        for corrupt in (b"[1, 2]", b"not json", b'"text"'):
+
+            def replace_lock(body, corrupt=corrupt, **kwargs):
+                lock.write_bytes(corrupt)
+                return response_for(body)
+
+            with self.subTest(corrupt=corrupt):
+                result = self.run_packet(request=replace_lock, no_cache=True)
+                self.assertEqual(result["status"], "complete")
+                self.assertEqual(lock.read_bytes(), corrupt)
+                busy = self.run_packet()
+                self.assertEqual((busy["status"], busy["reason"]), ("unavailable", "local_request_busy"))
+                self.assertEqual(busy["lock"], semantic.LOCK)
+                lock.unlink()
+
+    def test_settings_digest_ignores_keys_semantic_does_not_use(self):
+        settings = semantic.semantic_settings(self.config)
+        other = {**settings, "min_confidence": 0.1, "triage_accept_confidence": 0.99}
+        self.assertEqual(semantic.settings_digest(settings), semantic.settings_digest(other))
+        self.assertNotEqual(
+            semantic.settings_digest(settings),
+            semantic.settings_digest({**settings, "claim_accept_confidence": 0.5}),
+        )
+        result = self.run_packet(no_cache=True)
+        self.assertEqual(result["provenance"]["settings"], semantic.settings_digest(settings))
+
+    def test_record_directories_are_private(self):
+        (self.root / semantic.LOCAL / "cache").mkdir(parents=True, mode=0o755)
+        os.chmod(self.root / semantic.LOCAL / "cache", 0o755)
+        result = self.run_packet()
+        for relative in (semantic.LOCAL, semantic.LOCAL + "/cache", semantic.LOCAL + "/advisory"):
+            with self.subTest(relative=relative):
+                self.assertEqual((self.root / relative).stat().st_mode & 0o777, 0o700)
+        self.assertTrue((self.root / result["record"]).exists())
+
+    def test_credential_missing_fingerprints_the_candidate_once(self):
+        original, calls = semantic._context, []
+
+        def counted(*args, **kwargs):
+            calls.append(1)
+            return original(*args, **kwargs)
+
+        with patch.object(semantic, "_context", side_effect=counted):
+            result = self.run_packet(get_api_key=lambda: None, no_cache=True)
+        self.assertEqual(result["reason"], "credential_missing")
+        self.assertEqual(len(calls), 1)
+        with patch.object(semantic, "_context", side_effect=counted):
+            self.run_packet(no_cache=True)
+        # Evaluated advice is still rechecked (before and after persistence).
+        self.assertEqual(len(calls), 4)
+
+    def test_schema_constrains_retrieval_timestamps(self):
+        value = packet()
+        value["sources"][0]["retrieved_at"] = "yesterday"
+        with self.assertRaisesRegex(FactoryError, "Invalid semantic input"):
+            self.run_packet(value, get_api_key=lambda: self.fail("key lookup"))
+        schema = json.loads((asset_root() / "schemas/semantic.schema.json").read_text())
+        source = schema["properties"]["sources"]["items"]["properties"]
+        self.assertIn("pattern", source["retrieved_at"])
+        self.assertIn("max_request_bytes", source["excerpt"]["description"])
 
 
 if __name__ == "__main__":

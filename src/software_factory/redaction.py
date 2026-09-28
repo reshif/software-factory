@@ -5,11 +5,13 @@ but never contain any part of it. Masking is deliberately conservative (it can m
 harmless value that looks like an assignment to a key/token/password) and is not a
 guarantee that no secret remains: keep sensitive material out of shared records.
 
-Recognized: PEM private key blocks, passwords in URL userinfo, Slack webhook URLs,
+Recognized: PEM private key blocks (also a block cut before its BEGIN line: base64 lines
+directly above an ``-----END ... PRIVATE KEY-----`` line, and any run of three or more lines
+of 40 or more base64 characters), passwords in URL userinfo, Slack webhook URLs,
 Azure connection-string keys and SAS signatures, ``Authorization`` header values and
 bearer tokens, JWTs, AWS access key IDs, ``sk-``, Stripe (``sk_``/``rk_``/``whsec_``),
 Google (``AIza``), GitHub, GitLab, Hugging Face, SendGrid, npm and Slack tokens, docker
-``"auth"`` and ``.npmrc`` ``_auth`` values, ``.netrc`` passwords, ``curl -u user:pass``
+``"auth"`` and ``.npmrc`` ``_auth`` values, ``.netrc`` passwords (in netrc-shaped lines only), ``curl -u user:pass``
 passwords, password/token command-line flag values, and values assigned to names
 containing a key, secret, token, password, passphrase, credential or ``pass`` word.
 Quoted values are masked whole; unquoted short numbers, booleans/null, builtin type
@@ -23,7 +25,8 @@ separate argv item except through :func:`redact_argv`. Name and flag scans are b
 (64 characters around a key word, 1 KiB from a command name to its password flag) so
 matching stays linear on adversarial input; a longer name or command line is missed.
 
-Home-directory prefixes (the current user's home and generic ``/home/<name>``,
+Home-directory prefixes (the current user's home, even a single-component one such as
+``/root``, and generic ``/home/<name>``,
 ``/Users/<name>`` and ``C:\\Users\\<name>`` forms) are replaced with ``~`` so local
 usernames do not leave the machine; each replacement counts as one mask.
 """
@@ -87,6 +90,12 @@ _GENERIC_HOMES = (
 # and generic assignments. ``part`` is None (mask the whole match), "value" (keep group 1,
 # mask group 2), "flag" or "quoted" (keep groups 1-2, mask a non-empty group 4; "quoted"
 # also leaves plain unquoted values such as numbers and code).
+# A key body line, optionally behind a unified-diff marker; a line of a long base64 run.
+_KEY_LINE = re.compile(r"[ \t]*[+-]?[ \t]*[A-Za-z0-9+/=]+[ \t]*")
+# Encoded key material mixes upper case, lower case and digits on every line, which
+# leaves runs such as ``xxxx...`` rules and lower-case hex digests alone.
+_BASE64_LINE = r"(?=[^\n]*[A-Z])(?=[^\n]*[a-z])(?=[^\n]*[0-9])[ \t]*[+-]?[ \t]*[A-Za-z0-9+/]{40,}={0,2}[ \t]*"
+_NETRC_NEXT = r"(?=[ \t]*$|[ \t]+(?:machine|login|account|macdef|default)\b)"
 _PATTERNS: tuple[tuple[str, re.Pattern[str], str | None], ...] = (
     (
         "private_key",
@@ -95,6 +104,13 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str], str | None], ...] = (
             r"(?:-----END[ A-Z0-9]*PRIVATE KEY(?: BLOCK)?-----|\Z)",
             re.DOTALL,
         ),
+        None,
+    ),
+    # A diff hunk or log tail can start inside a key block, after its BEGIN line.
+    ("private_key", re.compile(r"-----END[ A-Z0-9]*PRIVATE KEY(?: BLOCK)?-----"), "key_tail"),
+    (
+        "private_key",
+        re.compile(r"(?m)^" + _BASE64_LINE + r"(?:\n" + _BASE64_LINE + r"){2,}$"),
         None,
     ),
     (
@@ -120,14 +136,12 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str], str | None], ...] = (
     ),
     ("sas_signature", re.compile(r"(?i)([?&]sig=)" + _NOT_MASKED + r"([^&;\s\"'`<>#]+)"), "value"),
     (
+        # A header value never continues on the next line.
         "authorization",
         re.compile(
-            r"(?i)(\bauthorization[\"']?\s*[:=]\s*[\"']?"
-            r"(?!(?:(?:bearer|basic|token|digest|bot)\s+)?\[REDACTED:)(?:(?:bearer|basic|token|digest|bot)\s+)?)"
-            + _NOT_MASKED
-            + r"("
-            + _VALUE
-            + r")"
+            r"(?i)(\bauthorization[\"']?[ \t]*[:=][ \t]*[\"']?"
+            r"(?!(?:(?:bearer|basic|token|digest|bot)[ \t]+)?\[REDACTED:)"
+            r"(?:(?:bearer|basic|token|digest|bot)[ \t]+)?)" + _NOT_MASKED + r"(" + _VALUE + r")"
         ),
         "value",
     ),
@@ -178,14 +192,22 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str], str | None], ...] = (
         ),
         "value",
     ),
-    ("password_flag", re.compile(r"(?i)((?<![\w-])" + _FLAG + r"(?:=|[ \t]+))" + _QUOTED_VALUE), "flag"),
+    # A following ``--host=db``-style item is the next option, not the flag's value.
     (
-        # ``.netrc``: ``login NAME password VALUE`` or a line starting ``password VALUE``.
+        "password_flag",
+        re.compile(r"(?i)((?<![\w-])" + _FLAG + r"(?:=|[ \t]+(?!-)))" + _QUOTED_VALUE),
+        "flag",
+    ),
+    (
+        # ``.netrc``: ``machine HOST``/``login NAME`` then ``password VALUE``, or a line
+        # starting ``password VALUE``; the value must end the line or precede another
+        # netrc keyword, so prose such as ``password must be ...`` is left alone.
         "netrc_password",
         re.compile(
-            r"((?:(?m:^)[ \t]*|\blogin[ \t]+[^\s]+[ \t]+)password[ \t]+)"
+            r"(?m)((?:^[ \t]*|\b(?:login|machine)[ \t]+[^\s]+[ \t]+)password[ \t]+)"
             + _NOT_MASKED
             + r"(?!(?:is|in|and|or|not|if|else|for)\b|[=:#!<>|])([^\s]+)"
+            + _NETRC_NEXT
         ),
         "value",
     ),
@@ -206,10 +228,17 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str], str | None], ...] = (
     ),
 )
 _FLAG_ONLY = re.compile(r"(?i)" + _FLAG)
+# A single-dash flag names its secret right after the dash or after a ``-``/``_`` part
+# (``-password``, ``-db-token``); ``-pSecret`` is a short option with an attached value.
+_SHORT_FLAG = re.compile(
+    r"(?i)-(?:[A-Za-z0-9]{0,64}[_-])?(?:passwd|password|passphrase|token|secret|api[_-]?key)"
+)
 _MYSQL_PROGRAM = re.compile(r"(?i)" + _MYSQL + r"(?:\.exe)?")
 _OTHER_PROGRAM = re.compile(r"(?i)(curl|sshpass|docker|podman)(?:\.exe)?")
 _CURL_USER = re.compile(r"(-[uU]|--(?:proxy-)?user=)([^:]*:)(.+)", re.DOTALL)
-_MASK_BYTES = re.compile(rb"\[REDACTED:[a-z_]+\]")
+_MASK_BYTES = re.compile(rb"\[REDACTED:[a-z_]{1,64}\]")
+# Longest mask, so a search for a mask around a cut can start just before the cut.
+_MASK_BYTES_MAX = len("[REDACTED:]") + 64
 
 
 def redact(text: str) -> tuple[str, int]:
@@ -219,6 +248,10 @@ def redact(text: str) -> tuple[str, int]:
     count = 0
     for kind, pattern, part in _PATTERNS:
         mask = f"{MASK_PREFIX}{kind}]"
+        if part == "key_tail":
+            text, number = _mask_key_tails(text, pattern, mask)
+            count += number
+            continue
 
         def replace(match, mask=mask, part=part):
             nonlocal count
@@ -234,12 +267,39 @@ def redact(text: str) -> tuple[str, int]:
         text = pattern.sub(replace, text)
     home = os.path.expanduser("~")
     homes = list(_GENERIC_HOMES)
-    if os.path.isabs(home) and home.rstrip("/\\") and len(home.strip("/\\").split(os.sep)) >= 2:
+    # The actual home is masked even with one component (``/root``), never when it is ``/``.
+    if os.path.isabs(home) and home.strip("/\\"):
         homes.insert(0, re.compile(r"(?<![\w.~/\\-])" + re.escape(home.rstrip("/\\")) + _HOME_END))
     for pattern in homes:
         text, number = pattern.subn("~", text)
         count += number
     return text, count
+
+
+def _mask_key_tails(text, pattern, mask):
+    """Mask each END line and the key-body lines directly above it; linear in ``text``."""
+    pieces, position, count = [], 0, 0
+    for match in pattern.finditer(text):
+        begin = max(text.rfind("\n", position, match.start()) + 1, position)
+        if text[begin : match.start()].strip(" \t+-"):
+            # Other text before the END marker on its line is kept.
+            begin = match.start()
+        else:
+            while begin > position:
+                above = max(text.rfind("\n", position, begin - 1) + 1, position)
+                if not _KEY_LINE.fullmatch(text, above, begin - 1):
+                    break
+                begin = above
+        pieces += [text[position:begin], mask]
+        position = match.end()
+        count += 1
+    return "".join(pieces) + text[position:], count
+
+
+def _secret_flag(argument):
+    if not _FLAG_ONLY.fullmatch(argument):
+        return False
+    return argument.startswith("--") or bool(_SHORT_FLAG.match(argument))
 
 
 def redact_argv(argv) -> tuple[list[str], int]:
@@ -255,7 +315,8 @@ def redact_argv(argv) -> tuple[list[str], int]:
     for argument in argv:
         text, number = redact(argument)
         curl_user = _CURL_USER.fullmatch(argument) if "curl" in programs else None
-        secret_flag = previous is not None and bool(_FLAG_ONLY.fullmatch(previous))
+        # A following option (``--token --host=db``) is not the flag's value.
+        secret_flag = previous is not None and _secret_flag(previous) and not argument.startswith("-")
         if argument and (secret_flag or (previous == "-p" and programs & {"sshpass", "login"})):
             text, number = mask, 1
         elif "curl" in programs and previous in ("-u", "-U", "--user", "--proxy-user") and ":" in argument:
@@ -285,28 +346,33 @@ def redact_argv(argv) -> tuple[list[str], int]:
 def bound_text(text: str, limit: int, *, tail: bool = False) -> tuple[str, bool]:
     """Cut ``text`` to at most ``limit`` UTF-8 bytes; return the text and whether it was cut.
 
-    The cut falls on a line boundary: a partial line at the cut is dropped, never kept as
-    a fragment, so a secret on that line cannot be split before masking and a
-    ``[REDACTED:kind]`` mask is never cut in half. ``tail`` keeps the end instead of the start.
+    Callers mask ``text`` first. The cut falls on a line boundary: a partial line at the
+    cut is dropped, so a secret on that line cannot be split before masking. Masks never
+    span lines, so a line-boundary cut never splits a ``[REDACTED:kind]`` mask. ``tail``
+    keeps the end instead of the start; when the final line alone exceeds ``limit``, its
+    last ``limit`` bytes are kept instead of nothing, starting on a whole UTF-8 character
+    and never inside a mask.
     """
     data = text.encode()
     if len(data) <= limit:
         return text, False
     limit = max(0, limit)
-    spans = [match.span() for match in _MASK_BYTES.finditer(data)]
     if tail:
         start = len(data) - limit
         if data[start - 1 : start] != b"\n":
             newline = data.find(b"\n", start)
             start = newline + 1 if newline != -1 else len(data)
-        for begin, end in spans:
-            if begin < start < end:
-                start = end
+        if start >= len(data) and limit:
+            # The final line is longer than the limit: keep its end rather than nothing.
+            start = len(data) - limit
+            while start < len(data) and data[start] & 0xC0 == 0x80:
+                start += 1
+            for match in _MASK_BYTES.finditer(data, max(0, start - _MASK_BYTES_MAX)):
+                if match.start() >= start:
+                    break
+                start = max(start, match.end())
         return data[start:].decode("utf-8", "ignore"), True
     stop = limit
     if data[stop - 1 : stop] != b"\n" and data[stop : stop + 1] != b"\n":
         stop = data.rfind(b"\n", 0, stop) + 1
-    for begin, end in spans:
-        if begin < stop < end:
-            stop = begin
     return data[:stop].decode("utf-8", "ignore"), True

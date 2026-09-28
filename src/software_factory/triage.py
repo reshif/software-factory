@@ -40,7 +40,9 @@ from .redaction import bound_text, redact, redact_argv
 LOCAL = ".factory/local/semantic/triage"
 MAX_CHECKS = 8
 TAIL_BYTES = 6144
-# Raw tail read before masking; it is masked whole, then cut to TAIL_BYTES on a line.
+# The smallest per-check tail worth sending; below it, later checks are left unresolved.
+MIN_TAIL_BYTES = 512
+# Raw tail read before masking; it is masked whole, then cut to the tail budget on a line.
 READ_BYTES = 4 * TAIL_BYTES
 MAX_LOG_BYTES = 64 * 1048576
 # TypeSafe confidence-routing guidance: apply a routed choice only at or above
@@ -64,6 +66,10 @@ INSTRUCTIONS = (
 )
 
 
+class _Canceled(Exception):
+    pass
+
+
 def _threshold(settings):
     value = settings.get("triage_accept_confidence", DEFAULT_THRESHOLD)
     # Enforced here too, independent of the configuration schema version.
@@ -85,6 +91,12 @@ def triage_settings(config):
     return settings
 
 
+def _settings_digest(settings):
+    from .semantic import settings_digest
+
+    return settings_digest(settings, ("triage_accept_confidence",))
+
+
 def _private(root):
     private_dir(root)
     safe_path(root, LOCAL)
@@ -100,6 +112,11 @@ def _private(root):
 
 def _refuse(message):
     return FactoryError(message, exit_code=2)
+
+
+def _check_cancel(cancel):
+    if cancel is not None and cancel.is_set():
+        raise _Canceled
 
 
 def _read_log(root, log, expected_path):
@@ -124,9 +141,7 @@ def _read_log(root, log, expected_path):
     return data[-READ_BYTES:], len(data)
 
 
-def _trim(tail, size, budget):
-    if len(tail) > budget:
-        tail = tail[-budget:]
+def _trim(tail, size):
     if len(tail) < size:
         # Drop a partial first line so a cut cannot split a secret past redaction.
         newline = tail.find(b"\n")
@@ -134,29 +149,38 @@ def _trim(tail, size, budget):
     return tail
 
 
-def _excerpts(root, mission_id, revision, item):
+def _log_path(mission_id, revision, item, channel):
+    return f".factory/local/runs/{mission_id}/{revision}/{item['id']}.{channel}.log"
+
+
+def _excerpts(root, mission_id, revision, item, cancel=None):
+    """Hash both logs of one check; return their whole masked raw tails, mask count and hashes."""
     assert_id(item["id"])
-    base = f".factory/local/runs/{mission_id}/{revision}/{item['id']}"
     tails, sizes, hashes = {}, {}, {}
     for channel in ("stdout", "stderr"):
+        _check_cancel(cancel)
         log = item[f"{channel}_log"]
-        tails[channel], sizes[channel] = _read_log(root, log, f"{base}.{channel}.log")
+        tails[channel], sizes[channel] = _read_log(root, log, _log_path(mission_id, revision, item, channel))
         hashes[channel] = log["sha256"]
-    # Mask whole lines of the generous raw tail first, then cut the masked text on a line,
-    # so a cut never splits a secret into an unmasked fragment.
+    # Mask whole lines of the generous raw tail first; _log_tail then cuts the masked
+    # text on a line, so a cut never splits a secret into an unmasked fragment.
     masked, masks = {}, 0
     for channel in ("stdout", "stderr"):
-        raw = _trim(tails[channel], sizes[channel], READ_BYTES)
+        raw = _trim(tails[channel], sizes[channel])
         masked[channel], count = redact(raw.decode("utf-8", errors="replace"))
         masks += count
-    half = TAIL_BYTES // 2
+    return masked, masks, hashes
+
+
+def _log_tail(masked, budget):
+    """Cut masked stdout and stderr to ``budget`` bytes together; an unused half is shared."""
+    half = budget // 2
     budgets = {"stdout": half, "stderr": half}
     for channel, other in (("stdout", "stderr"), ("stderr", "stdout")):
         used = len(masked[other].encode())
         if used < half:
-            budgets[channel] = TAIL_BYTES - used
-    texts = {channel: bound_text(masked[channel], budgets[channel], tail=True)[0] for channel in masked}
-    return texts, masks, hashes
+            budgets[channel] = budget - used
+    return {channel: bound_text(masked[channel], budgets[channel], tail=True)[0] for channel in masked}
 
 
 def _load_evidence(root, mission_id, revision):
@@ -176,12 +200,28 @@ def _load_evidence(root, mission_id, revision):
     return reference, evidence
 
 
-def _unavailable(reason):
+def _evidence_current(root, mission_id, revision, evidence_hash, items, cancel):
+    """Whether the registered evidence and every sent check's logs still hash as before."""
+    try:
+        reference, _ = _load_evidence(root, mission_id, revision)
+        if sha256(safe_path(root, reference).read_bytes()) != evidence_hash:
+            return False
+        for item in items:
+            for channel in ("stdout", "stderr"):
+                _check_cancel(cancel)
+                _read_log(root, item[f"{channel}_log"], _log_path(mission_id, revision, item, channel))
+        return True
+    except (FactoryError, OSError, KeyError, ValueError):
+        return False
+
+
+def _unavailable(reason, **extra):
     return {
         "schema_version": 1,
         "operation": "check_triage",
         "status": "unavailable",
         "reason": reason,
+        **extra,
         "advisory_only": True,
         "_exit_code": 2,
     }
@@ -191,6 +231,56 @@ def _mark(rows, status, reason):
     for row in rows:
         row.update(status=status, reason=reason, choice=None, probabilities=None, confidence=None)
         row.update(category=None, review=None)
+
+
+def _body(model, state):
+    questions = {
+        "q" + str(index): {
+            "type": "choice",
+            "instructions": INSTRUCTIONS
+            + f"Use ONLY state.checks[{index}]: its argv, status, exit code, duration and log tail. "
+            + "Choose abstain when the evidence does not support one category. The check ID is "
+            + json.dumps(entry["check"])
+            + ".",
+            "criteria": CATEGORIES,
+        }
+        for index, entry in enumerate(state)
+    }
+    return {"model": model, "state": {"checks": state}, "questions": questions}
+
+
+def _body_size(body):
+    return len(json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode())
+
+
+def _fit(model, limit, entries):
+    """Scale the per-check tail so every selected check fits one request when possible.
+
+    Returns the per-check tail budget, the state entries sent (a prefix, in input order)
+    and every entry. Checks that still do not fit at MIN_TAIL_BYTES are left out rather
+    than split into hidden extra requests.
+    """
+
+    def states(budget):
+        return [{**entry["state"], "log_tail": _log_tail(entry["masked"], budget)} for entry in entries]
+
+    if not entries:
+        return TAIL_BYTES, [], []
+    empty = {"stdout": "", "stderr": ""}
+    overhead = _body_size(_body(model, [{**entry["state"], "log_tail": empty} for entry in entries]))
+    budget = max(MIN_TAIL_BYTES, min(TAIL_BYTES, (limit - overhead) // len(entries)))
+    state = states(budget)
+    # JSON escaping can make a tail larger than its UTF-8 bytes; shrink proportionally.
+    for _ in range(8):
+        size = _body_size(_body(model, state))
+        if size <= limit or budget <= MIN_TAIL_BYTES:
+            break
+        budget = max(MIN_TAIL_BYTES, budget * max(0, limit - overhead) // max(1, size - overhead))
+        state = states(budget)
+    sent = len(state)
+    while sent and _body_size(_body(model, state[:sent])) > limit:
+        sent -= 1
+    return budget, state[:sent], state
 
 
 def triage_checks(
@@ -205,13 +295,12 @@ def triage_checks(
     request=None,
 ):
     """Classify failed checks of registered evidence. Advisory only; never a gate."""
-    from .checks import successful_check
+    from .semantic import LOCK, _local_lock
 
     root = Path(root)
     assert_id(mission)
     assert_id(revision)
     settings = triage_settings(load_config(root))
-    threshold = settings["triage_accept_confidence"]
     # Strict bypass paths precede evidence, logs, keys and storage.
     if not settings["enabled"]:
         return _unavailable("disabled")
@@ -219,42 +308,57 @@ def triage_checks(
         return _unavailable("network_disallowed")
     if cancel is not None and cancel.is_set():
         return _unavailable("canceled")
-    started = time.monotonic()
-    reference, evidence = _load_evidence(root, mission, revision)
-    evidence_hash = sha256(safe_path(root, reference).read_bytes())
+    _, evidence = _load_evidence(root, mission, revision)
     if check is not None and not any(item["id"] == check for item in evidence["checks"]):
         raise _refuse(f"Check {check} is not in evidence {revision}")
+    _private(root)
+    # One provider request at a time across semantic check, verify-claims and triage.
+    with _local_lock(root) as acquired:
+        if not acquired:
+            return _unavailable("local_request_busy", lock=LOCK)
+        try:
+            return _triage_locked(root, mission, revision, check, settings, cancel, get_api_key, request)
+        except _Canceled:
+            return _unavailable("canceled")
+
+
+def _triage_locked(root, mission, revision, check, settings, cancel, get_api_key, request):
+    from .checks import successful_check
+    from .semantic import private_mkdir
+
+    threshold = settings["triage_accept_confidence"]
+    started = time.monotonic()
+    # Hash the registered bytes and parse the same bytes' record again under the lock.
+    reference, evidence = _load_evidence(root, mission, revision)
+    evidence_hash = sha256(safe_path(root, reference).read_bytes())
     failing = [
         item
         for item in evidence["checks"]
         if not successful_check(item) and (check is None or item["id"] == check)
     ]
     selected, omitted = failing[:MAX_CHECKS], [item["id"] for item in failing[MAX_CHECKS:]]
-    _private(root)
-    rows, state = [], []
+    entries, rows = [], []
     for item in selected:
-        texts, masks, hashes = _excerpts(root, mission, revision, item)
+        masked, masks, hashes = _excerpts(root, mission, revision, item, cancel)
         argv, count = redact_argv(item["command"])
         masks += count
-        state.append(
-            {
-                "check": item["id"],
-                "argv": argv,
-                "status": item["status"],
-                "exit_code": item["exit_code"],
-                "signal": item["signal"],
-                "duration_ms": item["duration_ms"],
-                "output_truncated": item["truncated"],
-                "log_tail": texts,
-            }
-        )
+        state = {
+            "check": item["id"],
+            "argv": argv,
+            "status": item["status"],
+            "exit_code": item["exit_code"],
+            "signal": item["signal"],
+            "duration_ms": item["duration_ms"],
+            "output_truncated": item["truncated"],
+        }
+        entries.append({"state": state, "masked": masked})
         rows.append(
             {
                 "check": item["id"],
                 "status": "pending",
                 "reason": None,
                 "log_sha256": hashes,
-                "excerpt_sha256": digest(state[-1]),
+                "excerpt_sha256": None,
                 "masked": masks,
                 "choice": None,
                 "probabilities": None,
@@ -263,20 +367,14 @@ def triage_checks(
                 "review": None,
             }
         )
+    _check_cancel(cancel)
+    budget, sent, states = _fit(settings["model"], settings["max_request_bytes"], entries)
+    for row, state in zip(rows, states):
+        row["excerpt_sha256"] = digest(state)
+    sent_rows, unsent_rows = rows[: len(sent)], rows[len(sent) :]
+    _mark(unsent_rows, "unresolved", "request_too_large")
+    body = _body(settings["model"], sent)
     options = tuple(CATEGORIES)
-    questions = {
-        "q" + str(index): {
-            "type": "choice",
-            "instructions": INSTRUCTIONS
-            + f"Use ONLY state.checks[{index}]: its argv, status, exit code, duration and log tail. "
-            + "Choose abstain when the evidence does not support one category. The check ID is "
-            + json.dumps(row["check"])
-            + ".",
-            "criteria": CATEGORIES,
-        }
-        for index, row in enumerate(rows)
-    }
-    body = {"model": settings["model"], "state": {"checks": state}, "questions": questions}
     report = {
         "schema_version": 1,
         "operation": "check_triage",
@@ -291,6 +389,7 @@ def triage_checks(
         "requested_model": settings["model"],
         "returned_model": None,
         "request_sha256": digest(body),
+        "tail_bytes": budget,
         "status": "complete",
         "reason": None,
         "created_at": now(),
@@ -303,19 +402,16 @@ def triage_checks(
     response = None
     if not rows:
         report.update(status="nothing_to_triage", reason="no_failing_checks")
-    elif (
-        len(json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode())
-        > settings["max_request_bytes"]
-    ):
-        _mark(rows, "unresolved", "request_too_large")
+    elif not sent_rows:
         report.update(status="unresolved", reason="request_too_large")
     else:
         api_key, credential_reason = auth.request_credential(get_api_key)
         if credential_reason:
-            _mark(rows, "unavailable", credential_reason)
+            _mark(sent_rows, "unavailable", credential_reason)
             report.update(status="unavailable", reason=credential_reason)
         else:
             attempts = []
+            questions = body["questions"]
             try:
                 response = (request or request_jev)(
                     body,
@@ -334,25 +430,31 @@ def triage_checks(
                 status = (
                     "invalid" if exc.code in ("invalid_response", "response_too_large") else "unavailable"
                 )
-                _mark(rows, status, exc.code)
+                _mark(sent_rows, status, exc.code)
                 report.update(status=status, reason=exc.code)
             except Exception:  # noqa: BLE001 - injected provider errors must not expose secrets
                 response = None
-                _mark(rows, "unavailable", "network_error")
+                _mark(sent_rows, "unavailable", "network_error")
                 report.update(status="unavailable", reason="network_error")
             report["attempts"] = len(attempts)
     if response is not None:
         # Configuration changed or disabled mid-request: discard the answers.
         try:
             current = triage_settings(load_config(root))
-            changed = not current["enabled"] or digest(current) != digest(settings)
+            changed = not current["enabled"] or _settings_digest(current) != _settings_digest(settings)
         except (FactoryError, OSError):
             changed = True
         if changed:
-            _mark(rows, "unavailable", "configuration_changed")
+            _mark(sent_rows, "unavailable", "configuration_changed")
             report.update(status="unavailable", reason="configuration_changed")
+        elif not _evidence_current(
+            root, mission, revision, evidence_hash, selected[: len(sent_rows)], cancel
+        ):
+            # The answers describe evidence or logs that are no longer what was registered.
+            _mark(sent_rows, "invalid", "inputs_changed")
+            report.update(status="invalid", reason="inputs_changed")
         else:
-            for index, row in enumerate(rows):
+            for index, row in enumerate(sent_rows):
                 answer = response["answers"]["q" + str(index)]
                 accepted = answer["choice"] != "abstain" and answer["confidence"] >= threshold
                 row.update(
@@ -367,6 +469,8 @@ def triage_checks(
                     review="classified" if accepted else "unclassified",
                 )
             report.update(returned_model=response["model"], usage=response["usage"])
+            if unsent_rows:
+                report.update(status="unresolved", reason="request_too_large")
     report["coverage"] = {
         "failing": len(failing),
         "expected": len(rows),
@@ -379,7 +483,7 @@ def triage_checks(
     report["elapsed_ms"] = round((time.monotonic() - started) * 1000)
     _private(root)
     relative = f"{LOCAL}/{mission}-{revision}-{uuid.uuid4()}.json"
-    safe_path(root, LOCAL).mkdir(parents=True, exist_ok=True, mode=0o700)
+    private_mkdir(root, LOCAL)
     data = (json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode()
     write_bytes(root, relative, data)
     exit_code = 2 if report["status"] in ("unavailable", "invalid") else 0

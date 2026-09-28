@@ -54,7 +54,9 @@ MISSION_RECORD = re.compile(
 # classification; a leftover temporary still enters the fingerprint. Creating
 # any other directory under .factory/missions during monitoring is a change.
 MISSION_RECORD_DIRECTORY = re.compile(rf"\.factory/missions/{_ID}/results(?:/records)?")
-INSTRUCTIONS = ("AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md")
+# Files any coding client reads as instructions or agent configuration wherever they sit;
+# they are governed in every directory, ignored or not.
+INSTRUCTIONS = ("AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md", "GEMINI.md", ".mcp.json")
 GOVERNED_DIRECTORIES = (
     ".factory/src",
     ".factory/schemas",

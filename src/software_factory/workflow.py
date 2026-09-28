@@ -78,6 +78,8 @@ PROTECTED_FLOOR = (
     "**/AGENTS.override.md",
     "**/CLAUDE.md",
     "**/CLAUDE.local.md",
+    "**/GEMINI.md",
+    "**/.mcp.json",
     "factory.json",
     ".gitignore",
     ".gitattributes",
@@ -98,9 +100,12 @@ PROTECTED_FLOOR = (
     ".factory/hooks/**",
     ".factory/templates/**",
     ".factory/docs/**",
-    ".claude/**",
-    ".codex/**",
-    ".agents/**",
+    # Client configuration is read from nested directories too, so protect it at any depth.
+    "**/.claude/**",
+    "**/.codex/**",
+    "**/.agents/**",
+    ".cursor/**",
+    "**/.cursorrules",
     ".github/**",
     ".vscode/**",
 )
@@ -1796,6 +1801,23 @@ def mission_brief(root, id, kind=None, task=None):
         raise FactoryError("Brief kind must be one of: " + ", ".join(BRIEF_KINDS))
     mission = load_mission(root, id)
     candidate = fingerprint(root, mission)
+    if mission["kind"] != "maintenance":
+        # Agents load instruction and client-config files before any gate runs, so a
+        # product mission is not briefed while those differ from the mission base.
+        current, baseline = _policy(root, mission)
+        protected = _protected_patterns(current, baseline)
+        touched = [
+            p
+            for p in candidate["changed_paths"]
+            if not is_metadata(p) and any(matches_path(p, q) for q in protected)
+        ]
+        if touched:
+            raise FactoryError(
+                "Protected factory paths differ from the mission base, so agents would read changed "
+                "instructions or client configuration: "
+                + ", ".join(touched[:10])
+                + "; revert them, or make the change in a maintenance mission"
+            )
     diff = (
         candidate_diff(root, mission["base_commit"], candidate["changed_paths"])
         if kind in DIFF_BRIEFS
@@ -3008,6 +3030,15 @@ def pr_prerequisites(root, id):
     return {"risks": risks, "recovery": text}
 
 
+def _protected_patterns(current, baseline):
+    """The built-in floor plus current and baseline protected_paths; a mission cannot unprotect a path."""
+    return (
+        set(PROTECTED_FLOOR)
+        | set(current.get("protected_paths", []))
+        | set(baseline.get("protected_paths", []))
+    )
+
+
 def _policy(root, mission):
     """Current and baseline policy; only a baseline without .factory/policy.json counts as empty.
 
@@ -3125,11 +3156,7 @@ def _assess_gate_snapshot(root, mission, candidate, resuming_to=None):
     problem = scope_docs_problem(root, mission)
     if problem:
         reasons.append(problem)
-    protected = (
-        set(PROTECTED_FLOOR)
-        | set(current.get("protected_paths", []))
-        | set(baseline.get("protected_paths", []))
-    )
+    protected = _protected_patterns(current, baseline)
     sensitive = set(current.get("sensitive_paths", [])) | set(baseline.get("sensitive_paths", []))
     if mission["spec_hash"] != candidate["spec_hash"]:
         reasons.append("Specification is unaccepted or changed since scope acceptance")

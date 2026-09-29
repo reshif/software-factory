@@ -43,6 +43,24 @@ The manual smoke run confirmed each of the following:
 - `.mcp.json` blocks `mission brief`.
 - The installed guard denies `mission approve` and `mission ci-result` and allows `mission status`.
 
+### Onboarding and chat approvals (follow-up)
+
+- **`init --commit`**
+  - On a plain folder it detects the tests (for example `python -m pytest`) and writes them as checks without running them.
+  - It sets `owners.maintainer` from `git config user.name` and creates the baseline commit, so `mission create` works immediately.
+  - `next_steps` lists what remains.
+- **Chat approvals in Claude Code.** A `UserPromptSubmit` hook, managed by the factory in `.claude/settings.json` and removed on uninstall, records the user's own `approve <MISSION> <kind>` message:
+  - scope binds to spec.md
+  - an exception binds to the pending constitution or the candidate
+  - merge binds to the CI candidate
+  - release binds to the artifact digest
+  - Agents still cannot record these decisions.
+- **Verified from a fresh wheel with an isolated install:**
+  - The installed hook command recorded `D-SCOPE-…` from `approve M-1 scope`.
+  - `mission decision` still refused an agent-written scope record.
+  - `scripts/release_smoke.py` passed.
+- **Not verified:** hook firing inside a live Claude Code session. It requires a trusted workspace with hooks enabled.
+
 ### Not verified in 0.3.2
 
 - Live Claude Code, Codex and Copilot sessions, and hook firing in a real client.

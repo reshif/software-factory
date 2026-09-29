@@ -24,6 +24,17 @@ from .core import (
     sha256,
     validate,
 )
+from .onboarding import (
+    COMMIT_COMMAND,
+    INITIAL_COMMIT_MESSAGE,
+    PLACEHOLDER_CHECK,
+    default_maintainer,
+    detect_checks,
+    git_identity_missing,
+    has_commit,
+    next_steps,
+    start_instructions,
+)
 from .rendering import SHARED, plan_render, read_manifest, strip_owned, unmark_section
 from .transactions import apply, ensure_no_journal, optional, planned_preimages, planning_snapshot
 
@@ -31,7 +42,7 @@ MANIFEST = ".factory/installation.json"
 IGNORE_MARKER = "# software-factory private/runtime files"
 
 
-def starter(name: str, selected) -> dict:
+def starter(name: str, selected, *, checks=None, maintainer=None) -> dict:
     selected = profiles(selected)
     return {
         "schema_version": 1,
@@ -45,9 +56,10 @@ def starter(name: str, selected) -> dict:
             "check_timeout_seconds": 300,
             "high_risk_lines": 400,
         },
-        "checks": [
+        "checks": checks
+        or [
             {
-                "id": "configure-me",
+                "id": PLACEHOLDER_CHECK,
                 "command": [
                     "python",
                     "-c",
@@ -58,7 +70,7 @@ def starter(name: str, selected) -> dict:
                 "timeout_seconds": 30,
             }
         ],
-        "owners": {"maintainer": None, "reviewer": None},
+        "owners": {"maintainer": maintainer, "reviewer": None},
         "delivery": {
             "enabled": False,
             "staging_command": None,
@@ -120,7 +132,7 @@ def kernel_payload() -> dict[str, bytes]:
     return files
 
 
-def _target(root: Path, allow_dirty: bool):
+def _target(root: Path, allow_dirty: bool, commit: bool = False):
     if root.is_symlink():
         raise FactoryError("Target must not be a symlink")
     if root.exists() and not root.is_dir():
@@ -136,9 +148,18 @@ def _target(root: Path, allow_dirty: bool):
     top = Path(top).resolve()
     if top != root.resolve():
         raise FactoryError(f"Target is inside a repository; explicitly select its root: {top}")
-    if not allow_dirty and git(root, "status", "--porcelain"):
+    dirty = bool(git(root, "status", "--porcelain"))
+    fresh = not has_commit(root)
+    if dirty and commit and not fresh:
+        # The factory commit must contain only factory files, never unrelated work.
+        raise FactoryError(
+            "Target has uncommitted changes; --commit would mix them into the factory commit. "
+            "Commit or stash them first, or omit --commit"
+        )
+    if dirty and not allow_dirty and not (commit and fresh):
         raise FactoryError(
             "Target has uncommitted changes; inspect them and use --allow-dirty if intentional"
+            + (" (in a new repository without commits, --commit creates the first commit)" if fresh else "")
         )
     return True
 
@@ -429,9 +450,24 @@ def install(
     upgrade=False,
     to_version=None,
     allow_downgrade=False,
+    maintainer=None,
+    detect=True,
+    commit=False,
 ) -> dict:
     root = Path(root).absolute()
-    has_git = _target(root, allow_dirty)
+    if maintainer is not None and not maintainer.strip():
+        raise FactoryError("--maintainer must not be empty")
+    if commit and upgrade:
+        raise FactoryError("--commit applies to init only; commit upgrades through your normal workflow")
+    has_git = _target(root, allow_dirty, commit)
+    if commit and not dry_run:
+        missing = git_identity_missing(root)
+        if missing:
+            raise FactoryError(
+                "--commit needs a Git identity (missing " + " and ".join(missing) + "); run "
+                'git config --global user.name "Your Name" && git config --global user.email '
+                "you@example.com, then retry. No changes were made"
+            )
     if root.is_dir():
         ensure_no_journal(root)
     snapshot = planning_snapshot(root)
@@ -460,15 +496,27 @@ def install(
         )
     ):
         raise FactoryError("A different release is installed; use upgrade")
+    detected = []
     if optional(root, "factory.json") is not None:
         # This release's schema stands in for a deleted project copy, which install restores.
         config = load_config(root, packaged_fallback=True)
         if selected is not None and profiles(config) != profiles(selected):
             raise FactoryError("Installed profiles differ; use render --profile explicitly")
+        if maintainer is not None and config.get("owners", {}).get("maintainer") != maintainer:
+            # factory.json belongs to the project; init never rewrites it.
+            raise FactoryError(
+                "factory.json already exists; set owners.maintainer there, then run software-factory render"
+            )
     else:
         if selected is None:
             raise FactoryError("Select --profile claude, codex, copilot, or a comma-separated combination")
-        config = starter(root.name, selected)
+        detected = detect_checks(root) if detect else []
+        config = starter(
+            root.name,
+            selected,
+            checks=[item["check"] for item in detected if item["confident"]],
+            maintainer=maintainer if maintainer is not None else default_maintainer(root),
+        )
         validate(root, "factory", config, packaged_fallback=True)
     operations = {}
     effective = {}
@@ -560,7 +608,22 @@ def install(
         "relinquished_exports": render_report["relinquished"],
         "network": "none" if skip_sync or dry_run else "uv dependency setup only",
         "setup": "planned",
+        "detected_checks": [
+            {**item["check"], "detected_from": item["detected_from"]}
+            for item in detected
+            if item["confident"]
+        ],
+        "maintainer": config.get("owners", {}).get("maintainer"),
     }
+    if detected or (detect and optional(root, "factory.json") is None):
+        report["checks_note"] = (
+            "Detected from project files (nothing was executed) and written to factory.json; "
+            "they have not been run yet"
+            if report["detected_checks"]
+            else "No test command detected; factory.json keeps the failing configure-me placeholder"
+        )
+    if commit:
+        report["commit"] = {"planned": INITIAL_COMMIT_MESSAGE, "git_init": not has_git}
     if history is not None:
         report["history"] = history
     if reconcile is not None:
@@ -585,9 +648,11 @@ def install(
     root.mkdir(parents=True, exist_ok=True)
     apply(root, operations, expected=expected, label="upgrade" if upgrade else "init")
     # Only after a successful apply: a failed install leaves no new repository behind.
-    if git_init and not has_git:
+    if (git_init or commit) and not has_git:
         try:
             git(root, "init", "-q")
+            if commit:
+                git(root, "symbolic-ref", "HEAD", "refs/heads/main")
         except FactoryError as exc:
             raise FactoryError(
                 f"Project files installed; git init failed ({exc}); run git init, then doctor"
@@ -603,16 +668,54 @@ def install(
                 2,
             )
     report["setup"] = "dependencies_missing" if skip_sync else "configured"
+    if commit:
+        report["commit"] = _initial_commit(root, changed)
     report["baseline"] = (
         "present"
         if has_git and git(root, "rev-parse", "--verify", "HEAD", check=False)
         else "required_before_missions"
     )
     report["checks"] = (
-        "configuration_required" if any(c["id"] == "configure-me" for c in config["checks"]) else "not_run"
+        "configuration_required" if any(c["id"] == PLACEHOLDER_CHECK for c in config["checks"]) else "not_run"
     )
     report["live_client_behavior"] = "not_run"
+    names = profiles(config)
+    report["next_steps"] = next_steps(
+        root,
+        config,
+        names,
+        detected=[item for item in detected if item["confident"]],
+        runtime_missing=skip_sync,
+    )
+    report["start"] = start_instructions(names)
     return report
+
+
+def _initial_commit(root: Path, changed: list[str]) -> dict:
+    """Commit the installation: everything in a new repository, only factory changes otherwise."""
+    fresh = not has_commit(root)
+    try:
+        if fresh:
+            git(root, "add", "-A")
+        else:
+            specs = sorted({name.split("/", 1)[0] for name in changed})
+            if specs:
+                git(root, "add", "-A", "--", *specs)
+        if not git(root, "diff", "--cached", "--name-only"):
+            return {"created": False, "reason": "nothing to commit"}
+        git(root, "-c", "user.useConfigOnly=true", "commit", "-q", "-m", INITIAL_COMMIT_MESSAGE)
+        sha = git(root, "rev-parse", "HEAD")
+    except FactoryError as exc:
+        raise FactoryError(
+            f"Project files installed; the initial commit failed ({exc}). Resolve it, then run: "
+            + COMMIT_COMMAND
+        ) from exc
+    return {
+        "created": True,
+        "sha": sha,
+        "message": INITIAL_COMMIT_MESSAGE,
+        "scope": "all files (new repository)" if fresh else "factory files only",
+    }
 
 
 def jev_summary(config: dict) -> dict:

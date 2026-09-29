@@ -168,7 +168,7 @@ def test_approve_refuses_without_an_interactive_terminal(repo, monkeypatch):  # 
     id = plan_mission(repo)
     monkeypatch.setattr(sys, "stdin", io.StringIO("M-REQ\n"))
     with pytest.raises(FactoryError, match="only runs in an interactive terminal"):
-        cli(repo, "mission", "approve", "--mission", id, "--kind", "merge", "--reference", "PR #1 review")
+        cli(repo, "mission", "approve", "--mission", id, "--kind", "exception", "--reference", "PR #1 review")
 
 
 def _terminal(monkeypatch, answer):
@@ -192,11 +192,11 @@ def test_approve_records_after_typed_confirmation(repo, monkeypatch):  # noqa: F
 
     id = plan_mission(repo)
     prompt = _terminal(monkeypatch, id + "\n")
-    cli(repo, "mission", "approve", "--mission", id, "--kind", "merge", "--reference", "PR #1 review")
+    cli(repo, "mission", "approve", "--mission", id, "--kind", "exception", "--reference", "PR #1 review")
     fingerprint = load_mission_fingerprint(repo, id)
     decision = load_mission(repo, id)["decisions"][-1]
-    assert decision["kind"] == "merge" and decision["subject_hash"] == fingerprint
-    assert decision["id"] == f"D-MERGE-{fingerprint[:8]}" and decision["reference"] == "PR #1 review"
+    assert decision["kind"] == "exception" and decision["subject_hash"] == fingerprint
+    assert decision["id"] == f"D-EXCEPTION-{fingerprint[:8]}" and decision["reference"] == "PR #1 review"
     assert "the current candidate fingerprint" in prompt.getvalue()
 
 
@@ -228,3 +228,11 @@ def test_gate_requires_a_configured_maintainer(repo):  # noqa: F811
     config["owners"]["maintainer"] = None
     write_json(repo, "factory.json", config)
     assert MAINTAINER_REQUIRED in assess_gate(repo, id)["reasons"]
+
+
+def test_merge_approval_binds_to_the_recorded_ci_candidate(repo, monkeypatch):  # noqa: F811
+    """Merge approvals default to the CI candidate fingerprint and refuse without a CI record."""
+    id = plan_mission(repo)
+    _terminal(monkeypatch, id + "\n")
+    with pytest.raises(FactoryError, match="Record the successful CI result first"):
+        cli(repo, "mission", "approve", "--mission", id, "--kind", "merge", "--reference", "abc123")

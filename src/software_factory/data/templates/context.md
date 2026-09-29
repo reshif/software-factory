@@ -24,4 +24,4 @@ Official documentation consulted: URL, access date and the specific claim it sup
 
 ## Open questions
 
-Questions for the user that block or change the scope. Record each as an ambiguity (`Q-<n>`) in the criteria JSON; accept-scope refuses open ambiguities.
+Questions for the user that block or change the scope, ordered by impact. For each: the evidence behind it (path or doc), why the answer matters, and a suggested default the user can accept with "ok". Record each as an ambiguity (`Q-<n>`) in the criteria JSON; accept-scope refuses open ambiguities.

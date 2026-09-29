@@ -7,7 +7,7 @@ import io
 import json
 
 import pytest
-from test_mission_030 import create, plan_mission, put, repo  # noqa: F401  (fixture)
+from test_mission_030 import ASSESSMENT, create, plan_mission, put, repo  # noqa: F401  (fixture)
 
 from software_factory.core import asset_root, hash_file
 from software_factory.installation import install, uninstall
@@ -94,6 +94,7 @@ def test_invalid_user_settings_are_refused_not_overwritten(tmp_path):
 def test_chat_approval_records_scope_bound_to_the_current_spec(repo):  # noqa: F811
     create(repo, "M-CHAT", "patch")
     put(repo, ".factory/missions/M-CHAT/spec.md", "# Spec\n\nChange VALUE to 2.\n")
+    put(repo, ".factory/missions/M-CHAT/assessment.md", ASSESSMENT)
     note = run_hook(repo, "Looks right.\napprove M-CHAT scope please go ahead")
     decision = load_mission(repo, "M-CHAT")["decisions"][-1]
     spec_hash = hash_file(repo, ".factory/missions/M-CHAT/spec.md")
@@ -109,6 +110,7 @@ def test_chat_approval_records_scope_bound_to_the_current_spec(repo):  # noqa: F
 def test_only_user_prompt_events_are_recorded(repo):  # noqa: F811
     create(repo, "M-CHAT", "patch")
     put(repo, ".factory/missions/M-CHAT/spec.md", "# Spec\n")
+    put(repo, ".factory/missions/M-CHAT/assessment.md", ASSESSMENT)
     assert run_hook(repo, "approve M-CHAT scope", event="PreToolUse") is None
     assert run_hook(repo, "I think we could approve M-CHAT scope later") is None  # Not at a line start.
     assert load_mission(repo, "M-CHAT")["decisions"] == []
@@ -126,6 +128,7 @@ def test_unknown_mission_and_missing_ci_are_reported_not_recorded(repo):  # noqa
 def test_repeated_approval_is_reported_as_already_recorded(repo):  # noqa: F811
     create(repo, "M-CHAT", "patch")
     put(repo, ".factory/missions/M-CHAT/spec.md", "# Spec\n")
+    put(repo, ".factory/missions/M-CHAT/assessment.md", ASSESSMENT)
     run_hook(repo, "approve M-CHAT scope")
     assert "Duplicate decision ID" in run_hook(repo, "approve M-CHAT scope")
     assert len(load_mission(repo, "M-CHAT")["decisions"]) == 1

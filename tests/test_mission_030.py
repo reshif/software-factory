@@ -33,6 +33,13 @@ PLAN = (
     "  app[src/app.py] --> unit[unit check]\n```\n\n## Risks\n\nA caller may rely on the old constant.\n"
 )
 CONTEXT = "# Context\n\nsrc/app.py defines VALUE; the unit check runs a Python one-liner.\n"
+ASSESSMENT = (
+    "# Assessment\n\n## What I understood\n\nSet VALUE in src/app.py to 2 and keep the module importable.\n\n"
+    "## Blockers\n\nNone.\n\n## Concerns\n\n- C-1: callers may rely on VALUE being 1. Evidence: src/app.py:1."
+    " Risk: silent behaviour change. Alternative: none needed for this fixture.\n\n"
+    "## Risks and tradeoffs\n\nLow: one constant.\n\n## Assumptions\n\nNo external callers.\n\n"
+    "## Readiness\n\nReady.\n"
+)
 CRITERIA = {
     "items": [
         {
@@ -88,9 +95,14 @@ def create(root, id="M-REQ", kind="patch", request=REQUEST):
     )
 
 
-def author(root, id, plan=PLAN, context=CONTEXT, spec=SPEC):
+def author(root, id, plan=PLAN, context=CONTEXT, spec=SPEC, assessment=ASSESSMENT):
     directory = root / ".factory/missions" / id
-    for name, text in (("spec.md", spec), ("plan.md", plan), ("context.md", context)):
+    for name, text in (
+        ("spec.md", spec),
+        ("plan.md", plan),
+        ("context.md", context),
+        ("assessment.md", assessment),
+    ):
         if text is not None:
             (directory / name).write_text(text)
     (directory / "recovery.md").write_text("# Recovery\n\nRevert the constant; no migration is involved.\n")
@@ -257,7 +269,7 @@ def test_create_requires_request_file_and_accepts_stdin(repo, monkeypatch):
 def test_stdin_inputs_and_record_doc(repo, monkeypatch):
     create(repo)
     id = "M-REQ"
-    for doc, text in (("spec", SPEC), ("plan", PLAN), ("context", CONTEXT)):
+    for doc, text in (("spec", SPEC), ("plan", PLAN), ("context", CONTEXT), ("assessment", ASSESSMENT)):
         out = cli(
             repo,
             "mission",
@@ -1019,7 +1031,12 @@ def test_missing_scope_decision_error_names_command_and_spec_hash(repo):
     create(repo)
     id = "M-REQ"
     directory = repo / ".factory/missions" / id
-    for name, text in (("spec.md", SPEC), ("plan.md", PLAN), ("context.md", CONTEXT)):
+    for name, text in (
+        ("spec.md", SPEC),
+        ("plan.md", PLAN),
+        ("context.md", CONTEXT),
+        ("assessment.md", ASSESSMENT),
+    ):
         (directory / name).write_text(text)
     criteria(repo, id)
     spec_hash = hash_file(repo, f".factory/missions/{id}/spec.md")

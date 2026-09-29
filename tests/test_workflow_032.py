@@ -258,6 +258,7 @@ def test_context_and_plan_are_bound_at_scope_acceptance(repo):
     directory = f".factory/missions/{id}"
     assert mission["scope_docs"] == {
         "context.md": hash_file(repo, f"{directory}/context.md"),
+        "assessment.md": hash_file(repo, f"{directory}/assessment.md"),
         "plan.md": hash_file(repo, f"{directory}/plan.md"),
     }
     changed = put(repo, ".factory/local/plan.md", PLAN + "\nA later edit.\n")

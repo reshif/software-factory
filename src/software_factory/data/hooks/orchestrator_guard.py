@@ -134,6 +134,7 @@ FACTORY_SUBCOMMANDS = {
         "criteria": INPUT_ONLY,
         "brief": ({"--mission", "--task", "--kind"}, set()),
         "risk": MISSION_ONLY,
+        "lanes": MISSION_ONLY,
         "record-doc": ({"--mission", "--doc", "--input"}, set()),
         "decision": INPUT_ONLY,
         "review": INPUT_ONLY,

@@ -1994,6 +1994,114 @@ def _validate_tasks(mission, config):
         visit(task)
 
 
+def _glob_prefix(pattern):
+    cut = [pattern.find(c) for c in "*?[" if c in pattern]
+    return pattern[: min(cut)] if cut else pattern
+
+
+def paths_may_overlap(a, b):
+    """True unless two owned-path patterns provably cover no common file (conservative)."""
+    a, b = (p + "**" if p.endswith("/") else p for p in (a, b))
+    literal_a, literal_b = (not any(c in p for c in "*?[") for p in (a, b))
+    if literal_a and literal_b:
+        return a == b
+    if literal_a:
+        return matches_path(a, b)
+    if literal_b:
+        return matches_path(b, a)
+    prefix_a, prefix_b = _glob_prefix(a), _glob_prefix(b)
+    return prefix_a.startswith(prefix_b) or prefix_b.startswith(prefix_a)
+
+
+def _task_ancestors(tasks):
+    """Every task's transitive dependencies (the task graph is already acyclic)."""
+    by_id, memo = {t["id"]: t for t in tasks}, {}
+
+    def walk(task_id):
+        if task_id not in memo:
+            memo[task_id] = set()
+            for dependency in by_id.get(task_id, {}).get("depends_on", []):
+                memo[task_id] |= {dependency} | walk(dependency)
+        return memo[task_id]
+
+    return {t["id"]: walk(t["id"]) for t in tasks}
+
+
+def lane_conflicts(mission):
+    """Unfinished task pairs that could run at the same time yet may touch the same files."""
+    pending = [t for t in mission["tasks"] if t["status"] != "DONE"]
+    ancestors = _task_ancestors(mission["tasks"])
+    conflicts = []
+    for i, first in enumerate(pending):
+        for second in pending[i + 1 :]:
+            if first["id"] in ancestors[second["id"]] or second["id"] in ancestors[first["id"]]:
+                continue
+            shared = [
+                (a, b) for a in first["owned_paths"] for b in second["owned_paths"] if paths_may_overlap(a, b)
+            ]
+            if shared:
+                conflicts.append({"tasks": [first["id"], second["id"]], "paths": [list(p) for p in shared]})
+    return conflicts
+
+
+def _refuse_lane_conflicts(mission, task_id):
+    for conflict in lane_conflicts(mission):
+        if task_id in conflict["tasks"]:
+            other = next(t for t in conflict["tasks"] if t != task_id)
+            a, b = conflict["paths"][0]
+            if conflict["tasks"][0] != task_id:
+                a, b = b, a  # Name the new or updated task's path first.
+            raise FactoryError(
+                f"Tasks {task_id} and {other} could run at the same time but may touch the same files "
+                f"({a} and {b}); give each task its own paths, or order them with depends_on"
+            )
+
+
+def mission_lanes(root, id):
+    """Read-only lane analysis: waves of tasks that can run together, the critical path and conflicts."""
+    mission = load_mission(root, id)
+    tasks = mission["tasks"]
+    by_id = {t["id"]: t for t in tasks}
+    level = {}
+
+    def depth(task_id):
+        if task_id not in level:
+            deps = by_id[task_id]["depends_on"]
+            level[task_id] = 1 + max((depth(d) for d in deps if d in by_id), default=0)
+        return level[task_id]
+
+    for task in tasks:
+        depth(task["id"])
+    waves = [
+        sorted(t for t, n in level.items() if n == k) for k in range(1, max(level.values(), default=0) + 1)
+    ]
+    done = {t["id"] for t in tasks if t["status"] == "DONE"}
+    ready = [t["id"] for t in tasks if t["status"] == "TODO" and set(t["depends_on"]) <= done]
+    waiting = {
+        t["id"]: sorted(set(t["depends_on"]) - done)
+        for t in tasks
+        if t["status"] == "TODO" and not set(t["depends_on"]) <= done
+    }
+    plan = safe_path(root, f".factory/missions/{mission['id']}/plan.md")
+    has_section = plan.is_file() and "\n## Lanes" in "\n" + plan.read_text(encoding="utf-8", errors="replace")
+    return {
+        "mission": mission["id"],
+        "tasks": len(tasks),
+        "waves": waves,
+        "critical_path": len(waves),
+        "max_parallel": max((len(w) for w in waves), default=0),
+        "ready": ready,
+        "waiting": waiting,
+        "running": [t["id"] for t in tasks if t["status"] in ACTIVE_TASK_STATES],
+        "conflicts": lane_conflicts(mission),
+        "plan_lanes_section": has_section,
+        "note": (
+            "Waves are tasks whose dependencies allow them to run together; running lanes in parallel "
+            "is planned, and today tasks still run one at a time"
+        ),
+    }
+
+
 def _task_criteria(mission, value):
     if (
         not isinstance(value, list)
@@ -2070,6 +2178,7 @@ def add_task(root, id, input):
             _replace_task(mission, replaces, task, input.get("reason"), config)
         mission["tasks"].append(task)
         _validate_tasks(mission, config)
+        _refuse_lane_conflicts(mission, task_id)
 
     return update_mission(root, id, mutate)
 
@@ -2155,6 +2264,7 @@ def edit_task(root, id, task_id, patch):
             task["attempt_base"] = task["attempts"]
             task["budget_resets"] = task.get("budget_resets", 0) + 1
         _validate_tasks(mission, config)
+        _refuse_lane_conflicts(mission, task_id)
         mission.setdefault("task_history", []).append({"task": prior, "reason": reason, "updated_at": now()})
 
     return update_mission(root, id, mutate)
@@ -4286,6 +4396,8 @@ def _mission_handler(args):
         return input_template(args.kind, id)
     if command == "risk":
         return mission_risk(root, id)
+    if command == "lanes":
+        return mission_lanes(root, id)
     if command == "list":
         return list_missions(root)
     if command == "recover-lock":
@@ -4354,6 +4466,7 @@ def add_parser(subparsers):
         "criteria": "Record acceptance criteria, exclusions and ambiguities from --input JSON",
         "brief": "Write a deterministic subagent brief for a --task or --kind",
         "risk": "Assess the candidate's live risk tier without changing records",
+        "lanes": "Show which tasks can run together (waves), the critical path and path conflicts",
         "record-doc": "Record a mission document verbatim from --input PATH or - for stdin",
         "decision": "Record an exclusion, decline or recovery decision from --input JSON",
         "approve": "Record your own scope, exception, merge or release approval (interactive terminal only)",
@@ -4411,6 +4524,7 @@ def add_parser(subparsers):
         "criteria",
         "brief",
         "risk",
+        "lanes",
         "record-doc",
         "decision",
         "approve",

@@ -20,9 +20,13 @@ flowchart LR
 
 For each task record its ID, inspectable outcome, dependencies, permitted paths (explicit globs such as `tests/**`), assigned role, acceptance criteria IDs (`criteria`, every `AC-<n>` mapped to at least one task), required check IDs and expected result. Add tasks through the state tool so dependency and scope rules apply.
 
+## Lanes
+
+Group the tasks into waves that can run side by side: wave 1 has no dependencies, each later wave depends only on earlier ones. Name the critical path (the longest chain of dependencies) and say why any task must wait. Tasks in the same wave must own disjoint paths, each with its own tests; put shared files (registries, `__init__.py`, lockfiles, dependency changes) in a final wiring task. `software-factory mission lanes --mission ID` shows the waves the recorded tasks produce.
+
 ## Integration and verification
 
-State the integration order, who owns the active workspace and which work can safely run independently. Map acceptance criteria to actual checks or explicit manual validation. Include final verification and independent review.
+State the integration order and how the lanes merge back. Map acceptance criteria to actual checks or explicit manual validation. Include final verification and independent review.
 
 ## Risks
 

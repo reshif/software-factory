@@ -413,6 +413,20 @@
           "maximum": 60
         }
       }
+    },
+    "ci": {
+      "description": "How a recorded CI success is checked. none (default): the URL and conclusion are recorded as given. gh: the GitHub CLI must confirm the GitHub Actions run completed successfully for the candidate commit, and MERGED requires that verification.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verify": {
+          "enum": [
+            "none",
+            "gh"
+          ],
+          "default": "none"
+        }
+      }
     }
   },
   "definitions": {

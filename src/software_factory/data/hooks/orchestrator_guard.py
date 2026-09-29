@@ -122,7 +122,7 @@ HUMAN_ONLY = {
 }
 FACTORY_SUBCOMMANDS = {
     "mission": {
-        "create": ({"--id", "--title", "--kind", "--base", "--input", "--request-file"}, set()),
+        "create": ({"--id", "--title", "--kind", "--base", "--input", "--request-file", "--source"}, set()),
         "list": (set(), {"--all"}),
         "halt": ({"--reason"}, set()),
         "status": MISSION_ONLY,

@@ -61,6 +61,13 @@ The manual smoke run confirmed each of the following:
   - `scripts/release_smoke.py` passed.
 - **Not verified:** hook firing inside a live Claude Code session. It requires a trusted workspace with hooks enabled.
 
+### Discovery and challenge (follow-up)
+
+- **Interview.** The orchestrator runs the interview in rounds. Each question is grounded in the code, says why it matters and offers a suggested default.
+- **Assessment.** The planner writes `assessment.md` from the new `mission brief --kind assess`. It covers what it understood, the blockers, concerns `C-n` (each with evidence, the risk of proceeding and a recommended alternative), the risks, the assumptions and readiness.
+- **Enforcement.** `accept-scope` refuses a missing, template or incomplete assessment and binds it. A scope approval is refused until the assessment exists.
+- **Tests.** `tests/test_discovery.py` covers these rules.
+
 ### Not verified in 0.3.2
 
 - Live Claude Code, Codex and Copilot sessions, and hook firing in a real client.

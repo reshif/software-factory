@@ -24,7 +24,7 @@
     "evidence": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "evidence_sha256": {"type": "object", "additionalProperties": {"$ref": "#/definitions/hash"}},
     "base_history": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["from", "to", "decision", "at"], "properties": {"from": {"$ref": "#/definitions/commit"}, "to": {"$ref": "#/definitions/commit"}, "decision": {"$ref": "#/definitions/id"}, "at": {"type": "string", "minLength": 1}}}},
-    "scope_docs": {"type": "object", "additionalProperties": false, "properties": {"context.md": {"$ref": "#/definitions/hash"}, "plan.md": {"$ref": "#/definitions/hash"}}},
+    "scope_docs": {"type": "object", "additionalProperties": false, "properties": {"context.md": {"$ref": "#/definitions/hash"}, "assessment.md": {"$ref": "#/definitions/hash"}, "plan.md": {"$ref": "#/definitions/hash"}}},
     "reviews": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["id", "fingerprint", "status", "findings", "author", "created_at"], "properties": {
       "id": {"$ref": "#/definitions/id"}, "fingerprint": {"$ref": "#/definitions/hash"}, "status": {"enum": ["pass", "changes_requested"]}, "author": {"type": "string", "minLength": 1}, "created_at": {"type": "string", "minLength": 1},
       "kind": {"enum": ["code", "acceptance", "adversarial"]}, "brief_hash": {"$ref": "#/definitions/hash"},

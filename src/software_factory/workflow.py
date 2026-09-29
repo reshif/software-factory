@@ -144,7 +144,7 @@ DELIVERY_FIELDS = {
 REQUEST_LIMIT = 256 * 1024
 MIN_EXCERPT = 8
 REVIEW_KINDS = ("code", "acceptance", "adversarial")
-BRIEF_KINDS = ("context", "research", "plan", "code", "acceptance", "adversarial", "verify")
+BRIEF_KINDS = ("context", "research", "assess", "plan", "code", "acceptance", "adversarial", "verify")
 DIFF_BRIEFS = {"code", "acceptance", "adversarial", "verify"}
 DECISION_KINDS = ("scope", "merge", "release", "recovery", "exception", "decline", "exclusion")
 CREATE_FIELDS = ("id", "title", "kind", "base", "request_file")
@@ -1005,7 +1005,17 @@ def _adds_content(text, template):
     return added >= MIN_AUTHORED_CHARS
 
 
-SCOPE_DOCS = ("context.md", "plan.md")
+SCOPE_DOCS = ("context.md", "assessment.md", "plan.md")
+# The assessment the user sees before approving scope: what was understood, and the blockers,
+# concerns (with evidence), risks and assumptions of doing what was asked.
+ASSESSMENT_SECTIONS = (
+    "What I understood",
+    "Blockers",
+    "Concerns",
+    "Risks and tradeoffs",
+    "Assumptions",
+    "Readiness",
+)
 
 
 def _document_hash(root, mission, name):
@@ -1014,14 +1024,14 @@ def _document_hash(root, mission, name):
 
 
 def _accept_documents(root, mission):
-    """Bind spec.md, context.md and plan.md as accepted (scope_docs omits an absent file)."""
+    """Bind spec.md, context.md, assessment.md and plan.md as accepted (scope_docs omits an absent file)."""
     mission["spec_hash"] = hash_file(root, f".factory/missions/{mission['id']}/spec.md")
     hashes = {name: _document_hash(root, mission, name) for name in SCOPE_DOCS}
     mission["scope_docs"] = {name: value for name, value in hashes.items() if value}
 
 
 def scope_docs_problem(root, mission):
-    """Why the accepted context.md/plan.md no longer match, or None (missions before 0.3.2 bind none)."""
+    """Why the accepted scope documents no longer match, or None (missions before 0.3.2 bind none)."""
     recorded = mission.get("scope_docs")
     if recorded is None:
         return None
@@ -1029,6 +1039,29 @@ def scope_docs_problem(root, mission):
     if changed:
         return "/".join(changed) + " changed after scope acceptance; run accept-scope again"
     return None
+
+
+def assessment_reasons(root, mission):
+    """Why assessment.md cannot be shown to the user as the basis of their scope approval."""
+    text = _authored(root, mission, "assessment.md")
+    if text is None:
+        return [
+            (
+                "assessment.md is missing or still the unedited template; brief the planner with "
+                "`mission brief --kind assess`, record it with `record-doc --doc assessment` and show it to "
+                "the user"
+            )
+        ]
+    reasons = []
+    headings = {_normalized(line.lstrip("#")).lower() for line in text.splitlines() if line.startswith("## ")}
+    missing = [name for name in ASSESSMENT_SECTIONS if name.lower() not in headings]
+    if missing:
+        reasons.append("assessment.md is missing sections: " + ", ".join(missing))
+    if not _adds_content(text, mission_template(root, "assessment.md", mission["id"])):
+        reasons.append(
+            f"assessment.md adds fewer than {MIN_AUTHORED_CHARS} characters beyond headings and template text"
+        )
+    return reasons
 
 
 def scope_reasons(root, mission, config):
@@ -1071,6 +1104,7 @@ def scope_reasons(root, mission, config):
             f"context.md adds fewer than {MIN_AUTHORED_CHARS} characters beyond headings and template"
             " text; record the gathered context"
         )
+    reasons += assessment_reasons(root, mission)
     plan = _authored(root, mission, "plan.md")
     if plan is None:
         reasons.append("plan.md is missing or still the unedited template")
@@ -1715,7 +1749,9 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             "## Return",
             "",
             "Return the content for context.md with these sections: Codebase map; Conventions; Affected files"
-            " and tests; Dependencies; External documentation; Open questions."
+            " and tests; Dependencies; External documentation; Open questions. Each open question names the"
+            " evidence behind it, why the answer matters, and a suggested default the user can accept with"
+            " 'ok'; order them by impact and group them into one interview round."
             if kind == "context"
             else "Return research findings for context.md: each question, the answer, its sources and the"
             " remaining uncertainty.",
@@ -1727,10 +1763,42 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             "- Mark assumptions and unknowns explicitly; never invent references.",
             "- Do not change files and do not start nested agents.",
         ]
+    elif kind == "assess":
+        request_section()
+        lines.extend(
+            ["", "## Context (context.md)", "", *_fenced(document("context.md") or "Not recorded yet.")]
+        )
+        ambiguity_section()
+        lines.extend(
+            ["", "## Template: assessment.md", "", *_fenced(mission_template(root, "assessment.md", id))]
+        )
+        lines += [
+            "",
+            "## Return",
+            "",
+            "Return the text of assessment.md with these sections: " + "; ".join(ASSESSMENT_SECTIONS) + ".",
+            "",
+            "## Assessment rules",
+            "",
+            "- Restate the request so the user can confirm or correct it; do not add scope.",
+            (
+                "- Challenge the request where it conflicts with the codebase, its conventions or tests, security,"
+                " data safety, compatibility, performance or cost, or where a simpler or safer route exists. Each"
+                " concern C-<n> gives the claim, its evidence (repository path and lines, test, or official"
+                " documentation URL), the risk of proceeding as asked and a recommended alternative."
+            ),
+            "- Do not soften a concern to please the user; the user decides, and may override it knowingly.",
+            "- List blockers only the user can remove, and questions still open after the interview.",
+            "- Mark every default chosen on the user's behalf as an assumption.",
+            "- Never invent evidence; say what you could not verify.",
+            "- Do not change files and do not start nested agents.",
+        ]
     elif kind == "plan":
         request_section()
         context = document("context.md")
         lines.extend(["", "## Context (context.md)", "", *_fenced(context or "Not recorded yet.")])
+        assessment = document("assessment.md")
+        lines.extend(["", "## Assessment (assessment.md)", "", *_fenced(assessment or "Not recorded yet.")])
         ambiguity_section()
         criteria_section(criteria["items"])
         for name in ("spec.md", "plan.md", "recovery.md"):
@@ -1775,6 +1843,10 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             (
                 f"- spec.md and context.md need at least {MIN_AUTHORED_CHARS} characters of authored text beyond"
                 " the template."
+            ),
+            (
+                "- spec.md follows the user's answers to the assessment: a concern the user overrode is listed"
+                " under the spec's Risks as accepted by the user; a concern they accepted changes the spec."
             ),
             "- Mark assumptions and unknowns explicitly; never invent references.",
             "- Do not change files and do not start nested agents.",
@@ -3033,6 +3105,13 @@ def approve_decision(root, id, kind, reference, subject_hash=None, decision_id=N
     if kind not in HUMAN_DECISION_KINDS:
         raise FactoryError("Approval kind must be one of: " + ", ".join(HUMAN_DECISION_KINDS))
     mission = load_mission(root, id)
+    if kind == "scope" and mission.get("request"):
+        problems = assessment_reasons(root, mission)
+        if problems:
+            raise FactoryError(
+                "Scope is approved only after the user has seen the assessment (blockers, concerns, risks): "
+                + "; ".join(problems)
+            )
     candidate = fingerprint(root, mission)
     bound = {}
     if candidate.get("spec_hash"):
@@ -4077,7 +4156,7 @@ def _input(args):
     return value
 
 
-MISSION_DOCS = ("context", "spec", "plan", "recovery", "handoff")
+MISSION_DOCS = ("context", "assessment", "spec", "plan", "recovery", "handoff")
 # Minimal --input skeletons; every "<...>" is a placeholder the orchestrator replaces.
 INPUT_TEMPLATES = {
     "task": {

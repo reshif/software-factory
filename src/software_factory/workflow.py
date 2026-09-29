@@ -1712,6 +1712,18 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             f"- Attempts used: {attempts_used(task)} of {1 + config['limits']['repair_attempts']}",
         ]
         criteria_section(items)
+        from .lanes import load_lane
+
+        lane = load_lane(root, id, task_id)
+        if lane:
+            lines += [
+                "",
+                "## Lane",
+                "",
+                f"- Work only inside `{lane['path']}`: a Git worktree holding a snapshot of the candidate.",
+                "- Do not edit the mission working tree; the orchestrator integrates your owned paths from the lane.",
+                f"- Owned paths inside the lane: {', '.join(_normalized(p) for p in lane['owned_paths'])}.",
+            ]
         notes = []
         for other in [task["id"], *task["depends_on"]]:
             try:
@@ -2059,6 +2071,8 @@ def _refuse_lane_conflicts(mission, task_id):
 
 def mission_lanes(root, id):
     """Read-only lane analysis: waves of tasks that can run together, the critical path and conflicts."""
+    from .lanes import open_lanes
+
     mission = load_mission(root, id)
     tasks = mission["tasks"]
     by_id = {t["id"]: t for t in tasks}
@@ -2093,11 +2107,15 @@ def mission_lanes(root, id):
         "ready": ready,
         "waiting": waiting,
         "running": [t["id"] for t in tasks if t["status"] in ACTIVE_TASK_STATES],
+        "open_lanes": [
+            {"task": lane["task"], "path": lane["path"], "opened_at": lane["opened_at"]}
+            for lane in open_lanes(root, mission["id"])
+        ],
         "conflicts": lane_conflicts(mission),
         "plan_lanes_section": has_section,
         "note": (
-            "Waves are tasks whose dependencies allow them to run together; running lanes in parallel "
-            "is planned, and today tasks still run one at a time"
+            "Waves are tasks whose dependencies allow them to run together. Open a lane per ready task "
+            "(mission lane-open) to run them at the same time; integrate finished lanes one at a time"
         ),
     }
 
@@ -2271,7 +2289,23 @@ def edit_task(root, id, task_id, patch):
 
 
 def _assert_writer(root, mission, task_id):
-    if any(t["id"] != task_id and t["status"] in ACTIVE_TASK_STATES for t in mission["tasks"]):
+    """One writer per working tree: the mission tree has at most one RUNNING task outside a lane.
+
+    A task in an open lane (lanes.py) writes only its own worktree, so several lanes of one
+    mission run at once alongside tasks VERIFYING in the mission tree; a task running directly
+    in the mission tree still excludes every other active task.
+    """
+    from .lanes import laned_tasks
+
+    laned = laned_tasks(root, mission["id"])
+    others = [t for t in mission["tasks"] if t["id"] != task_id and t["status"] in ACTIVE_TASK_STATES]
+    if task_id in laned:
+        busy = [t["id"] for t in others if t["status"] == "RUNNING" and t["id"] not in laned]
+        if busy:
+            raise FactoryError(
+                f"Task {busy[0]} is running in the mission working tree; lanes open once it moves to VERIFYING"
+            )
+    elif others:
         raise FactoryError("Workspace already has an active writer")
     directory = safe_path(root, ".factory/missions")
     for entry in sorted(directory.iterdir()):
@@ -4398,6 +4432,18 @@ def _mission_handler(args):
         return mission_risk(root, id)
     if command == "lanes":
         return mission_lanes(root, id)
+    if command in {"lane-open", "lane-integrate", "lane-close", "lane-check"}:
+        from . import lanes
+
+        if command == "lane-open":
+            return lanes.open_lane(root, id, args.task)
+        if command == "lane-integrate":
+            return lanes.integrate_lane(root, id, args.task)
+        if command == "lane-close":
+            return lanes.close_lane(
+                root, id, args.task, require_text(args.reason, "Lane close reason (--reason)")
+            )
+        return lanes.check_lane(root, id, args.task, getattr(args, "only", None))
     if command == "list":
         return list_missions(root)
     if command == "recover-lock":
@@ -4466,7 +4512,11 @@ def add_parser(subparsers):
         "criteria": "Record acceptance criteria, exclusions and ambiguities from --input JSON",
         "brief": "Write a deterministic subagent brief for a --task or --kind",
         "risk": "Assess the candidate's live risk tier without changing records",
-        "lanes": "Show which tasks can run together (waves), the critical path and path conflicts",
+        "lanes": "Show which tasks can run together (waves), the critical path, open lanes and conflicts",
+        "lane-open": "Start a ready task in its own worktree lane so it runs alongside other lanes",
+        "lane-integrate": "Copy a finished lane's owned-path changes into the mission tree (task → VERIFYING)",
+        "lane-close": "Abandon a lane and remove its worktree (a RUNNING task becomes BLOCKED)",
+        "lane-check": "Run the configured checks inside a lane (advisory; nothing is recorded)",
         "record-doc": "Record a mission document verbatim from --input PATH or - for stdin",
         "decision": "Record an exclusion, decline or recovery decision from --input JSON",
         "approve": "Record your own scope, exception, merge or release approval (interactive terminal only)",
@@ -4525,6 +4575,10 @@ def add_parser(subparsers):
         "brief",
         "risk",
         "lanes",
+        "lane-open",
+        "lane-integrate",
+        "lane-close",
+        "lane-check",
         "record-doc",
         "decision",
         "approve",
@@ -4589,8 +4643,24 @@ def add_parser(subparsers):
             "record-delivery",
         }:
             option(parser, "input", required=True)
-        if command in {"task-update", "task-transition"}:
+        if command in {
+            "task-update",
+            "task-transition",
+            "lane-open",
+            "lane-integrate",
+            "lane-close",
+            "lane-check",
+        }:
             option(parser, "task", required=True)
+        if command == "lane-close":
+            option(
+                parser,
+                "reason",
+                help="Why the lane is abandoned (recorded as the task's BLOCKED reason)",
+                required=True,
+            )
+        if command == "lane-check":
+            parser.add_argument("--only", metavar="ID", help="Run only this configured check")
         if command in {"task-transition", "transition", "resume"}:
             option(parser, "to", required=True)
         if command in {"task-transition", "resume"}:

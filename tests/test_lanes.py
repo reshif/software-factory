@@ -123,4 +123,4 @@ def test_mission_lanes_reports_waves_critical_path_and_readiness(repo):  # noqa:
     assert lanes["waiting"]["T-4"] == ["T-1", "T-2"]
     assert lanes["conflicts"] == []
     assert lanes["plan_lanes_section"] is False
-    assert "today tasks still run one at a time" in lanes["note"]
+    assert "Open a lane per ready task" in lanes["note"] and lanes["open_lanes"] == []

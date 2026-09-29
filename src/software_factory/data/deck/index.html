@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mission Deck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* A deliberate single dark world: an operations console for a factory floor. */
+:root{
+  color-scheme:dark;
+  --bg:#0A1016; --bg2:#0E1620; --panel:#121C27; --panel2:#172331; --raise:#1D2B3B;
+  --line:#243446; --line2:#2F4358;
+  --ink:#E6EDF3; --ink2:#B9C6D3; --muted:#7F92A6;
+  --ice:#8CC4FF; --ice-d:#16304B;
+  --brass:#E1AE52; --brass-d:#3A2C12;
+  --ok:#5ED39A; --ok-d:#123526; --warn:#F2B35B; --warn-d:#3A2A12; --crit:#FF7A6B; --crit-d:#3D1814;
+  --run:#7EA6FF; --run-d:#18264A; --idle:#6F8193; --idle-d:#1A2530;
+  --ui:"Geist",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:13.5px;line-height:1.45}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--ice);outline-offset:2px;border-radius:6px}
+.mono{font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums}
+.muted{color:var(--muted)}
+.lbl{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600}
+h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.005em;text-wrap:balance}
+
+.app{display:grid;grid-template-columns:268px minmax(0,1fr) 320px;grid-template-rows:52px minmax(0,1fr) 30px;min-height:100%;
+  padding-inline:16px;gap:0 14px}
+@media (max-width:1180px){.app{grid-template-columns:240px minmax(0,1fr)}.inspector{grid-column:1/-1}}
+@media (max-width:760px){.app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto}.main{order:1}.rail{order:2}.inspector{order:3}.status{order:4}}
+
+/* top bar */
+.top{grid-column:1/-1;display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--line);flex-wrap:wrap;padding-block:8px}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px}
+.logo svg{flex:none}
+.crumb{color:var(--muted)}
+.search{margin-left:auto;display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:5px 10px;min-width:220px;color:var(--muted)}
+.kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--line2);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:var(--ink2)}
+.ro{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink2);border:1px solid var(--line);border-radius:999px;padding:3px 10px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px var(--ok-d)}
+.sample{font-size:11.5px;color:var(--warn);background:var(--warn-d);border-radius:999px;padding:3px 10px;font-weight:600}
+.conn-ok{color:var(--ok);background:var(--ok-d)}.conn-crit{color:var(--crit);background:var(--crit-d)}.conn-warn{color:var(--warn);background:var(--warn-d)}
+
+/* rail */
+.rail{padding-block:14px;display:flex;flex-direction:column;gap:10px;min-width:0;border-right:1px solid var(--line);padding-right:14px}
+@media (max-width:760px){.rail{border-right:0;padding-right:0}}
+.mcard{text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 12px;display:flex;flex-direction:column;gap:7px}
+.mcard:hover{border-color:var(--line2);background:var(--panel2)}
+.mcard[aria-current="true"]{border-color:var(--ice);box-shadow:inset 3px 0 0 var(--ice);background:var(--panel2)}
+.mhead{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.mtitle{font-weight:600}
+.prog{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.prog span{height:4px;border-radius:2px;background:var(--line)}
+.prog .d{background:var(--ok)} .prog .n{background:var(--run)} .prog .b{background:var(--crit)}
+
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;border-radius:999px;padding:2px 8px;white-space:nowrap;letter-spacing:.02em}
+.chip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.c-ok{color:var(--ok);background:var(--ok-d)} .c-warn{color:var(--warn);background:var(--warn-d)} .c-crit{color:var(--crit);background:var(--crit-d)}
+.c-run{color:var(--run);background:var(--run-d)} .c-idle{color:var(--idle);background:var(--idle-d)} .c-brass{color:var(--brass);background:var(--brass-d)} .c-ice{color:var(--ice);background:var(--ice-d)}
+
+/* main */
+.main{padding-block:14px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.mission-head{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:flex-end;justify-content:space-between}
+.mission-head h1{font-size:21px}
+.req{color:var(--ink2);max-width:80ch}
+.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+@media (max-width:1000px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:520px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:4px}
+.kpi .v{font-size:19px;font-weight:600;font-variant-numeric:tabular-nums}
+.kpi svg{display:block}
+
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);overflow-x:auto}
+.tab{background:none;border:0;border-bottom:2px solid transparent;padding:8px 12px;color:var(--muted);font-weight:500;white-space:nowrap}
+.tab[aria-selected="true"]{color:var(--ink);border-color:var(--ice)}
+.view{min-height:0}
+
+/* floor */
+.stage{position:relative;height:clamp(340px,62vh,680px);touch-action:none;border:1px solid var(--line);border-radius:12px;overflow:hidden;
+  background:radial-gradient(120% 90% at 50% 20%,#14223A 0%,#0A1220 50%,#05080D 100%)}
+.stage canvas{display:block;width:100%;height:100%;cursor:grab}
+.stage canvas:active{cursor:grabbing}
+.stagebar{position:absolute;left:10px;right:10px;top:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;pointer-events:none}
+.stagebar>*{pointer-events:auto}
+.switch{display:inline-flex;background:rgba(12,19,28,.82);border:1px solid var(--line2);border-radius:10px;padding:3px;gap:2px;backdrop-filter:blur(8px)}
+.switch button{background:none;border:0;border-radius:7px;padding:6px 14px;font-weight:600;font-size:12.5px;color:var(--muted)}
+.switch button[aria-selected="true"]{background:var(--ice-d);color:var(--ice);box-shadow:inset 0 0 0 1px #2D5A85}
+.caption{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:flex-start;justify-content:space-between;padding-top:10px}
+.howto{margin:0;max-width:78ch;color:var(--ink2);font-size:13px}
+.hud .row{display:flex;gap:6px;flex-wrap:wrap}
+.controls{display:flex;gap:6px}
+.ctl{background:rgba(18,28,39,.85);border:1px solid var(--line2);border-radius:8px;padding:5px 10px;font-size:12px;backdrop-filter:blur(6px)}
+.ctl[aria-pressed="true"]{border-color:var(--ice);color:var(--ice)}
+.legend{display:flex;gap:6px 14px;flex-wrap:wrap;font-size:12px;color:var(--ink2)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.tooltip{position:absolute;pointer-events:none;background:var(--raise);border:1px solid var(--line2);border-radius:8px;padding:6px 9px;font-size:12px;white-space:nowrap;transform:translate(12px,12px)}
+.nogl{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:24px;color:var(--ink2)}
+
+/* panels used by tabs */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.split{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:12px}
+@media (max-width:1000px){.split{grid-template-columns:minmax(0,1fr)}}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%}
+th{text-align:left;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:7px 8px;border-bottom:1px solid var(--line)}
+td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+.gantt{overflow-x:auto}
+.g{min-width:760px;display:grid;grid-template-columns:150px repeat(24,1fr);row-gap:8px;align-items:center}
+.gax{font-size:10.5px;color:var(--muted);border-left:1px solid var(--line);padding-left:4px;height:18px}
+.gbar{height:26px;border-radius:6px;display:flex;align-items:center;padding:0 9px;font-size:11.5px;font-weight:600;white-space:nowrap;overflow:hidden;border:1px solid transparent}
+.gb-ok{background:var(--ok-d);color:var(--ok);border-color:#2A6B4B}.gb-run{background:var(--run-d);color:var(--run);border-color:#34508F}
+.gb-idle{background:transparent;color:var(--idle);border:1px dashed var(--idle)}.gb-crit{background:var(--crit-d);color:var(--crit);border-color:#7A3329}.gb-ice{background:var(--ice-d);color:var(--ice);border-color:#2D5A85}
+.gb-brass{background:var(--brass-d);color:var(--brass);border-color:#7A5A22}
+.concern{border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:4px;background:var(--panel2)}
+.concern.acc{border-left-color:var(--brass)}
+.feed .ev{display:grid;grid-template-columns:74px 1fr;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.feed .ev:last-child{border-bottom:0}
+.phases{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+@media (max-width:1000px){.phases{grid-template-columns:minmax(0,1fr)}}
+.phases ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:5px;color:var(--ink2)}
+
+/* inspector */
+.inspector{padding-block:14px;display:flex;flex-direction:column;gap:12px;min-width:0;border-left:1px solid var(--line);padding-left:14px}
+@media (max-width:1180px){.inspector{border-left:0;padding-left:0;border-top:1px solid var(--line)}}
+.kv{display:grid;grid-template-columns:110px 1fr;gap:6px 10px;font-size:12.5px}
+.kv dt{color:var(--muted)} .kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.checks{display:flex;flex-direction:column;gap:6px}
+.checks div{display:flex;gap:8px;align-items:flex-start}
+
+.status{grid-column:1/-1;display:flex;align-items:center;gap:18px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted);overflow-x:auto;white-space:nowrap}
+.status b{color:var(--ink2);font-weight:500}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+</head><body>
+<div class="app">
+  <header class="top">
+    <div class="logo">
+      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="1" y="12" width="6" height="9" rx="1.5" fill="#8CC4FF"/><rect x="8" y="7" width="6" height="14" rx="1.5" fill="#5ED39A"/><rect x="15" y="2" width="6" height="19" rx="1.5" fill="#E1AE52"/></svg>
+      Mission Deck
+    </div>
+    <span class="crumb mono" id="crumb">—</span>
+    <span class="sample conn-warn" id="conn">Connecting…</span>
+    <span class="ro" style="margin-left:auto">Read-only: approvals stay in your chat or terminal</span>
+  </header>
+
+  <aside class="rail" aria-label="Missions">
+    <div style="display:flex;justify-content:space-between;align-items:baseline"><span class="lbl">Missions</span><span class="muted mono" id="mcount"></span></div>
+    <div id="mlist" style="display:flex;flex-direction:column;gap:8px"></div>
+    <div class="card" style="gap:6px">
+      <span class="lbl">Workspace</span>
+      <div class="kv" id="workspace"></div>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    <div class="mission-head">
+      <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
+        <span class="lbl" id="mmeta"></span>
+        <h1 id="mname"></h1>
+        <p class="req" id="mreq" style="margin:0"></p>
+      </div>
+      <span id="mstate"></span>
+    </div>
+    <div class="kpis" id="kpis"></div>
+    <div class="tabs" role="tablist" id="tabs"></div>
+    <section class="view" id="view-floor" role="tabpanel">
+      <div class="stage" id="stage">
+        <canvas id="gl" aria-label="Interactive 3D view of your missions. Drag to rotate, scroll or pinch to zoom, click an object to inspect it."></canvas>
+        <div class="stagebar">
+          <div class="switch" role="tablist" aria-label="3D view" id="vswitch">
+            <button role="tab" data-v="galaxy" aria-selected="true">Galaxy</button>
+            <button role="tab" data-v="orbit" aria-selected="false">Orbit</button>
+            <button role="tab" data-v="floor" aria-selected="false">Floor</button>
+          </div>
+          <div class="controls">
+            <button class="ctl" id="b-play" aria-pressed="true">Motion</button>
+            <button class="ctl" id="b-reset">Reset view</button>
+          </div>
+        </div>
+        <div class="tooltip" id="tip" hidden></div>
+      </div>
+      <div class="caption">
+        <p class="howto" id="howto"></p>
+        <div class="legend" id="legend"></div>
+      </div>
+    </section>
+    <section class="view" id="view-timeline" role="tabpanel" hidden></section>
+    <section class="view" id="view-trace" role="tabpanel" hidden></section>
+    <section class="view" id="view-assess" role="tabpanel" hidden></section>
+    <section class="view" id="view-gate" role="tabpanel" hidden></section>
+    <section class="view" id="view-docs" role="tabpanel" hidden></section>
+  </main>
+
+  <aside class="inspector" aria-label="Inspector">
+    <span class="lbl">Inspector</span>
+    <div class="card" id="insp"></div>
+    <div class="card"><span class="lbl">Activity</span><div class="feed" id="feed"></div></div>
+  </aside>
+
+  <footer class="status">
+    <span><span class="dot" style="display:inline-block;vertical-align:1px;margin-right:6px"></span><b id="st-host"></b> · session token</span>
+    <span>Records <b id="st-rec"></b></span>
+    <span>Last change <b id="st-last"></b></span>
+    <span>Gate <b id="st-gate"></b></span>
+    <span>Events <b>SSE</b> · <b>.factory/missions/*/events.jsonl</b></span>
+  </footer>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const CHIP={run:"c-run",ok:"c-ok",idle:"c-idle",crit:"c-crit"}, WORD={run:"ACTIVE",ok:"DONE",idle:"TODO",crit:"BLOCKED"};
+/* ------------------------------ live data (software-factory serve) ------------------------------ */
+const STAGES=["PROPOSED","PLANNED","IMPLEMENTING","VERIFYING","REVIEWING","READY_PR","MERGED"];
+const TOKEN=new URLSearchParams(location.search).get("token")||"";
+let MISSIONS=[], SUMMARIES=[], cur=0;
+const DETAIL={}, GATE={};
+async function api(path){
+ const r=await fetch(path,{headers:{"X-Factory-Token":TOKEN},cache:"no-store"});
+ const body=await r.json().catch(()=>({error:r.statusText}));
+ if(!r.ok)throw new Error(body.error||r.statusText);return body}
+const TASKSTATE={TODO:"idle",RUNNING:"run",VERIFYING:"run",DONE:"ok",BLOCKED:"crit"};
+const PROGRESS={TODO:0,RUNNING:.45,VERIFYING:.8,DONE:1,BLOCKED:.6};
+function clock(iso){if(!iso)return"—";const d=new Date(iso);if(isNaN(d))return String(iso).slice(11,16);
+ const today=new Date().toDateString()===d.toDateString();return today?d.toTimeString().slice(0,5):d.toLocaleDateString(undefined,{month:"short",day:"numeric"})}
+function since(iso){if(!iso)return"—";const s=(Date.now()-new Date(iso))/1000;if(isNaN(s))return"—";
+ return s<90?Math.round(s)+" s ago":s<5400?Math.round(s/60)+" min ago":s<129600?Math.round(s/3600)+" h ago":Math.round(s/86400)+" d ago"}
+function span(a,b){const s=(new Date(b)-new Date(a))/1000;if(!(s>=0))return"—";return s<3600?Math.max(1,Math.round(s/60))+" min":s<86400?(s/3600).toFixed(1)+" h":(s/86400).toFixed(1)+" d"}
+function section(text,name){if(!text)return"";const m=text.match(new RegExp("^##\\s+"+name+"\\s*$([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))","m"));return m?m[1].trim():""}
+function stageAt(state,previous){const s=["PAUSED","BLOCKED","CANCELED"].includes(state)?previous:state;const i=STAGES.indexOf(s);return i<0?(["STAGING","AWAITING_RELEASE","DEPLOYING","OBSERVING","DELIVERED","RECOVERING","RECOVERED"].includes(s)?6:0):i}
+const FLOOR_DONE={PROPOSED:["intake"],PLANNED:["intake","interview","assess","spec","scope"],IMPLEMENTING:["intake","interview","assess","spec","scope"],
+ VERIFYING:["intake","interview","assess","spec","scope","lanes"],REVIEWING:["intake","interview","assess","spec","scope","lanes","integrate"],
+ READY_PR:["intake","interview","assess","spec","scope","lanes","integrate","review","gate"],MERGED:["intake","interview","assess","spec","scope","lanes","integrate","review","gate","ready"]};
+const FLOOR_NOW={PROPOSED:"interview",PLANNED:"lanes",IMPLEMENTING:"lanes",VERIFYING:"integrate",REVIEWING:"review",READY_PR:"ready",MERGED:"ready"};
+
+function adapt(sum){
+ const d=DETAIL[sum.id], m=d&&d.mission, g=GATE[sum.id];
+ const blocked=sum.state==="BLOCKED", held=["PAUSED","BLOCKED"].includes(sum.state);
+ const eff=held?(m&&m.previous_state)||"PROPOSED":sum.state;
+ const tone=blocked?"c-crit":sum.state==="PAUSED"?"c-warn":["READY_PR","MERGED","DELIVERED"].includes(sum.state)?"c-ok":"c-run";
+ const lanes=new Set(((d&&d.lanes&&d.lanes.open_lanes)||[]).map(l=>l.task));
+ const lanePath=id=>((d&&d.lanes&&d.lanes.open_lanes)||[]).find(l=>l.task===id)?.path;
+ const repair=d&&d.repair_attempts!=null?d.repair_attempts:null;
+ let tasks;
+ if(m){tasks=m.tasks.map(t=>({id:t.id,name:t.title,state:TASKSTATE[t.status]||"idle",status:t.status,progress:PROGRESS[t.status]??0,
+   who:lanes.has(t.id)?"lane "+t.id:t.status==="RUNNING"?"mission tree":t.status==="VERIFYING"?"verifying":t.status==="DONE"?"done":"not started",
+   paths:t.owned_paths,tree:lanePath(t.id)||(["RUNNING","VERIFYING"].includes(t.status)?"mission tree":"—"),branch:lanes.has(t.id)?"detached lane":"—",
+   attempt:repair!=null?`${t.attempts} of ${1+repair}`:String(t.attempts),deps:t.depends_on,checks:(t.checks||[]).join(", "),
+   verify:t.repair_required?"failed: "+t.repair_required.split("/").slice(-2,-1)[0]:t.blocked_reason||"—"}))}
+ else{tasks=[];Object.entries(sum.tasks||{}).forEach(([s,n])=>{for(let i=0;i<n;i++)tasks.push({id:`${s[0]}${i+1}`,name:s.toLowerCase(),state:TASKSTATE[s]||"idle",status:s,progress:PROGRESS[s]??0,who:"",paths:[],tree:"—",branch:"—",attempt:"—",deps:[],checks:"",verify:"—"})})}
+ const events=(d&&d.events&&d.events.recent)||[];
+ const scope=(m&&m.decisions||[]).filter(x=>x.kind==="scope").pop();
+ const concerns=section(d&&d.docs&&d.docs["assessment.md"],"Concerns").split("\n").filter(l=>/^\s*[-*]\s+/.test(l)).map(l=>{
+   const text=l.replace(/^\s*[-*]\s+/,"").replace(/\*\*/g,"");const id=(text.match(/\bC-\d+\b/)||[""])[0];
+   const ev=(text.match(/Evidence:\s*([^.]+(?:\.[a-z0-9]+[^.]*)?)/i)||[,""])[1];const alt=(text.match(/(?:Recommended )?alternative:\s*([^.]+)/i)||[,""])[1];
+   return {id,t:text.replace(/Evidence:.*$/i,"").replace(/^C-\d+:?\s*/,""),e:ev,alt,acc:false,note:""}});
+ const attempts=m?m.tasks.reduce((a,t)=>a+t.attempts,0):0;
+ const gateWord=g?(g.pass?"pass":`${g.reasons.length} reason${g.reasons.length===1?"":"s"}`):"not run";
+ return {id:sum.id,title:sum.title,lane:sum.kind||(m&&m.kind)||"",state:sum.state,chip:tone,at:stageAt(sum.state,m&&m.previous_state),blocked,worktree:sum.worktree,
+  request:(d&&d.docs&&d.docs["request.md"]||"").trim()||"(open this mission to load its request)",
+  kpi:{lead:m?span(m.created_at,m.updated_at):"—",attempts:String(attempts),gate:g?(g.pass?"Pass":"Open"):"Not run",risk:g&&g.risk?(g.risk.tier||"—"):"—",lanes:`${lanes.size} open`},
+  spark:events.length>1?events.slice(-12).map((e,i)=>i+1):[1,1],
+  floor:{done:FLOOR_DONE[eff]||[],now:FLOOR_NOW[eff]||"interview",scope:scope?`Approved · ${clock(scope.recorded_at)} · ${scope.reference}`:"Not approved yet"},
+  tasks,trace:((m&&m.criteria&&m.criteria.items)||[]).map(i=>{const tr=g&&g.criteria_trace&&g.criteria_trace.find?g.criteria_trace.find(x=>x.id===i.id||x.criterion===i.id):null;
+   const verdict=tr?(tr.verdict||tr.status||"recorded"):"run the gate";return [i.id,(i.excerpts||[""])[0],i.route+(i.checks?": "+i.checks.join(", "):""),verdict==="pass"?"c-ok":verdict==="run the gate"?"c-idle":"c-warn",verdict]}),
+  concerns,gate:g?[...g.reasons.map(r=>["c-crit",r]),...(g.warnings||[]).map(w=>["c-warn",w]),...(g.pass?[["c-ok","All readiness checks pass"]]:[])]:[["c-idle","The gate has not been run in this view. Use “Run the gate”."]],
+  feed:events.slice(-14).reverse().map(e=>[clock(e.at),(e.actor&&e.actor.user)||"cli",`${e.command} → ${e.state}`]),
+  status:{rec:d?String(d.events.count):"—",last:since(sum.updated_at),gate:gateWord},
+  history:d?d.events:null,docs:d?d.docs:{}}
+}
+let WORKSPACE={};
+function renderWorkspace(){const open=SUMMARIES.length,trees=new Set(SUMMARIES.map(x=>x.worktree)).size,active=SUMMARIES.filter(x=>x.tasks&&(x.tasks.RUNNING||x.tasks.VERIFYING)).length;
+ $("workspace").innerHTML=`<dt>Missions</dt><dd>${open} open</dd><dt>Worktrees</dt><dd>${trees}</dd><dt>Working now</dt><dd>${active} mission${active===1?"":"s"}</dd><dt>Runtime</dt><dd class="mono">${esc(WORKSPACE.version||"—")}</dd>`}
+async function refresh(openId){
+ try{const list=await api("/api/missions");WORKSPACE=list;SUMMARIES=list.missions.filter(x=>!x.error);$("crumb").textContent=list.root;
+  if(!openId&&!MISSIONS.length){const busy=SUMMARIES.findIndex(x=>x.tasks&&(x.tasks.RUNNING||x.tasks.VERIFYING));if(busy>=0)openId=SUMMARIES[busy].id}
+  const keep=openId||(MISSIONS[cur]&&MISSIONS[cur].id);cur=Math.max(0,SUMMARIES.findIndex(x=>x.id===keep));
+  if(SUMMARIES[cur]){DETAIL[SUMMARIES[cur].id]=await api("/api/mission/"+encodeURIComponent(SUMMARIES[cur].id))}
+  MISSIONS=SUMMARIES.map(adapt);setConn("Live · read-only","ok");renderWorkspace();render();if(renderer&&MISSIONS.length&&!refresh.framed){refresh.framed=true;home(true)}}
+ catch(err){setConn("Disconnected: "+err.message,"crit")}}
+async function openMission(i){cur=i;const id=SUMMARIES[i].id;try{DETAIL[id]=await api("/api/mission/"+encodeURIComponent(id))}catch(e){setConn(e.message,"crit")}MISSIONS[i]=adapt(SUMMARIES[i]);render()}
+async function runGate(){const s=SUMMARIES[cur];if(!s)return;const b=$("run-gate");if(b){b.disabled=true;b.textContent="Running the gate…"}
+ try{GATE[s.id]=await api("/api/mission/"+encodeURIComponent(s.id)+"/gate")}catch(e){GATE[s.id]={pass:false,reasons:["Gate could not run: "+e.message],warnings:[]}}
+ MISSIONS[cur]=adapt(s);render()}
+function setConn(text,kind){const c=$("conn");c.textContent=text;c.className="sample conn-"+kind}
+function stream(){if(!window.EventSource)return;const es=new EventSource("/api/stream?token="+encodeURIComponent(TOKEN));
+ let first=true;es.addEventListener("changed",()=>{if(first){first=false;return}refresh()});es.onerror=()=>setConn("Reconnecting…","warn")}
+const galaxyPos=i=>{if(i===0)return[0,0,0];const a=i*2.39996,r=26+9*Math.sqrt(i);return[Math.cos(a)*r,(i%2?5:-5),Math.sin(a)*r-10]};
+
+
+/* ------------------------------ rail & header ------------------------------ */
+function spark(v,color){const w=120,h=26,max=Math.max(...v),pts=v.map((y,i)=>[i*(w/(v.length-1)),h-3-(y/max)*(h-6)]);
+ const d=pts.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" ");
+ return `<svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><path d="${d} L${w} ${h} L0 ${h}Z" fill="${color}" opacity=".14"/><path d="${d}" fill="none" stroke="${color}" stroke-width="1.6"/><circle cx="${pts.at(-1)[0]}" cy="${pts.at(-1)[1]}" r="2.6" fill="${color}"/></svg>`}
+function renderRail(){
+ $("mcount").textContent=MISSIONS.length+" open";
+ $("mlist").innerHTML=MISSIONS.map((m,i)=>`<button class="mcard" aria-current="${i===cur}" data-i="${i}">
+  <div class="mhead"><span class="mtitle">${esc(m.title)}</span><span class="mono muted">${m.id}</span></div>
+  <div class="prog">${STAGES.map((_,k)=>`<span class="${k<m.at?"d":k===m.at?(m.blocked?"b":"n"):""}"></span>`).join("")}</div>
+  <div style="display:flex;justify-content:space-between;gap:6px"><span class="chip ${m.chip}">${m.state.replace("_"," ")}</span><span class="muted" style="font-size:11.5px">${m.lane} · ${m.tasks.length} task${m.tasks.length===1?"":"s"}</span></div></button>`).join("");
+ document.querySelectorAll(".mcard").forEach(b=>b.onclick=()=>openMission(+b.dataset.i));
+}
+function renderHead(m){
+ $("mmeta").textContent=`${m.id} · ${m.lane} · ${m.worktree||""}`;$("mname").textContent=m.title;$("mreq").textContent="Your request: "+m.request;
+ $("mstate").innerHTML=`<span class="chip ${m.chip}" style="font-size:12px;padding:4px 10px">${m.state.replace("_"," ")}</span>`;
+ const k=m.kpi, riskC=k.risk==="High"?"c-crit":"c-ok", gateC=k.gate==="Pass"?"c-ok":k.gate==="Blocked"?"c-crit":"c-warn";
+ $("kpis").innerHTML=[["Lead time",k.lead,spark(m.spark,"#8CC4FF")],["Attempts",k.attempts,`<span class="muted" style="font-size:11.5px">across all lanes</span>`],
+  ["Gate",k.gate,`<span class="chip ${gateC}">${m.status.gate}</span>`],["Risk",k.risk,`<span class="chip ${k.risk==="high"?"c-crit":k.risk==="—"?"c-idle":"c-ok"}">${k.risk==="—"?"from the gate":"risk tier"}</span>`],
+  ["Lanes",k.lanes,`<span class="muted" style="font-size:11.5px">worktree per task</span>`]].map(([a,b,c])=>`<div class="kpi"><span class="lbl">${a}</span><span class="v">${b}</span>${c}</div>`).join("");
+ $("feed").innerHTML=m.feed.map(([t,w,x])=>`<div class="ev"><span class="mono muted">${t}</span><span><b style="font-weight:600">${esc(w)}</b> · ${esc(x)}</span></div>`).join("");
+ $("st-rec").textContent=m.status.rec;$("st-last").textContent=m.status.last;$("st-gate").textContent=m.status.gate;
+}
+
+/* ------------------------------ tabs ------------------------------ */
+const TABS=[["floor","3D views"],["timeline","Lanes timeline"],["trace","Request → evidence"],["assess","Assessment"],["gate","Gate"],["docs","Documents"]];
+let tab="floor";
+function renderTabs(){
+ $("tabs").innerHTML=TABS.map(([k,l])=>`<button class="tab" role="tab" aria-selected="${k===tab}" data-k="${k}">${l}</button>`).join("");
+ document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{tab=b.dataset.k;renderTabs();showTab()});
+}
+function showTab(){TABS.forEach(([k])=>$("view-"+k).hidden=k!==tab);if(tab==="floor")resize();}
+function renderViews(m){
+ // timeline: 24 slots of 5 minutes
+ const rows=[["Intake + interview","gb-ok",0,4],["Assessment","gb-ok",4,2],["Spec + plan","gb-ok",6,2],["Your scope approval","gb-brass",8,1]];
+ const off=9;
+ m.tasks.forEach(t=>{const cls=t.state==="run"?"gb-run":t.state==="ok"?"gb-ok":t.state==="crit"?"gb-crit":"gb-idle";
+   const start=t.deps.length?off+8:off, len=t.state==="idle"?4:t.state==="ok"?6:Math.max(3,Math.round(8*t.progress)+2);rows.push([`${t.id} · ${t.name}`,cls,start,len])});
+ rows.push(["Integrate + reviews + gate","gb-ice",off+12,3]);
+ let g=`<div></div>`+Array.from({length:24},(_,i)=>`<div class="gax">${i%3?"":"+"+i*5+"m"}</div>`).join("");
+ rows.forEach(([n,c,s,l])=>{g+=`<div class="muted" style="font-size:12px;padding-right:8px">${esc(n)}</div><div style="grid-column:${s+2} / span ${l}"><div class="gbar ${c}">${esc(n.split(" · ")[0])}</div></div>`;const r=24-s-l;if(r>0)g+=`<div style="grid-column:span ${r}"></div>`});
+ $("view-timeline").innerHTML=`<div class="card"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px"><h3>Lanes</h3><span class="muted">Schematic: tasks without dependencies start together; the rest wait for theirs.</span></div><div class="gantt"><div class="g">${g}</div></div></div>`;
+ $("view-trace").innerHTML=`<div class="card"><h3>Every criterion quotes your words</h3><div class="tbl"><table><thead><tr><th>Criterion</th><th>Your words</th><th>Evidence</th><th>Verdict</th></tr></thead><tbody>${m.trace.map(([a,w,e,c,v])=>`<tr><td class="mono">${a}</td><td>“${esc(w)}”</td><td class="mono">${esc(e)}</td><td><span class="chip ${c}">${v}</span></td></tr>`).join("")}</tbody></table></div></div>`;
+ $("view-assess").innerHTML=`<div class="split"><div class="card"><h3>Concerns the planner raised</h3>${m.concerns.map(c=>`<div class="concern ${c.acc?"acc":""}"><b><span class="mono">${c.id}</span> ${esc(c.t)}</b><span class="muted">Evidence: <span class="mono">${esc(c.e)}</span></span><span class="muted">Alternative: ${esc(c.alt)}</span><span class="chip ${c.acc?"c-brass":"c-warn"}" style="align-self:flex-start">${esc(c.note)}</span></div>`).join("")}</div>
+  <div class="card"><h3>What you approved</h3><div class="kv"><dt>Scope</dt><dd>${esc(m.floor.scope)}</dd><dt>Blockers</dt><dd>${m.blocked?"1 open question":"None"}</dd><dt>Assessment</dt><dd class="mono">bound at accept-scope</dd><dt>Overrides</dt><dd>${m.concerns.filter(c=>c.acc).length} accepted risk(s)</dd></div></div></div>`;
+ $("view-gate").innerHTML=`<div class="card"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><h3>Readiness gate</h3><button class="ctl" id="run-gate">Run the gate</button></div><div class="checks">${m.gate.map(([c,t])=>`<div><span class="chip ${c}">${c==="c-ok"?"ok":c==="c-warn"?"attention":"blocks"}</span><span>${esc(t)}</span></div>`).join("")}</div></div>`;
+ $("view-docs").innerHTML=`<div class="split">${["request.md","assessment.md","spec.md","plan.md"].map(n=>`<div class="card"><h3>${n}</h3><pre style="white-space:pre-wrap;margin:0;font:12.5px/1.5 var(--mono);color:var(--ink2);max-height:420px;overflow:auto">${esc((m.docs&&m.docs[n])||"Not recorded yet.")}</pre></div>`).join("")}</div>`;
+ const h=m.history;$("view-docs").insertAdjacentHTML("beforeend",h?`<div class="card" style="margin-top:12px"><h3>Event log</h3><p class="muted" style="margin:0">${h.present?`${h.count} events · ${h.problems.length?"<b style=\"color:var(--crit)\">chain problems: "+h.problems.map(esc).join("; ")+"</b>":"chain intact"}`:"No event log (created before 0.3.2)"}</p></div>`:"");
+}
+
+/* ------------------------------ inspector ------------------------------ */
+function inspect(info){
+ const m=MISSIONS[cur];
+ if(!info){info={kind:"mission"}}
+ let h="";
+ if(info.kind==="task"){const t=info.t;
+  h=`<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline"><h3>${t.id} · ${esc(t.name)}</h3><span class="chip ${CHIP[t.state]}">${WORD[t.state]}</span></div>
+  <dl class="kv"><dt>Agent</dt><dd>${esc(t.who)}</dd><dt>Worktree</dt><dd class="mono">${esc(t.tree)}</dd><dt>Branch</dt><dd class="mono">${esc(t.branch)}</dd><dt>Owned paths</dt><dd class="mono">${t.paths.map(esc).join("<br>")}</dd><dt>Depends on</dt><dd>${t.deps.join(", ")||"none"}</dd><dt>Attempts</dt><dd>${t.attempt}</dd><dt>Checks</dt><dd class="mono">${esc(t.checks)}</dd><dt>Verify</dt><dd>${esc(t.verify)}</dd></dl>
+  <div style="height:6px;border-radius:3px;background:var(--line);overflow:hidden"><div style="height:100%;width:${Math.round(t.progress*100)}%;background:var(--${t.state==="crit"?"crit":t.state==="ok"?"ok":"run"})"></div></div>`}
+ else if(info.kind==="gate"){h=`<div style="display:flex;justify-content:space-between;gap:8px"><h3>${esc(info.name)}</h3><span class="chip c-brass">human only</span></div><p style="margin:0;color:var(--ink2)">${esc(info.text)}</p><p class="muted" style="margin:0">Recorded by the chat hook from your own message, or by <span class="mono">mission approve</span> in your terminal. Agents cannot record it.</p>`}
+ else if(info.kind==="station"){h=`<div style="display:flex;justify-content:space-between;gap:8px"><h3>${esc(info.name)}</h3><span class="chip ${info.cls}">${info.word}</span></div><p style="margin:0;color:var(--ink2)">${esc(info.text)}</p>`}
+ else {h=`<h3>${esc(m.title)}</h3><p class="muted" style="margin:0">Click any star, planet, station, packet or gate in the 3D views to inspect it.</p>${renderer&&view!=="orbit"?'<button class="ctl" id="open-orbit" style="align-self:flex-start">Open this mission in Orbit view</button>':""}<dl class="kv"><dt>Mission</dt><dd class="mono">${m.id}</dd><dt>State</dt><dd>${m.state}</dd><dt>Lane</dt><dd>${m.lane}</dd><dt>Tasks</dt><dd>${m.tasks.map(t=>t.id+" "+WORD[t.state].toLowerCase()).join(" · ")}</dd></dl>`}
+ $("insp").innerHTML=h;
+ const oo=document.getElementById("open-orbit");if(oo)oo.onclick=()=>{tab="floor";renderTabs();showTab();setView("orbit")};
+}
+
+/* ------------------------------ 3D engine: galaxy, orbit, floor ------------------------------ */
+const canvas=$("gl"), stageEl=$("stage"), tip=$("tip");
+let renderer,scene,camera,raycaster,pointer,glowTex=null;
+let picks=[],anim=[],view="galaxy";
+let playing=!window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const cam={theta:1.25,phi:1.1,r:78,target:null}, goal={theta:1.25,phi:1.1,r:78,target:null};
+const HEX={ok:0x5ED39A,run:0x7EA6FF,idle:0x6F8193,crit:0xFF7A6B,brass:0xE1AE52,ice:0x8CC4FF,violet:0x9C7CFF,steel:0x2B3D51,belt:0x223244,floor:0x0F1A25};
+const CSSC={ok:"#5ED39A",run:"#7EA6FF",idle:"#6F8193",crit:"#FF7A6B",brass:"#E1AE52",ice:"#8CC4FF"};
+
+const tone=m=>m.blocked?"crit":m.state==="READY_PR"||m.state==="MERGED"?"ok":"run";
+const HOW={
+ galaxy:"Each glowing star is a mission: blue is being worked on, green is ready, red is blocked. The moons around it are its tasks, and moving moons are agents working right now. Click a star to fly to it; double-click it to open its orbit.",
+ orbit:"The selected mission sits at the center. Each ring is a stage, from PROPOSED on the inside to MERGED on the outside: green rings are done, the bright ring is where it is now. Planets are tasks on the stage they have reached. Brass rings are approvals only you can give.",
+ floor:"Work flows left to right, station by station. Every parallel task has its own belt and worktree; its packet moves while an agent works. Brass arches are your approvals, and nothing passes them without you."};
+const LEGEND={
+ galaxy:[["run","Being worked on"],["ok","Ready"],["crit","Blocked"],["ice","Task moon"]],
+ orbit:[["ok","Stage done"],["run","Current stage"],["idle","Upcoming"],["brass","Your approval"],["ice","Task planet"]],
+ floor:[["ok","Done"],["run","Working"],["idle","Queued"],["crit","Blocked"],["brass","Your approval"]]};
+
+function mat(color,em=0,rough=.55,metal=.25){return new THREE.MeshStandardMaterial({color,emissive:color,emissiveIntensity:em,roughness:rough,metalness:metal})}
+function glowTexture(){if(glowTex)return glowTex;const c=document.createElement("canvas");c.width=c.height=128;const x=c.getContext("2d");
+ const g=x.createRadialGradient(64,64,0,64,64,64);g.addColorStop(0,"rgba(255,255,255,1)");g.addColorStop(.2,"rgba(255,255,255,.6)");g.addColorStop(.5,"rgba(255,255,255,.15)");g.addColorStop(1,"rgba(255,255,255,0)");
+ x.fillStyle=g;x.fillRect(0,0,128,128);glowTex=new THREE.CanvasTexture(c);return glowTex}
+function glow(color,size,opacity=1){const s=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTexture(),color,transparent:true,opacity,depthWrite:false,blending:THREE.AdditiveBlending}));s.scale.set(size,size,1);return s}
+function label(text,sub,color,scale=8){
+ const c=document.createElement("canvas"),s=2,w=520,h=sub?120:78;c.width=w*s;c.height=h*s;const x=c.getContext("2d");x.scale(s,s);
+ x.fillStyle="rgba(12,19,28,.88)";x.strokeStyle="rgba(140,196,255,.3)";x.lineWidth=2;const r=16;
+ x.beginPath();x.moveTo(r,1);x.arcTo(w-1,1,w-1,h-1,r);x.arcTo(w-1,h-1,1,h-1,r);x.arcTo(1,h-1,1,1,r);x.arcTo(1,1,w-1,1,r);x.fill();x.stroke();
+ x.fillStyle=color;x.beginPath();x.arc(30,39,9,0,Math.PI*2);x.fill();
+ x.font="600 34px Geist, system-ui, sans-serif";x.fillStyle="#EEF3F8";x.fillText(text.length>26?text.slice(0,25)+"…":text,50,51);
+ if(sub){x.font="400 25px 'JetBrains Mono', monospace";x.fillStyle="#A6B7C8";x.fillText(sub,50,95)}
+ const t=new THREE.CanvasTexture(c);t.anisotropy=4;const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:t,depthWrite:false,depthTest:false,transparent:true}));
+ sp.scale.set(scale,scale*h/w,1);sp.renderOrder=10;return sp}
+function ring(radius,color,opacity,segments=160){const pts=[];for(let i=0;i<=segments;i++){const a=i/segments*Math.PI*2;pts.push(new THREE.Vector3(Math.cos(a)*radius,0,Math.sin(a)*radius))}
+ return new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color,transparent:true,opacity}))}
+function stars(n,rMin,rMax,size){const pos=new Float32Array(n*3),col=new Float32Array(n*3),c=new THREE.Color();
+ for(let i=0;i<n;i++){const r=rMin+Math.random()*(rMax-rMin),th=Math.random()*Math.PI*2,ph=Math.acos(2*Math.random()-1);
+  pos.set([r*Math.sin(ph)*Math.cos(th),r*Math.cos(ph)*.6,r*Math.sin(ph)*Math.sin(th)],i*3);
+  const t=Math.random();c.set(t<.7?0xDDE8FF:t<.88?0x9CC8FF:0xFFD9A0);c.multiplyScalar(.55+Math.random()*.45);col.set([c.r,c.g,c.b],i*3)}
+ const g=new THREE.BufferGeometry();g.setAttribute("position",new THREE.BufferAttribute(pos,3));g.setAttribute("color",new THREE.BufferAttribute(col,3));
+ const p=new THREE.Points(g,new THREE.PointsMaterial({size,vertexColors:true,transparent:true,opacity:.95,depthWrite:false,map:glowTexture(),blending:THREE.AdditiveBlending}));
+ scene.add(p);anim.push((ts,dt)=>{if(playing)p.rotation.y+=dt*.006});return p}
+function spiral(){const n=2400,pos=new Float32Array(n*3),col=new Float32Array(n*3),c=new THREE.Color();
+ for(let i=0;i<n;i++){const arm=i%3,t=Math.pow(Math.random(),.7),r=6+t*95,a=arm*2.094+t*5.2+(Math.random()-.5)*.55;
+  pos.set([Math.cos(a)*r,(Math.random()-.5)*(4-2.5*t)-14,Math.sin(a)*r-10],i*3);
+  c.set(arm===0?0x7EA6FF:arm===1?0x9C7CFF:0x8CC4FF).lerp(new THREE.Color(0xFFFFFF),Math.random()*.4).multiplyScalar(.35+(1-t)*.5);col.set([c.r,c.g,c.b],i*3)}
+ const g=new THREE.BufferGeometry();g.setAttribute("position",new THREE.BufferAttribute(pos,3));g.setAttribute("color",new THREE.BufferAttribute(col,3));
+ const p=new THREE.Points(g,new THREE.PointsMaterial({size:1.5,vertexColors:true,transparent:true,depthWrite:false,map:glowTexture(),blending:THREE.AdditiveBlending}));
+ scene.add(p);anim.push((ts,dt)=>{if(playing)p.rotation.y+=dt*.01})}
+function nebula(){[[0x7EA6FF,-60,-18,-90,150,.10],[0x9C7CFF,50,-24,-110,170,.09],[0xE1AE52,70,10,-60,90,.05],[0x5ED39A,-80,8,-40,80,.04]]
+ .forEach(([c,x,y,z,s,o])=>{const n=glow(c,s,o);n.position.set(x,y,z);scene.add(n)})}
+
+function initGL(){
+ const fail=msg=>{canvas.remove();stageEl.insertAdjacentHTML("beforeend",`<div class="nogl">${msg}</div>`);return false};
+ if(!window.THREE)return fail("The 3D views need WebGL. The timeline, trace and gate tabs show the same mission.");
+ try{renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true})}catch(e){return fail("WebGL is unavailable here. The timeline, trace and gate tabs show the same mission.")}
+ renderer.setPixelRatio(Math.min(2,window.devicePixelRatio||1));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+ scene=new THREE.Scene();camera=new THREE.PerspectiveCamera(40,1,.1,900);
+ scene.add(new THREE.HemisphereLight(0xBFD8FF,0x0A1016,.6));
+ const key=new THREE.DirectionalLight(0xFFFFFF,.85);key.position.set(-18,34,22);key.castShadow=true;key.shadow.mapSize.set(2048,2048);
+ Object.assign(key.shadow.camera,{left:-40,right:40,top:26,bottom:-26});scene.add(key);
+ const rim=new THREE.PointLight(0x8CC4FF,.9,140);rim.position.set(24,14,-18);scene.add(rim);
+ raycaster=new THREE.Raycaster();pointer=new THREE.Vector2();cam.target=new THREE.Vector3();goal.target=new THREE.Vector3();
+ bindControls();return true}
+function clearScene(){for(let i=scene.children.length-1;i>=0;i--){const o=scene.children[i];if(!o.isLight)scene.remove(o)}picks=[];anim=[]}
+function setGoal(o,instant){Object.assign(goal,{theta:o.theta??goal.theta,phi:o.phi??goal.phi,r:o.r??goal.r});if(o.target)goal.target.copy(o.target);
+ if(instant){Object.assign(cam,{theta:goal.theta,phi:goal.phi,r:goal.r});cam.target.copy(goal.target)}}
+const HOME={galaxy:{theta:1.3,phi:1.1,r:80,target:[0,-1,-8]},orbit:{theta:1.35,phi:.92,r:62,target:[0,0,0]},floor:{theta:1.22,phi:.9,r:60,target:[2,0,0]}};
+function home(instant){const h={...HOME[view]};if(view==="galaxy"&&MISSIONS.length){const ps=MISSIONS.map((_,i)=>galaxyPos(i));h.target=[0,1,2].map(k=>ps.reduce((a,p)=>a+p[k],0)/ps.length);h.r=h.r+14*Math.sqrt(MISSIONS.length-1)}setGoal({theta:h.theta,phi:h.phi,r:(stageEl.clientWidth<640?1.35:1)*h.r,target:new THREE.Vector3(...h.target)},instant)}
+
+/* Galaxy: every mission is a star system; tasks are moons. */
+function buildGalaxy(){
+ scene.fog=new THREE.FogExp2(0x070B12,.0028);renderer.shadowMap.enabled=false;
+ stars(2600,160,420,2.2);spiral();nebula();
+ MISSIONS.forEach((m,i)=>{
+  const tn=tone(m),g=new THREE.Group();g.position.set(...galaxyPos(i));scene.add(g);
+  const size=2+m.tasks.length*.45;
+  const core=new THREE.Mesh(new THREE.SphereGeometry(size,40,28),new THREE.MeshStandardMaterial({color:HEX[tn],emissive:HEX[tn],emissiveIntensity:.5,roughness:.45}));g.add(core);
+  const halo=glow(HEX[tn],size*8,.6);g.add(halo);const halo2=glow(HEX[tn],size*3.2,.35);g.add(halo2);
+  core.userData.info={kind:"mission",mi:i};picks.push(core);
+  if(tn==="crit")anim.push(ts=>{halo.material.opacity=.35+.35*(.5+.5*Math.sin(ts/300))});
+  else anim.push(ts=>{halo.material.opacity=.5+.12*Math.sin(ts/900+i)});
+  if(i===cur){const sel=new THREE.Mesh(new THREE.TorusGeometry(size*2.1,.07,8,120),new THREE.MeshBasicMaterial({color:HEX.ice,transparent:true,opacity:.9}));sel.rotation.x=Math.PI/2;g.add(sel);
+   anim.push((ts,dt)=>{sel.rotation.z+=dt*.4;sel.scale.setScalar(1+.04*Math.sin(ts/400))})}
+  const tilt=new THREE.Group();tilt.rotation.x=.35;tilt.rotation.z=(i-1)*.2;g.add(tilt);
+  m.tasks.forEach((t,k)=>{const rad=size*2.8+k*2.3;tilt.add(ring(rad,0x6F8FB0,.35));
+   const moon=new THREE.Mesh(new THREE.SphereGeometry(.75,24,18),mat(HEX[t.state],.7,.35,.1));tilt.add(moon);
+   const mg=glow(HEX[t.state],3.4,.7);moon.add(mg);moon.userData.info={kind:"task",t,mi:i};picks.push(moon);
+   let a=k*2.3+i;const speed=t.state==="run"?.55-.1*k:0;
+   anim.push((ts,dt)=>{if(playing)a+=dt*speed;moon.position.set(Math.cos(a)*rad,0,Math.sin(a)*rad);if(t.state==="crit")mg.material.opacity=.4+.5*(.5+.5*Math.sin(ts/260))})});
+  const l=label(m.title,`${m.id} · ${m.state.replace("_"," ")} · ${m.tasks.length} task${m.tasks.length===1?"":"s"}`,CSSC[tn],19);l.position.set(0,size+6.5,0);g.add(l);
+  core.userData.info.pos=g.position.clone();
+ });
+ // faint links between missions: shared workspace
+ const pts=MISSIONS.map((_,i)=>new THREE.Vector3(...galaxyPos(i)));pts.push(pts[0].clone());
+ scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineDashedMaterial({color:0x3A5270,dashSize:1.2,gapSize:1.4,transparent:true,opacity:.5})).computeLineDistances());
+}
+
+/* Orbit: one mission; rings are stages, planets are tasks, brass rings are your approvals. */
+function buildOrbit(){
+ const m=MISSIONS[cur],tn=tone(m);scene.fog=new THREE.FogExp2(0x070B12,.005);renderer.shadowMap.enabled=false;
+ stars(1600,140,380,2);nebula();
+ const sun=new THREE.Mesh(new THREE.SphereGeometry(2.6,48,32),new THREE.MeshStandardMaterial({color:HEX[tn],emissive:HEX[tn],emissiveIntensity:.55,roughness:.4}));scene.add(sun);
+ const corona=glow(HEX[tn],26,.55);scene.add(corona);scene.add(glow(HEX[tn],9,.3));
+ sun.userData.info={kind:"mission",mi:cur};picks.push(sun);
+ anim.push((ts,dt)=>{if(playing)sun.rotation.y+=dt*.2;corona.material.opacity=(tn==="crit"?.35+.3*(.5+.5*Math.sin(ts/300)):.5+.08*Math.sin(ts/700))});
+ const sl=label(m.title,`${m.id} · ${m.state.replace("_"," ")}`,CSSC[tn],15);sl.position.set(0,7.2,0);scene.add(sl);
+ const R=k=>6.5+k*3.9, at=m.at;
+ STAGES.forEach((s,k)=>{const done=k<at,now=k===at,col=done?HEX.ok:now?(m.blocked?HEX.crit:HEX.run):HEX.idle;
+  const r=ring(R(k),col,done?.75:now?1:.22);scene.add(r);
+  if(now){const band=new THREE.Mesh(new THREE.TorusGeometry(R(k),.09,8,200),new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:.95}));band.rotation.x=Math.PI/2;scene.add(band);
+   const bg=glow(col,6,.5);scene.add(bg);let a=0;anim.push((ts,dt)=>{if(playing)a+=dt*.25;bg.position.set(Math.cos(a)*R(k),0,Math.sin(a)*R(k))})}
+  const lab=label(s.replace("_"," "),done?"done":now?(m.blocked?"blocked here":"in progress"):"",done?CSSC.ok:now?(m.blocked?CSSC.crit:CSSC.run):CSSC.idle,8.2);
+  const ang=.62-k*.07;lab.position.set(Math.cos(ang)*R(k),1.3,Math.sin(ang)*R(k));scene.add(lab);
+  const hit=new THREE.Mesh(new THREE.TorusGeometry(R(k),.5,6,120),new THREE.MeshBasicMaterial({visible:false}));hit.rotation.x=Math.PI/2;scene.add(hit);
+  hit.userData.info={kind:"station",name:s.replace("_"," "),cls:done?"c-ok":now?(m.blocked?"c-crit":"c-run"):"c-idle",word:done?"done":now?(m.blocked?"blocked":"in progress"):"not yet",text:STAGE_TEXT[s]};picks.push(hit)});
+ const gates=[[1,"Scope approval",m.floor.scope,m.floor.done.includes("scope")],[5,"Readiness gate",m.status.gate==="pass"?"Gate passed on the integrated candidate.":"Open gate reasons: "+m.status.gate+".",m.status.gate==="pass"]];
+ gates.forEach(([k,name,text,ok])=>{const r=R(k)-1.95;const tor=new THREE.Mesh(new THREE.TorusGeometry(r,.16,12,200),new THREE.MeshStandardMaterial({color:HEX.brass,emissive:HEX.brass,emissiveIntensity:ok?.8:.12,metalness:.8,roughness:.3,transparent:true,opacity:ok?1:.45}));
+  tor.rotation.x=Math.PI/2;scene.add(tor);tor.userData.info={kind:"gate",name,text};picks.push(tor);
+  const gl=label(name,ok?"approved":"waiting for you",CSSC.brass,8.4);gl.position.set(Math.cos(2.35)*r,1.8,Math.sin(2.35)*r);scene.add(gl)});
+ m.tasks.forEach((t,k)=>{const stage=t.state==="idle"?1:t.state==="ok"?Math.max(3,Math.min(at,5)):2;const rad=R(stage);
+  const p=new THREE.Mesh(new THREE.SphereGeometry(1.05,32,24),mat(HEX[t.state],.55,.4,.2));scene.add(p);const pg=glow(HEX[t.state],5,.65);p.add(pg);
+  const pl=label(`${t.id} · ${t.name}`,t.who,CSSC[t.state],8.6);pl.position.set(0,2.9,0);p.add(pl);
+  p.userData.info={kind:"task",t,mi:cur};picks.push(p);
+  let a=.9+k*1.7;const speed=t.state==="run"?.22+.05*k:0;
+  anim.push((ts,dt)=>{if(playing)a+=dt*speed;p.position.set(Math.cos(a)*rad,0,Math.sin(a)*rad);if(t.state==="crit")pg.material.opacity=.3+.6*(.5+.5*Math.sin(ts/260))})});
+}
+const STAGE_TEXT={PROPOSED:"Request recorded, interviewed and assessed; spec and plan drafted.",PLANNED:"Scope accepted after your approval; tasks defined with owned paths.",
+ IMPLEMENTING:"Implementers work in parallel lanes, one worktree each.",VERIFYING:"Checks run and evidence is bound to the exact code.",
+ REVIEWING:"Code, acceptance and adversarial reviews on the integrated result.",READY_PR:"The readiness gate passed; local evidence is consistent.",MERGED:"You recorded CI and the merge; a real merge commit contains the work."};
+
+/* Floor: the conveyor view. */
+const X={intake:-26,interview:-20.5,assess:-15,spec:-9.5,scope:-4.8,laneA:-1.5,laneB:11,integrate:15.5,review:20.5,gate:25.2,ready:30};
+function box(w,h,d,color,x,y,z,em=0){const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat(color,em));m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;scene.add(m);return m}
+function beltSeg(x1,z1,x2,z2){const len=Math.hypot(x2-x1,z2-z1),a=Math.atan2(z2-z1,x2-x1);
+ const b=new THREE.Mesh(new THREE.BoxGeometry(len,.22,1.5),mat(HEX.belt,0,.8,.1));b.position.set((x1+x2)/2,.12,(z1+z2)/2);b.rotation.y=-a;b.receiveShadow=true;scene.add(b);
+ for(const s of[-1,1]){const r=new THREE.Mesh(new THREE.BoxGeometry(len,.28,.12),mat(HEX.steel,0,.4,.6));r.position.set((x1+x2)/2+Math.sin(a)*s*.8,.2,(z1+z2)/2-Math.cos(a)*s*.8);r.rotation.y=-a;scene.add(r)}}
+function station(key,name,sub,state,text){const color=state==="done"?HEX.ok:state==="now"?HEX.run:HEX.idle,em=state==="now"?.35:state==="done"?.12:.02;
+ const base=box(3.4,.5,3.4,HEX.steel,X[key],.25,0),top=box(2.6,1.6,2.6,color,X[key],1.3,0,em);if(state==="todo"){top.material.transparent=true;top.material.opacity=.55}
+ const info={kind:"station",name,cls:state==="done"?"c-ok":state==="now"?"c-run":"c-idle",word:state==="done"?"done":state==="now"?"in progress":"not yet",text};
+ top.userData.info=info;base.userData.info=info;picks.push(top,base);
+ const l=label(name,sub,state==="done"?CSSC.ok:state==="now"?CSSC.run:CSSC.idle);l.position.set(X[key],4.1,0);scene.add(l);
+ if(state==="now")anim.push(ts=>{top.material.emissiveIntensity=.25+.2*Math.sin(ts/420)})}
+function gateArch(key,name,text,approved){const c=approved?HEX.brass:HEX.idle,em=approved?.45:.05,g=new THREE.Group();
+ const p1=new THREE.Mesh(new THREE.BoxGeometry(.5,4,.5),mat(c,em,.35,.7)),p2=p1.clone(),beam=new THREE.Mesh(new THREE.BoxGeometry(.5,.5,4.4),mat(c,em,.35,.7));
+ p1.position.set(0,2,-2);p2.position.set(0,2,2);beam.position.set(0,4.1,0);[p1,p2,beam].forEach(o=>{o.castShadow=true;g.add(o)});g.position.set(X[key],0,0);scene.add(g);
+ const info={kind:"gate",name,text};[p1,p2,beam].forEach(o=>{o.userData.info=info;picks.push(o)});
+ const l=label(name,approved?"approved":"waiting for you",CSSC.brass);l.position.set(X[key],6.1,0);scene.add(l)}
+function buildFloor(){
+ const m=MISSIONS[cur];scene.fog=new THREE.Fog(0x0A1016,70,140);renderer.shadowMap.enabled=true;
+ stars(900,180,380,2);
+ const floor=new THREE.Mesh(new THREE.PlaneGeometry(90,44),new THREE.MeshStandardMaterial({color:HEX.floor,roughness:.95,metalness:0}));floor.rotation.x=-Math.PI/2;floor.receiveShadow=true;scene.add(floor);
+ const grid=new THREE.GridHelper(90,45,0x1E3044,0x152332);grid.position.y=.01;scene.add(grid);
+ const done=new Set(m.floor.done),st=k=>done.has(k)?"done":m.floor.now===k?"now":"todo";
+ beltSeg(X.intake,0,X.laneA,0);beltSeg(X.integrate,0,X.ready,0);
+ station("intake","Intake","request.md verbatim",st("intake"),"Your request stored byte for byte and scanned for secrets.");
+ station("interview","Interview","rounds + defaults",st("interview"),"Grounded questions in rounds, each with a suggested default.");
+ station("assess","Assessment","blockers · concerns",st("assess"),"The planner's challenge: blockers, concerns with evidence, risks.");
+ station("spec","Spec + plan","criteria quote you",st("spec"),"spec.md, criteria quoting your words, plan with architecture.");
+ gateArch("scope","Scope approval",m.floor.scope,done.has("scope"));
+ const zs=m.tasks.length===1?[0]:m.tasks.length===2?[-4,4]:[-6.5,0,6.5];
+ m.tasks.forEach((t,i)=>{const z=zs[i],c=HEX[t.state];
+  beltSeg(X.laneA-1.2,0,X.laneA+1.2,z);beltSeg(X.laneA+1.2,z,X.laneB-1.2,z);beltSeg(X.laneB-1.2,z,X.integrate-1.4,0);
+  const bay=box(X.laneB-X.laneA-2.4,.08,3.4,c,(X.laneA+X.laneB)/2,.02,z,.06);bay.material.transparent=true;bay.material.opacity=.18;
+  const lab=label(`${t.id} · ${t.name}`,t.tree==="not created"?"queued":"worktree "+t.id,CSSC[t.state],6);lab.position.set((X.laneA+X.laneB)/2,2.9,z-2.6);scene.add(lab);
+  if(t.state!=="idle"){const agent=new THREE.Mesh(new THREE.CylinderGeometry(.45,.55,1.5,20),mat(0xC9D6E3,.05,.4,.3));agent.position.set(X.laneA+3,.95,z+2.2);agent.castShadow=true;
+   const head=new THREE.Mesh(new THREE.SphereGeometry(.42,20,16),mat(c,.5,.3,.2));head.position.set(0,1.05,0);agent.add(head);scene.add(agent);
+   agent.userData.info=head.userData.info={kind:"task",t,mi:cur};picks.push(agent,head)}
+  const v=box(1.4,1.2,1.8,t.state==="crit"?HEX.crit:HEX.steel,X.laneB-2.4,.8,z,t.state==="crit"?.4:.05);v.userData.info={kind:"task",t,mi:cur};picks.push(v);
+  const p=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),mat(c,t.state==="run"?.55:.25,.3,.2));p.castShadow=true;
+  const x0=X.laneA+1.6,x1=X.laneB-3.4;p.position.set(t.state==="idle"?x0-.2:x0+(x1-x0)*t.progress,.8,z);p.userData.info={kind:"task",t,mi:cur};scene.add(p);picks.push(p);
+  const speed=.035+.02*i;anim.push((ts,dt)=>{if(!playing)return;if(t.state==="run"){p.position.x+=speed*60*dt;if(p.position.x>x1)p.position.x=x0;p.rotation.y+=dt*.8}
+   if(t.state==="crit")p.material.emissiveIntensity=.35+.35*Math.sin(ts/260)});
+  if(t.deps.length){const q=label("waits on "+t.deps.join(", "),null,CSSC.idle,4);q.position.set(x0,1.9,z);scene.add(q)}});
+ station("integrate","Integrate","merge lanes",st("integrate"),"Finished lanes merge into the mission branch; a conflict blocks only that lane.");
+ station("review","Reviews","code · acceptance · adversarial",st("review"),"Read-only reviewers; the reviewer must differ from the maintainer.");
+ gateArch("gate","Readiness gate",m.status.gate==="pass"?"Gate passed on the integrated candidate.":"Open gate reasons: "+m.status.gate+".",m.status.gate==="pass");
+ station("ready","READY_PR","packet + CI",st("ready"),"Local evidence consistent; you record CI and the merge.");
+}
+
+function buildView(instant){if(!renderer)return;clearScene();if(!MISSIONS.length){stars(2000,160,420,2.2);resize();return}({galaxy:buildGalaxy,orbit:buildOrbit,floor:buildFloor})[view]();
+ if(instant)home(true);resize()}
+function setView(v,{fly=true}={}){view=v;document.querySelectorAll("#vswitch button").forEach(b=>b.setAttribute("aria-selected",b.dataset.v===v));
+ $("howto").textContent=HOW[v];$("legend").innerHTML=LEGEND[v].map(([c,t])=>`<span><i style="background:${CSSC[c]}"></i>${t}</span>`).join("");
+ buildView(false);home(!fly)}
+function flyToMission(i){if(view!=="galaxy")return;const p=new THREE.Vector3(...galaxyPos(i));setGoal({target:p,r:stageEl.clientWidth<640?46:34,phi:1.05})}
+
+/* controls: drag rotate, shift/right-drag pan, wheel or pinch zoom, click inspect */
+function setCam(){const t=cam.target;camera.position.set(t.x+cam.r*Math.sin(cam.phi)*Math.cos(cam.theta),t.y+cam.r*Math.cos(cam.phi),t.z+cam.r*Math.sin(cam.phi)*Math.sin(cam.theta));camera.lookAt(t)}
+function resize(){if(!renderer)return;const r=stageEl.getBoundingClientRect();if(!r.width)return;renderer.setSize(r.width,r.height,false);camera.aspect=r.width/r.height;camera.updateProjectionMatrix()}
+function bindControls(){
+ const ptrs=new Map();let drag=null,moved=0,pinch=null,lastClick=0;
+ canvas.addEventListener("pointerdown",e=>{canvas.setPointerCapture(e.pointerId);ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});moved=0;
+  if(ptrs.size===2){const [a,b]=[...ptrs.values()];pinch={d:Math.hypot(a.x-b.x,a.y-b.y),r:goal.r};drag=null}
+  else drag={x:e.clientX,y:e.clientY,th:goal.theta,ph:goal.phi,pan:e.shiftKey||e.button===2,tx:goal.target.x,tz:goal.target.z}});
+ canvas.addEventListener("pointermove",e=>{if(ptrs.has(e.pointerId))ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(pinch&&ptrs.size===2){const [a,b]=[...ptrs.values()];goal.r=Math.min(160,Math.max(14,pinch.r*pinch.d/Math.max(1,Math.hypot(a.x-b.x,a.y-b.y))));moved=99;return}
+  if(drag){const dx=e.clientX-drag.x,dy=e.clientY-drag.y;moved+=Math.abs(dx)+Math.abs(dy);
+   if(drag.pan){goal.target.x=drag.tx-dx*.07;goal.target.z=drag.tz-dy*.07}else{goal.theta=drag.th+dx*.006;goal.phi=Math.min(1.5,Math.max(.12,drag.ph-dy*.005))}}
+  if(e.pointerType==="mouse")hover(e)});
+ const up=e=>{ptrs.delete(e.pointerId);if(ptrs.size<2)pinch=null;
+  if(drag&&moved<6){const info=hit(e),now=performance.now();
+   if(info&&info.kind==="mission"){openMission(info.mi);if(now-lastClick<380&&view==="galaxy"){setView("orbit")}else flyToMission(info.mi);lastClick=now;inspect(info)}
+   else inspect(info||null)}
+  drag=null};
+ canvas.addEventListener("pointerup",up);canvas.addEventListener("pointercancel",up);
+ canvas.addEventListener("pointerleave",()=>{tip.hidden=true});
+ canvas.addEventListener("wheel",e=>{e.preventDefault();goal.r=Math.min(160,Math.max(14,goal.r*(1+Math.sign(e.deltaY)*.1)))},{passive:false});
+ canvas.addEventListener("contextmenu",e=>e.preventDefault());
+ $("b-reset").onclick=()=>home(false);
+ $("b-play").onclick=e=>{playing=!playing;e.currentTarget.setAttribute("aria-pressed",playing)};
+ document.querySelectorAll("#vswitch button").forEach(b=>b.onclick=()=>setView(b.dataset.v));
+ new ResizeObserver(resize).observe(stageEl);
+}
+function hit(e){const r=canvas.getBoundingClientRect();pointer.x=((e.clientX-r.left)/r.width)*2-1;pointer.y=-((e.clientY-r.top)/r.height)*2+1;
+ raycaster.setFromCamera(pointer,camera);const h=raycaster.intersectObjects(picks,false)[0];return h&&h.object.userData.info}
+function hover(e){const info=hit(e),r=stageEl.getBoundingClientRect();
+ if(info){tip.hidden=false;tip.style.left=Math.min(e.clientX-r.left,r.width-220)+"px";tip.style.top=(e.clientY-r.top)+"px";
+  tip.textContent=info.kind==="task"?`${info.t.id} · ${info.t.name} · ${WORD[info.t.state]}`:info.kind==="mission"?`${MISSIONS[info.mi].title} · ${MISSIONS[info.mi].state.replace("_"," ")} · click to fly, double-click for orbit`:info.name;
+  canvas.style.cursor="pointer"}else{tip.hidden=true;canvas.style.cursor=""}}
+let last=0;
+function loop(ts){requestAnimationFrame(loop);if(!renderer||$("view-floor").hidden)return;const dt=Math.min(.05,(ts-last)/1000||0);last=ts;
+ const k=1-Math.pow(.0015,dt);cam.theta+=(goal.theta-cam.theta)*k;cam.phi+=(goal.phi-cam.phi)*k;cam.r+=(goal.r-cam.r)*k;cam.target.lerp(goal.target,k);
+ anim.forEach(f=>f(ts,dt));setCam();renderer.render(scene,camera)}
+
+/* ------------------------------ wiring ------------------------------ */
+function render(){
+ renderRail();
+ if(!MISSIONS.length){$("mname").textContent="No open missions";$("mmeta").textContent="";$("mreq").textContent="Create one with software-factory mission create, or run /factory-build in your coding client.";$("kpis").innerHTML="";$("feed").innerHTML="";$("insp").innerHTML='<p class="muted" style="margin:0">Nothing to inspect yet.</p>';if(renderer){clearScene();stars(2000,160,420,2.2)}return}
+ const m=MISSIONS[cur];renderHead(m);renderViews(m);inspect(null);if(renderer)buildView(false);
+ const rg=document.getElementById("run-gate");if(rg)rg.onclick=runGate}
+$("st-host").textContent=location.host;
+const gl=initGL();renderTabs();
+if(gl){view="galaxy";setView("galaxy",{fly:false});requestAnimationFrame(loop)}else{$("howto").textContent=HOW.galaxy}
+showTab();
+if(!TOKEN){setConn("Open the URL printed by software-factory serve (it carries the session token)","crit")}else{refresh().then(stream)}
+document.addEventListener("keydown",e=>{if(e.target.closest("input,textarea"))return;const n=+e.key;
+ if(n>=1&&n<=TABS.length){tab=TABS[n-1][0];renderTabs();showTab()}
+ const v={g:"galaxy",o:"orbit",f:"floor"}[e.key];if(v&&gl&&tab==="floor")setView(v)});
+</script>
+</body></html>

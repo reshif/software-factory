@@ -4624,6 +4624,12 @@ def _mission_handler(args):
     raise FactoryError(f"Unknown mission command: {command}")
 
 
+def _serve_handler(args):
+    from .serve import serve
+
+    serve(args.root, args.port)
+
+
 def add_parser(subparsers):
     from .checks import run_checks, verify_mission
 
@@ -4845,6 +4851,12 @@ def add_parser(subparsers):
             for name in ("url", "head", "conclusion"):
                 option(parser, name, required=True)
             option(parser, "trunk")
+    serve = subparsers.add_parser(
+        "serve",
+        help="Open the read-only Mission Deck in your browser",
+    )
+    serve.add_argument("--port", type=int, default=8765, help="Local port (default 8765; 0 picks a free one)")
+    serve.set_defaults(handler=_serve_handler)
     status = subparsers.add_parser("status", help="Show mission status without starting work")
     status.add_argument("--mission", metavar="ID", help="Mission ID (default: list all missions)")
     status.set_defaults(

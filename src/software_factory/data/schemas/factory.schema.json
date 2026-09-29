@@ -214,6 +214,18 @@
         }
       }
     },
+    "approvals": {
+      "description": "How the user's own scope, exception, merge and release approvals are recorded. `mission approve` in an interactive terminal always works; agents can never record these decisions.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "chat": {
+          "description": "With the claude profile, install a UserPromptSubmit hook in .claude/settings.json that records the approval when the user's own chat message reads `approve <MISSION-ID> <scope|exception|merge|release>`. Set false to require the terminal command.",
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
     "enforcement": {
       "description": "Opt-in client enforcement of the orchestrator role. Local guardrail only; live behaviour is not verified by the factory.",
       "type": "object",

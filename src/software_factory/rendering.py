@@ -18,6 +18,9 @@ END = "<!-- software-factory:end -->"
 SHARED = {"AGENTS.md", "CLAUDE.md", ".github/copilot-instructions.md"}
 ORCHESTRATOR_AGENT = ".claude/agents/factory-orchestrator.md"
 GUARD = ".factory/hooks/orchestrator_guard.py"
+# Chat approvals (Claude Code): a UserPromptSubmit hook in the project's .claude/settings.json.
+CLAUDE_SETTINGS = ".claude/settings.json"
+CHAT_APPROVAL = ".factory/hooks/chat_approval.py"
 SPECIALISTS = ("factory-planner", "factory-implementer", "factory-verifier", "factory-reviewer")
 ENFORCEMENT_FLAGS = {"claude": "claude_orchestrator_agent"}
 # Entry prompts named in the rendered CLAUDE.md and copilot-instructions.md text.
@@ -49,6 +52,30 @@ def guard_command(project: str) -> str:
         f'P="{project}/.factory/.venv/bin/python"; [ -x "$P" ] || P=python3; '
         f'"$P" -I -B "{project}/{GUARD}" || exit 2'
     )
+
+
+def chat_approval_command(project: str) -> str:
+    """POSIX shell command running the chat-approval hook on the pinned runtime.
+
+    It records the user's own `approve <MISSION> <kind>` message through the factory code, so it
+    needs the hydrated runtime; it never blocks a prompt (a missing runtime or any failure exits 0).
+    """
+    return (
+        f'P="{project}/.factory/.venv/bin/python"; '
+        f'[ -x "$P" ] && "$P" -I -B "{project}/{CHAT_APPROVAL}" "{project}" || true'
+    )
+
+
+def chat_approval_entry() -> dict:
+    return {"hooks": [{"type": "command", "command": chat_approval_command("${CLAUDE_PROJECT_DIR}")}]}
+
+
+def chat_approvals_enabled(config: dict, selected_profiles) -> bool:
+    return "claude" in selected_profiles and (config.get("approvals") or {}).get("chat", True) is not False
+
+
+def _entry_sha(entry) -> str:
+    return sha256(json.dumps(entry, sort_keys=True, separators=(",", ":")))
 
 
 def enforcement_settings(config: dict) -> dict[str, bool]:
@@ -129,7 +156,7 @@ def markdown(header: dict, body: str) -> bytes:
 
 
 def allowed_export(name: str) -> bool:
-    if name in SHARED or name == ".codex/config.toml":
+    if name in SHARED or name in (".codex/config.toml", CLAUDE_SETTINGS):
         return True
     return (
         bool(
@@ -147,8 +174,15 @@ RECORD_FIELDS = {
     "file": {"kind": str, "sha256": str},
     "block": {"kind": str, "sha256": str, "separator": str, "existed": bool},
     "toml": {"kind": str, "values": dict, "created_table": bool, "existed": bool, "appended": str},
+    "json": {"kind": str, "entry_sha256": str, "created": list, "existed": bool},
 }
-RECORD_REQUIRED = {"file": {"kind", "sha256"}, "block": {"kind", "sha256"}, "toml": {"kind", "values"}}
+RECORD_REQUIRED = {
+    "file": {"kind", "sha256"},
+    "block": {"kind", "sha256"},
+    "toml": {"kind", "values"},
+    "json": {"kind", "entry_sha256", "created", "existed"},
+}
+JSON_CONTAINERS = ("hooks", "hooks.UserPromptSubmit")
 
 
 def _check_record(name: str, record) -> None:
@@ -156,7 +190,15 @@ def _check_record(name: str, record) -> None:
     if not isinstance(record, dict):
         raise FactoryError(f"Invalid renderer ownership: {name}")
     kind = record.get("kind")
-    expected_kind = "block" if name in SHARED else "toml" if name == ".codex/config.toml" else "file"
+    expected_kind = (
+        "block"
+        if name in SHARED
+        else "toml"
+        if name == ".codex/config.toml"
+        else "json"
+        if name == CLAUDE_SETTINGS
+        else "file"
+    )
     if kind not in RECORD_FIELDS:
         raise FactoryError(f"Invalid renderer ownership: {name}")
     if kind != expected_kind:
@@ -167,6 +209,11 @@ def _check_record(name: str, record) -> None:
     for key, value in record.items():
         if type(value) is not fields[key]:
             raise FactoryError(f"Invalid ownership record for {name}: {key}")
+    if kind == "json" and (
+        not re.fullmatch(r"[0-9a-f]{64}", record["entry_sha256"])
+        or any(item not in JSON_CONTAINERS for item in record["created"])
+    ):
+        raise FactoryError(f"Invalid ownership record for {name}")
     if "sha256" in record and not re.fullmatch(r"[0-9a-f]{64}", record["sha256"]):
         raise FactoryError(f"Invalid ownership record for {name}: sha256")
     if record.get("separator", "") not in ("", "\n", "\n\n"):
@@ -205,7 +252,7 @@ def read_manifest(root: Path) -> dict | None:
             or name in data["generated"]
         ):
             raise FactoryError(f"Invalid relinquished export: {name}")
-        if name == ".codex/config.toml":
+        if name in (".codex/config.toml", CLAUDE_SETTINGS):
             raise FactoryError(f"Invalid relinquished export: {name}")
         safe_path(root, name)
     return data
@@ -221,7 +268,26 @@ def _text(data: bytes, name: str) -> str:
 
 
 def _is_whole_file(name: str) -> bool:
-    return name not in SHARED and name != ".codex/config.toml"
+    return name not in SHARED and name not in (".codex/config.toml", CLAUDE_SETTINGS)
+
+
+def _settings_doc(text: str, name: str) -> dict:
+    try:
+        doc = json.loads(text) if text.strip() else {}
+    except ValueError as exc:
+        raise FactoryError(f"Invalid Claude settings: {name} is not valid JSON ({exc})") from exc
+    if not isinstance(doc, dict):
+        raise FactoryError(f"Invalid Claude settings: {name} must be a JSON object")
+    hooks = doc.get("hooks")
+    if hooks is not None and not isinstance(hooks, dict):
+        raise FactoryError(f"Invalid Claude settings: `hooks` in {name} must be an object")
+    if isinstance(hooks, dict) and not isinstance(hooks.get("UserPromptSubmit", []), list):
+        raise FactoryError(f"Invalid Claude settings: `hooks.UserPromptSubmit` in {name} must be a list")
+    return doc
+
+
+def _settings_bytes(doc: dict) -> bytes:
+    return (json.dumps(doc, indent=2) + "\n").encode()
 
 
 def strip_owned(root: Path, name: str, record: dict) -> bytes | None:
@@ -264,6 +330,22 @@ def strip_owned(root: Path, name: str, record: dict) -> bytes | None:
             prefix = prefix[: -len(separator)] + ("\n" if suffix and separator == "\n\n" else "")
         result = prefix + suffix
         return result.encode() if result or record.get("existed") else None
+    if record["kind"] == "json":
+        doc = _settings_doc(text, name)
+        hooks = doc.get("hooks") or {}
+        entries = hooks.get("UserPromptSubmit", [])
+        kept = [e for e in entries if _entry_sha(e) != record["entry_sha256"]]
+        if len(kept) != len(entries):
+            hooks["UserPromptSubmit"] = kept
+        if "hooks.UserPromptSubmit" in record["created"] and "UserPromptSubmit" in hooks and not kept:
+            del hooks["UserPromptSubmit"]
+        if "hooks" in record["created"] and "hooks" in doc and not doc["hooks"]:
+            del doc["hooks"]
+        if not doc and not record["existed"]:
+            return None
+        if len(kept) == len(entries) and doc == _settings_doc(text, name):
+            return current  # Nothing owned was present: keep the user's bytes exactly.
+        return _settings_bytes(doc)
     appended = record.get("appended")
     try:
         doc = tomlkit.parse(text)
@@ -587,8 +669,9 @@ def plan_render(
             "absolute path, leading ~ or .. component). Pass JSON input on stdin with a quoted heredoc "
             "(`--input - <<'JSON'`) instead of writing files. When a call is denied, delegate the work named "
             "in the reason; never try to bypass the guard. Scope, exception, merge and release approvals and CI "
-            "results are the user's to record: give them the exact `mission approve` or `mission ci-result` "
-            "command to run in their own terminal. It is a local guardrail: records remain "
+            "results are the user's to record: they approve by replying `approve <MISSION> <kind>` in chat "
+            "(the factory's chat hook records it) or with `mission approve` in their terminal, and record CI "
+            "with `mission ci-result`; give them the exact line or command. It is a local guardrail: records remain "
             "local-unattested and live behaviour is not_run.\n\n" + roles["orchestrator"],
         )
     trees = [
@@ -701,7 +784,10 @@ def plan_render(
     generated = {}
     bases = {name: strip_owned(root, name, record) for name, record in old.items()}
     for name in (
-        old.keys() - outputs.keys() - ({".codex/config.toml"} if "codex" in selected_profiles else set())
+        old.keys()
+        - outputs.keys()
+        - ({".codex/config.toml"} if "codex" in selected_profiles else set())
+        - ({CLAUDE_SETTINGS} if chat_approvals_enabled(config, selected_profiles) else set())
     ):
         changes[name] = bases[name]
     for name, content in outputs.items():
@@ -737,6 +823,25 @@ def plan_render(
                 )
             changes[name] = content
             generated[name] = {"kind": "file", "sha256": sha256(content)}
+    if chat_approvals_enabled(config, selected_profiles):
+        name = CLAUDE_SETTINGS
+        base = bases[name] if name in bases else optional(root, name)
+        doc = _settings_doc(_text(base or b"", name), name)
+        entry, created = chat_approval_entry(), []
+        if "hooks" not in doc:
+            doc["hooks"], created = {}, ["hooks"]
+        if "UserPromptSubmit" not in doc["hooks"]:
+            doc["hooks"]["UserPromptSubmit"] = []
+            created.append("hooks.UserPromptSubmit")
+        if entry not in doc["hooks"]["UserPromptSubmit"]:
+            doc["hooks"]["UserPromptSubmit"].append(entry)
+        changes[name] = _settings_bytes(doc)
+        generated[name] = {
+            "kind": "json",
+            "entry_sha256": _entry_sha(entry),
+            "created": old[name]["created"] if name in old else created,
+            "existed": old[name]["existed"] if name in old else base is not None,
+        }
     if "codex" in selected_profiles:
         name = ".codex/config.toml"
         base = bases[name] if name in bases else optional(root, name)

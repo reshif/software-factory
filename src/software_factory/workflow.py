@@ -1108,8 +1108,10 @@ def scope_decision_hint(id, spec_hash):
         "subject_hash": spec_hash,
         "reference": "<who accepted the specification, and where>",
     }
-    return "ask the user to record their acceptance in their own terminal: " + approve_command(
-        id, "scope", record["subject_hash"], record["id"], record["reference"]
+    return (
+        f"ask the user to reply in Claude Code chat with `{chat_approval_phrase(id, 'scope')}` (the factory's "
+        "chat hook records it from their own message), or to run in their own terminal: "
+        + approve_command(id, "scope", record["subject_hash"], record["id"], record["reference"])
     )
 
 
@@ -1142,7 +1144,8 @@ def constitution_reconcile_hint(id, constitution):
     return (
         f"reconcile with: software-factory mission block --mission {id} "
         "--reason 'Constitution changed; reconcile before continuing'; then "
-        "ask the user to approve the constitution change in their own terminal: "
+        f"ask the user to reply in Claude Code chat with `{chat_approval_phrase(id, 'exception')}`, or to "
+        "approve the constitution change in their own terminal: "
         + approve_command(id, "exception", record["subject_hash"], record["id"], record["reference"])
         + f"\nthen software-factory mission accept-scope --mission {id} "
         "(commit the constitution change first: a product mission's base advances to the newest commit "
@@ -2965,6 +2968,10 @@ MAINTAINER_REQUIRED = (
 )
 
 
+def chat_approval_phrase(id, kind):
+    return f"approve {id} {kind}"
+
+
 def approve_command(id, kind, subject_hash=None, decision_id=None, reference=None):
     parts = [f"software-factory mission approve --mission {id} --kind {kind}"]
     if subject_hash:
@@ -2979,7 +2986,8 @@ def human_decision_refusal(id, record):
     kind = record.get("kind")
     return (
         f"A {kind} decision records the user's own approval, so it is not recorded from --input; ask the "
-        "user to run it in their own terminal: "
+        f"user to reply in Claude Code chat with `{chat_approval_phrase(id, kind)}` (recorded by the factory's "
+        "chat hook from their own message), or to run it in their own terminal: "
         + approve_command(id, kind, record.get("subject_hash"), record.get("id"), record.get("reference"))
     )
 
@@ -2997,6 +3005,29 @@ def _confirm_on_terminal(lines, mission_id):
         raise FactoryError("Approval not recorded: the typed mission ID did not match")
 
 
+def _default_approval_subject(root, mission, candidate, kind):
+    """What an approval of this kind binds to when no --subject-hash is given, and its default ID."""
+    if kind == "scope":
+        if not candidate.get("spec_hash"):
+            raise FactoryError("No spec.md to approve yet; record the specification first")
+        return candidate["spec_hash"], None
+    if kind == "exception":
+        constitution = hash_file(root, CONSTITUTION_PATH)
+        if constitution != mission["constitution_hash"]:
+            return constitution, f"D-CONST-{constitution[:8]}"
+        return candidate["fingerprint"], None
+    delivery = mission.get("delivery") or {}
+    if kind == "merge":
+        ci = delivery.get("ci_ref") or {}
+        if not ci.get("fingerprint"):
+            raise FactoryError("Record the successful CI result first (mission ci-result); merge binds to it")
+        return ci["fingerprint"], None
+    artifact = (delivery.get("artifact_digest") or "")[7:]
+    if not artifact:
+        raise FactoryError("Record the release artifact first (record-delivery artifact_digest)")
+    return artifact, None
+
+
 def approve_decision(root, id, kind, reference, subject_hash=None, decision_id=None, confirm=None):
     """Record the user's own scope, exception, merge or release approval after a typed confirmation."""
     if kind not in HUMAN_DECISION_KINDS:
@@ -3011,11 +3042,11 @@ def approve_decision(root, id, kind, reference, subject_hash=None, decision_id=N
         bound.setdefault(hash_file(root, CONSTITUTION_PATH), "the current constitution")
     except (FactoryError, OSError):
         pass
-    subject = subject_hash or (candidate.get("spec_hash") if kind == "scope" else candidate["fingerprint"])
+    subject, default_id = subject_hash, None
     if not subject:
-        raise FactoryError("No spec.md to approve yet; record the specification first")
+        subject, default_id = _default_approval_subject(root, mission, candidate, kind)
     record = {
-        "id": decision_id or f"D-{kind.upper()}-{subject[:8]}",
+        "id": decision_id or default_id or f"D-{kind.upper()}-{subject[:8]}",
         "kind": kind,
         "subject_hash": subject,
         "reference": reference,

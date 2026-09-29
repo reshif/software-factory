@@ -243,6 +243,7 @@ def planning_snapshot(root: Path) -> dict[str, bytes]:
         "CLAUDE.md",
         ".github/copilot-instructions.md",
         ".codex/config.toml",
+        ".claude/settings.json",
     ):
         value = optional(root, name)
         if value is not None:

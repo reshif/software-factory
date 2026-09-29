@@ -35,7 +35,7 @@ EOF
 
 ## Outputs and verification
 
-Context and spec text and a criteria JSON, returned to the orchestrator as text. The orchestrator pipes them into `mission record-doc --doc context|spec --input -` and `software-factory mission criteria --mission ID --input -` (quoted heredoc). After recording the spec, the orchestrator shows it to the user, who records their own acceptance in their terminal (an agent cannot: the command needs an interactive terminal and a typed mission ID, and `mission decision` refuses scope, exception, merge and release decisions):
+Context and spec text and a criteria JSON, returned to the orchestrator as text. The orchestrator pipes them into `mission record-doc --doc context|spec --input -` and `software-factory mission criteria --mission ID --input -` (quoted heredoc). After recording the spec, the orchestrator shows it to the user, who approves it themselves. In Claude Code the user replies in chat with a line reading `approve ID scope`; the factory's UserPromptSubmit hook records the decision from their own message and binds it to the current spec.md. In other clients, or as a fallback, the user runs this in their terminal (an agent cannot: `mission decision` refuses scope, exception, merge and release decisions, and `mission approve` needs an interactive terminal and a typed mission ID):
 
 ```sh
 uv run --locked --project .factory software-factory mission approve --mission ID --kind scope --reference '<where and how the user accepted>'

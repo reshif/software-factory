@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -16,11 +17,13 @@ from .core import (
     FactoryError,
     git,
     load_config,
+    profiles,
     resolve_root,
     runtime_fingerprint,
     safe_path,
     sha256,
 )
+from .onboarding import PLACEHOLDER_CHECK, next_steps, start_instructions
 
 # Commands that never write project files; they may run while a recovery journal exists.
 READ_ONLY = ("doctor", "inspect", "status")
@@ -86,22 +89,9 @@ def drift_message(drift: list[str]) -> str:
 
 
 def inspect_project(root: Path) -> dict:
-    suggestions = []
-    package = root / "package.json"
-    if package.is_file():
-        try:
-            scripts = json.loads(package.read_text()).get("scripts", {})
-            for name in ("test", "lint", "typecheck", "build"):
-                if name in scripts:
-                    suggestions.append({"id": name, "command": ["npm", "run", name], "cwd": "."})
-        except (ValueError, OSError):
-            pass
-    if (root / "pyproject.toml").is_file():
-        suggestions.append({"id": "python-tests", "command": ["uv", "run", "pytest"], "cwd": "."})
-    if (root / "go.mod").is_file():
-        suggestions.append({"id": "go-tests", "command": ["go", "test", "./..."], "cwd": "."})
-    if (root / "Cargo.toml").is_file():
-        suggestions.append({"id": "rust-tests", "command": ["cargo", "test"], "cwd": "."})
+    from .onboarding import detect_checks, suggestion_view
+
+    suggestions = suggestion_view(detect_checks(root))
     try:
         repository = git(root, "rev-parse", "--show-toplevel")
         baseline = git(root, "rev-parse", "--verify", "HEAD", check=False) or None
@@ -162,6 +152,7 @@ def doctor(root: Path) -> dict:
         and not pinned
         and installation.get("version") != __version__
     )
+    config = None
     try:
         config = load_config(root)
         report["profiles"] = config["profile"]
@@ -224,12 +215,20 @@ def doctor(root: Path) -> dict:
                     }
                 )
         report["runtime_fingerprint"] = runtime_fingerprint() if pinned else "not_checked"
-        if any(c["id"] == "configure-me" for c in config["checks"]):
+        if any(c["id"] == PLACEHOLDER_CHECK for c in config["checks"]):
+            suggested = [c for c in report["suggested_checks"] if c["written_by_init"]]
             issues.append(
                 {
                     "severity": "warning",
                     "code": "configure_checks",
-                    "message": "Replace the placeholder with required product checks in factory.json",
+                    "message": "Replace the placeholder with required product checks in factory.json"
+                    + (
+                        " (suggested, not run: "
+                        + "; ".join(shlex.join(c["command"]) for c in suggested)
+                        + ")"
+                        if suggested
+                        else ""
+                    ),
                 }
             )
         for owner in ("maintainer", "reviewer"):
@@ -238,7 +237,10 @@ def doctor(root: Path) -> dict:
                     {
                         "severity": "warning",
                         "code": "owner_unconfigured",
-                        "message": f"Set owners.{owner} before relying on team governance",
+                        "message": "Set owners.maintainer in factory.json; the readiness gate refuses "
+                        "READY_PR without it"
+                        if owner == "maintainer"
+                        else f"Set owners.{owner} before relying on team governance",
                     }
                 )
     except (FactoryError, OSError) as exc:
@@ -293,6 +295,16 @@ def doctor(root: Path) -> dict:
             "live_behavior": "not_run",
         }
     )
+    codes = {issue["code"] for issue in issues}
+    if config is not None and installation is not None and not uninstalled and not skew:
+        report["next_steps"] = next_steps(
+            root,
+            config,
+            profiles(config),
+            runtime_missing="runtime_missing" in codes,
+            exports_stale="exports_stale" in codes,
+        )
+        report["start"] = start_instructions(profiles(config))
     if not report["ok"]:
         report["_exit_code"] = 2
     return report
@@ -366,6 +378,24 @@ def build_parser() -> argparse.ArgumentParser:
             help="Install files only; doctor reports missing runtime until uv sync --locked --no-dev --project .factory",
         )
         p.add_argument("--git-init", action="store_true", help="Create a Git repository if one is missing")
+        if name == "init":
+            p.add_argument(
+                "--maintainer",
+                metavar="NAME",
+                help="Record owners.maintainer in a new factory.json (default: git config user.name, "
+                "else user.email)",
+            )
+            p.add_argument(
+                "--no-detect-checks",
+                action="store_true",
+                help="Keep the configure-me placeholder instead of writing detected test checks",
+            )
+            p.add_argument(
+                "--commit",
+                action="store_true",
+                help="Create the Git repository if missing (branch main) and commit the installation as "
+                "'Initialize software-factory'; a repository without commits commits all files",
+            )
         if name == "upgrade":
             p.add_argument("--to", dest="to_version", help="Require this artifact to be exactly VERSION")
             p.add_argument(
@@ -384,6 +414,9 @@ def build_parser() -> argparse.ArgumentParser:
                 upgrade=n == "upgrade",
                 to_version=getattr(a, "to_version", None),
                 allow_downgrade=getattr(a, "allow_downgrade", False),
+                maintainer=getattr(a, "maintainer", None),
+                detect=not getattr(a, "no_detect_checks", False),
+                commit=getattr(a, "commit", False),
             )
         )
     p = setup.add_parser("uninstall", help="Remove factory-owned files while preserving user changes")

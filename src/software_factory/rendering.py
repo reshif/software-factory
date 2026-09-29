@@ -579,9 +579,12 @@ def plan_render(
             f"{preamble} Your role instructions follow. Assigned skill: {role['skill']}. Work only from the generated brief the orchestrator provides (software-factory mission brief); report missing brief fields instead of guessing.\n\n"
             + roles[name]
         )
+        # Among the read roles only the planner researches documentation on the web;
+        # the reviewer judges the diff and evidence, not the web.
+        web = name == "planner"
         if "claude" in selected_profiles:
             tools = (
-                "Read, Glob, Grep, WebFetch, WebSearch, Skill"
+                ("Read, Glob, Grep, WebFetch, WebSearch, Skill" if web else "Read, Glob, Grep, Skill")
                 if role["capability"] == "read"
                 else "Read, Glob, Grep, Bash, Skill"
                 if role["capability"] == "verify"
@@ -606,7 +609,7 @@ def plan_render(
             outputs[f".codex/agents/factory-{name}.toml"] = tomlkit.dumps(doc).encode()
         if "copilot" in selected_profiles:
             tools = (
-                ["read", "search", "web"]
+                (["read", "search", "web"] if web else ["read", "search"])
                 if role["capability"] == "read"
                 else ["read", "search", "execute"]
                 if role["capability"] == "verify"

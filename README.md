@@ -39,7 +39,7 @@ Replace the deliberately failing `configure-me` check in `factory.json` with rea
 ]
 ```
 
-After any `factory.json` edit (checks, enforcement, limits), run `software-factory render`: `factory.lock.json` pins the `factory.json` hash, and `doctor` and the gate report stale exports until it is refreshed. `software-factory inspect` suggests commands without running them. Set `owners.maintainer` (required: the gate fails without it, because it is what blocks self-review) and `owners.reviewer`, review the generated configuration, and establish a normal Git baseline before creating missions. Checks use argv arrays, without shell expansion.
+After any `factory.json` edit (checks, enforcement, limits), run `software-factory render`: `factory.lock.json` pins the `factory.json` hash, and `doctor` and the gate report stale exports until it is refreshed. `software-factory inspect` suggests commands without running them. Set `owners.maintainer` (required: the gate fails without it, because it is what blocks self-review) and `owners.reviewer`, review the generated configuration, and establish a normal Git baseline before creating missions. Checks use argv arrays, without shell expansion. They inherit your environment minus `TYPESAFE_API_KEY` unless you set `"check_env": {"mode": "allowlist"}` or give a check its own `"env"` list of variable names; see [factory setup](src/software_factory/data/docs/runbooks/factory-setup.md).
 
 Open the selected native client and start with `factory-blueprint` for planning or `factory-build` for implementation. Claude Code and Copilot use `/factory-build`; native Codex uses `$factory-build`. The factory prepares instructions and deterministic workflow tools; your authenticated coding client runs the agent work.
 

@@ -167,6 +167,20 @@
           "program_sha256": {
             "anyOf": [{ "$ref": "#/definitions/hash" }, { "type": "null" }]
           },
+          "environment": {
+            "description": "The check's environment mode and the variable names (never values) its process received, factory-set names included.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["mode", "names"],
+            "properties": {
+              "mode": { "enum": ["inherit", "allowlist"] },
+              "names": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": { "type": "string", "minLength": 1 }
+              }
+            }
+          },
           "reason": {
             "type": "string",
             "minLength": 1

@@ -127,7 +127,27 @@
             "type": "integer",
             "minimum": 1024,
             "maximum": 67108864
+          },
+          "env": {
+            "$ref": "#/definitions/env"
           }
+        }
+      }
+    },
+    "check_env": {
+      "description": "How checks and setup steps receive the factory's environment. `inherit` (default) passes it minus TYPESAFE_API_KEY; `allowlist` passes only PATH, HOME, LANG, LC_*, TERM, TMPDIR, TEMP, TMP and VIRTUAL_ENV (plus SYSTEMROOT, COMSPEC and PATHEXT on Windows) and the names a check lists in `env`. A check with `env` always uses the allowlist.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "inherit",
+            "allowlist"
+          ],
+          "default": "inherit"
         }
       }
     },
@@ -278,6 +298,9 @@
             "type": "integer",
             "minimum": 1024,
             "maximum": 67108864
+          },
+          "env": {
+            "$ref": "#/definitions/env"
           }
         }
       }
@@ -371,6 +394,18 @@
       "items": {
         "type": "string",
         "minLength": 1
+      }
+    },
+    "env": {
+      "description": "Environment variable names (never values) passed to this check in addition to the safe base; implies the allowlist mode. TYPESAFE_API_KEY is never passed and may not be listed.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+        "not": {
+          "pattern": "^[Tt][Yy][Pp][Ee][Ss][Aa][Ff][Ee]_[Aa][Pp][Ii]_[Kk][Ee][Yy]$"
+        }
       }
     },
     "profile": {

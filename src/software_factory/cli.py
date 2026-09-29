@@ -600,6 +600,9 @@ def main(argv=None):
                 else resolve_root(root_option)
             )
         )
+        from .events import COMMAND, command_label
+
+        COMMAND.set(command_label(cleaned))
         result = args.handler(args)
         code = result.pop("_exit_code", 0) if isinstance(result, dict) else 0
         if result is not None:

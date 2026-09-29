@@ -533,6 +533,9 @@ def _update_locked(root, id, mutator, readiness):
             if load_mission(root, id) == value:
                 write_json(root, mission_path(id), current)
             raise
+        from .events import append_event
+
+        append_event(root, id, value)
         return value
     finally:
         if assessment:
@@ -669,6 +672,9 @@ def create_mission(root, input, require_request=False):
                     mission_template(root, name, id).encode(),
                 )
             write_json(root, mission_path(id), mission)
+            from .events import append_event
+
+            append_event(root, id, mission)
         except BaseException:
             shutil.rmtree(path)
             raise
@@ -3748,11 +3754,20 @@ def _assess_gate_snapshot(root, mission, candidate, resuming_to=None):
     if request:
         requested, extra = _request_gate(root, mission, candidate, config, checked, results)
         reasons += requested
+    from .events import verify_events
+
+    history = verify_events(root, mission["id"])
+    reasons += [f"Mission event log: {problem}" for problem in history["problems"]]
     reasons = list(dict.fromkeys(reasons))
     return {
         "pass": not reasons,
         "reasons": reasons,
-        "warnings": [] if request else [LEGACY_WARNING],
+        "warnings": ([] if request else [LEGACY_WARNING])
+        + (
+            []
+            if history["present"]
+            else ["No mission event log (events.jsonl); history before 0.3.2 is not recorded"]
+        ),
         "fingerprint": candidate["fingerprint"],
         "changed_paths": candidate["changed_paths"],
         "check_changes": check_changes,
@@ -4540,6 +4555,10 @@ def _mission_handler(args):
         return mission_risk(root, id)
     if command == "lanes":
         return mission_lanes(root, id)
+    if command == "history":
+        from .events import mission_history
+
+        return mission_history(root, id)
     if command in {"lane-open", "lane-integrate", "lane-close", "lane-check"}:
         from . import lanes
 
@@ -4628,6 +4647,7 @@ def add_parser(subparsers):
         "brief": "Write a deterministic subagent brief for a --task or --kind",
         "risk": "Assess the candidate's live risk tier without changing records",
         "lanes": "Show which tasks can run together (waves), the critical path, open lanes and conflicts",
+        "history": "Show the mission's hash-chained event log and whether it is intact",
         "lane-open": "Start a ready task in its own worktree lane so it runs alongside other lanes",
         "lane-integrate": "Copy a finished lane's owned-path changes into the mission tree (task → VERIFYING)",
         "lane-close": "Abandon a lane and remove its worktree (a RUNNING task becomes BLOCKED)",
@@ -4691,6 +4711,7 @@ def add_parser(subparsers):
         "brief",
         "risk",
         "lanes",
+        "history",
         "lane-open",
         "lane-integrate",
         "lane-close",

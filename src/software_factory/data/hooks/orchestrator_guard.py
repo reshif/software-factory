@@ -136,6 +136,7 @@ FACTORY_SUBCOMMANDS = {
         "brief": ({"--mission", "--task", "--kind"}, set()),
         "risk": MISSION_ONLY,
         "lanes": MISSION_ONLY,
+        "history": MISSION_ONLY,
         "lane-open": ({"--mission", "--task"}, set()),
         "lane-integrate": ({"--mission", "--task"}, set()),
         "lane-close": ({"--mission", "--task", "--reason"}, set()),

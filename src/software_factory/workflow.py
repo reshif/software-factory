@@ -2228,6 +2228,103 @@ def _replace_task(mission, old_id, task, reason, config):
     )
 
 
+def _within(pattern, owned):
+    """True when every file the pattern can match is also covered by some owned-path pattern."""
+    pattern = pattern + "**" if pattern.endswith("/") else pattern
+    for other in owned:
+        other = other + "**" if other.endswith("/") else other
+        if pattern == other:
+            return True
+        if not any(c in pattern for c in "*?[") and matches_path(pattern, other):
+            return True
+        if other.endswith("**") and pattern.startswith(other[:-2]):
+            return True
+    return False
+
+
+def split_task(root, id, task_id, value):
+    """Split a task that has not started into narrower tasks with the same criteria."""
+    config = load_config(root)
+    if not isinstance(value, dict):
+        raise FactoryError("Task split input must be a JSON object with reason and into")
+    reject_unknown_fields(value, ("reason", "into"), "task split")
+    reason = require_text(value.get("reason"), "Task split reason")
+    into = value.get("into")
+    if not isinstance(into, list) or len(into) < 2:
+        raise FactoryError("Task split needs at least two tasks in `into`")
+    for item in into:
+        if not isinstance(item, dict):
+            raise FactoryError("Each split task must be a JSON object")
+        reject_unknown_fields(
+            item, ("id", "title", "owned_paths", "depends_on", "checks", "criteria"), "split task"
+        )
+        _task_lists(item)
+
+    def mutate(mission):
+        held = mission["state"] in HOLD_STATES and effective_state(mission) in REPLAN_STATES
+        if mission["state"] not in {"PLANNED", "IMPLEMENTING"} and not held:
+            raise FactoryError("Split tasks in PLANNED or IMPLEMENTING, or during a premerge hold")
+        assert_current_scope(root, mission)
+        task = next((t for t in mission["tasks"] if t["id"] == task_id), None)
+        if not task or task["status"] != "TODO" or task["attempts"]:
+            raise FactoryError("Only a TODO task that has not started can be split")
+        existing = {t["id"] for t in mission["tasks"]} - {task_id}
+        new_ids = [assert_id(item.get("id")) for item in into]
+        if len(set(new_ids)) != len(new_ids) or set(new_ids) & existing:
+            raise FactoryError("Split task ids must be new and unique")
+        wider = [
+            p for item in into for p in item.get("owned_paths", []) if not _within(p, task["owned_paths"])
+        ]
+        if wider:
+            raise FactoryError(
+                f"Split tasks may only narrow {task_id}'s owned paths ({', '.join(task['owned_paths'])}); "
+                f"not covered: {', '.join(wider)}"
+            )
+        original = set(task.get("criteria", []))
+        covered = {c for item in into for c in item.get("criteria", [])}
+        if covered != original:
+            raise FactoryError(
+                f"Split tasks must carry exactly {task_id}'s criteria ({', '.join(sorted(original)) or 'none'}); "
+                f"got {', '.join(sorted(covered)) or 'none'}"
+            )
+        created = []
+        for item, new_id in zip(into, new_ids, strict=True):
+            internal = item.get("depends_on", [])
+            if any(d not in new_ids for d in internal):
+                raise FactoryError("A split task may depend only on other tasks of the same split")
+            if not item.get("owned_paths"):
+                raise FactoryError(f"Split task {new_id} needs owned_paths")
+            created.append(
+                {
+                    "id": new_id,
+                    "title": require_text(item.get("title"), "Split task title"),
+                    "status": "TODO",
+                    "depends_on": list(dict.fromkeys([*task["depends_on"], *internal])),
+                    "owned_paths": item["owned_paths"],
+                    "checks": item.get("checks", task["checks"]),
+                    "attempts": 0,
+                    **({"criteria": _task_criteria(mission, item["criteria"])} if "criteria" in item else {}),
+                }
+            )
+        position = mission["tasks"].index(task)
+        mission["tasks"][position : position + 1] = created
+        for other in mission["tasks"]:
+            if task_id in other["depends_on"]:
+                other["depends_on"] = list(
+                    dict.fromkeys(
+                        d for dep in other["depends_on"] for d in (new_ids if dep == task_id else [dep])
+                    )
+                )
+        mission.setdefault("task_history", []).append(
+            {"task": task, "reason": reason, "updated_at": now(), "split_into": new_ids}
+        )
+        _validate_tasks(mission, config)
+        for new_id in new_ids:
+            _refuse_lane_conflicts(mission, new_id)
+
+    return update_mission(root, id, mutate)
+
+
 def edit_task(root, id, task_id, patch):
     config = load_config(root)
     if not isinstance(patch, dict):
@@ -4469,6 +4566,8 @@ def _mission_handler(args):
         return add_task(root, id, _input(args))
     if command == "task-update":
         return edit_task(root, id, args.task, _input(args))
+    if command == "task-split":
+        return split_task(root, id, args.task, _input(args))
     if command == "task-transition":
         return transition_task(root, id, args.task, args.to, catalog, args.reason)
     if command in {"transition", "block"}:
@@ -4518,6 +4617,7 @@ def add_parser(subparsers):
         "recover-lock": "Remove a stale state lock whose owner process has exited",
         "task-add": "Add a task from --input JSON",
         "task-update": "Update a task from --input JSON",
+        "task-split": "Split a task that has not started into narrower tasks with the same criteria (--input JSON)",
         "task-transition": "Move a task to another state (--to; BLOCKED needs --reason)",
         "transition": "Move the mission to another state (--to)",
         "block": "Block the mission with a reason and next step",
@@ -4580,6 +4680,7 @@ def add_parser(subparsers):
         "recover-lock",
         "task-add",
         "task-update",
+        "task-split",
         "task-transition",
         "transition",
         "block",
@@ -4661,6 +4762,7 @@ def add_parser(subparsers):
         if command in {
             "task-add",
             "task-update",
+            "task-split",
             "criteria",
             "decision",
             "review",
@@ -4672,6 +4774,7 @@ def add_parser(subparsers):
             option(parser, "input", required=True)
         if command in {
             "task-update",
+            "task-split",
             "task-transition",
             "lane-open",
             "lane-integrate",

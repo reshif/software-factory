@@ -81,6 +81,11 @@ def append_event(root, mission_id: str, mission: dict) -> dict:
     event["hash"] = hashlib.sha256(_canonical(event).encode()).hexdigest()
     with open(target, "a", encoding="utf-8") as handle:
         handle.write(_canonical(event) + "\n")
+    if event["state"] == "BLOCKED" and (not last or last.get("state") != "BLOCKED"):
+        from .watch import notify
+
+        blockers = mission.get("blockers") or [{}]
+        notify(root, "mission_blocked", mission_id, "BLOCKED", blockers[-1].get("reason"))
     return event
 
 

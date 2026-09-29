@@ -112,6 +112,9 @@ HUMAN_ONLY = {
         "software-factory mission approve records the user's own approval; show the user the exact "
         "command (accept-scope and the gate print it) and ask them to run it in their terminal"
     ),
+    ("mission", "unhalt"): (
+        "software-factory mission unhalt lifts the kill switch; only the user runs it, in their terminal"
+    ),
     ("mission", "ci-result"): (
         "software-factory mission ci-result records a remote CI result the user observed; ask the user "
         "to run it in their terminal with the run URL"
@@ -121,6 +124,7 @@ FACTORY_SUBCOMMANDS = {
     "mission": {
         "create": ({"--id", "--title", "--kind", "--base", "--input", "--request-file"}, set()),
         "list": (set(), {"--all"}),
+        "halt": ({"--reason"}, set()),
         "status": MISSION_ONLY,
         "recover-lock": (set(), set()),
         "task-add": INPUT_ONLY,

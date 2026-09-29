@@ -2460,6 +2460,10 @@ def _dispatch_task(root, mission, task, config, catalog, append=False):
 
 
 def transition_task(root, id, task_id, to, catalog=None, reason=None):
+    if to == "RUNNING":
+        from .watch import assert_not_halted
+
+        assert_not_halted(root, f"starting task {task_id}")
     config = load_config(root)
     workflow = control_json(root, "workflow.json")
     exhaustion, warnings = [], []
@@ -2605,6 +2609,10 @@ def _assert_active_state(root, mission, to):
 
 
 def transition_mission(root, id, to, reason=None, next=None, decision=None):
+    if to == "IMPLEMENTING":
+        from .watch import assert_not_halted
+
+        assert_not_halted(root, f"moving {id} to IMPLEMENTING")
     config = load_config(root)
     workflow = control_json(root, "workflow.json")
     if decision is not None and to != "CANCELED":
@@ -4141,6 +4149,12 @@ def mission_status(root, id):
 
 
 def list_missions(root):
+    from .watch import halted, idle_hours, stale_hours
+
+    try:
+        limit = stale_hours(load_config(root))
+    except (FactoryError, OSError, ValueError):
+        limit = 24
     directory = safe_path(root, ".factory/missions")
     missions, terminal = [], 0
     for entry in directory.iterdir() if directory.exists() else []:
@@ -4151,14 +4165,17 @@ def list_missions(root):
             if mission["state"] in TERMINAL_STATES:
                 terminal += 1
                 continue
+            idle = idle_hours(mission.get("updated_at"))
             missions.append(
                 {key: mission.get(key) for key in ("id", "title", "state", "previous_state", "updated_at")}
                 | {"blockers": len(mission["blockers"])}
+                | {"idle_hours": idle, "stale": idle is not None and idle >= limit}
             )
         except (FactoryError, OSError) as exc:
             missions.append({"id": entry.name, "error": str(exc)})
     missions.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
-    return {"missions": missions, "terminal": terminal}
+    stop = halted(root)
+    return {"missions": missions, "terminal": terminal, **({"halted": stop} if stop else {})}
 
 
 def _code(value):
@@ -4571,6 +4588,14 @@ def _mission_handler(args):
                 root, id, args.task, require_text(args.reason, "Lane close reason (--reason)")
             )
         return lanes.check_lane(root, id, args.task, getattr(args, "only", None))
+    if command == "halt":
+        from .watch import halt
+
+        return halt(root, args.reason)
+    if command == "unhalt":
+        from .watch import unhalt
+
+        return unhalt(root)
     if command == "list":
         if getattr(args, "all", False):
             from .workspaces import list_all
@@ -4638,6 +4663,8 @@ def add_parser(subparsers):
     summaries = {
         "create": "Create a mission from --request-file with --id/--title/--kind/--base or --input JSON",
         "list": "List missions and their states",
+        "halt": "Kill switch: stop any new work starting until the user runs mission unhalt",
+        "unhalt": "Lift the kill switch (the user, in an interactive terminal)",
         "status": "Show one mission's record, including tasks, blockers and (from READY_PR on) the live gate",
         "recover-lock": "Remove a stale state lock whose owner process has exited",
         "task-add": "Add a task from --input JSON",
@@ -4702,6 +4729,8 @@ def add_parser(subparsers):
     for command in (
         "create",
         "list",
+        "halt",
+        "unhalt",
         "status",
         "recover-lock",
         "task-add",
@@ -4744,7 +4773,7 @@ def add_parser(subparsers):
             ),
         )
         parser.set_defaults(handler=_mission_handler)
-        if command not in {"create", "list", "recover-lock", "template"}:
+        if command not in {"create", "list", "recover-lock", "template", "halt", "unhalt"}:
             option(parser, "mission", required=True)
         if command == "template":
             option(parser, "mission", help="Mission ID to fill into the skeleton (optional)")
@@ -4769,6 +4798,8 @@ def add_parser(subparsers):
             parser.add_argument(
                 "--all", action="store_true", help="Also list missions in other factory worktrees"
             )
+        if command == "halt":
+            option(parser, "reason", help="Why all new work stops", required=True)
         if command == "clarify":
             option(
                 parser,

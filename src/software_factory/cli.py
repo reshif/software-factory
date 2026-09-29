@@ -243,6 +243,32 @@ def doctor(root: Path) -> dict:
                         else f"Set owners.{owner} before relying on team governance",
                     }
                 )
+        try:
+            from .watch import halted
+            from .workflow import list_missions
+
+            stop = halted(root)
+            if stop:
+                issues.append(
+                    {
+                        "severity": "warning",
+                        "code": "factory_halted",
+                        "message": f"The factory is halted ({stop.get('reason')}); no new work starts until "
+                        "the user runs software-factory mission unhalt",
+                    }
+                )
+            stale = [m for m in list_missions(root)["missions"] if m.get("stale")]
+            if stale:
+                issues.append(
+                    {
+                        "severity": "warning",
+                        "code": "stale_missions",
+                        "message": "Missions without a record change for longer than limits.stale_hours: "
+                        + ", ".join(f"{m['id']} ({m['state']}, {m['idle_hours']} h)" for m in stale),
+                    }
+                )
+        except (FactoryError, OSError, ValueError, KeyError):
+            pass
     except (FactoryError, OSError) as exc:
         issues.append({"severity": "error", "code": "configuration", "message": str(exc)})
     if manifest_valid and not uninstalled:

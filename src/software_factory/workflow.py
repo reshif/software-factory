@@ -2322,6 +2322,9 @@ def _assert_writer(root, mission, task_id):
             ) from exc
         if any(t["status"] in ACTIVE_TASK_STATES for t in other["tasks"]):
             raise FactoryError(f"Workspace writer occupied by mission {other['id']}")
+    from .workspaces import assert_no_cross_mission_overlap
+
+    assert_no_cross_mission_overlap(root, next(t for t in mission["tasks"] if t["id"] == task_id))
 
 
 def _dispatch_task(root, mission, task, config, catalog, append=False):
@@ -4416,6 +4419,14 @@ def _mission_handler(args):
                 "base": args.base,
                 "request_file": request_file,
             }
+        if getattr(args, "worktree", False):
+            from .workspaces import create_mission_worktree
+
+            if not isinstance(value, dict) or not value.get("request_file"):
+                raise FactoryError(REQUEST_REQUIRED)
+            data = read_text_input(root, value["request_file"], "Request file")[0]
+            rest = {k: v for k, v in value.items() if k != "request_file"}
+            return create_mission_worktree(root, rest, data, skip_sync=args.skip_sync)
         return create_mission(root, value, require_request=True)
 
     if command == "clarify":
@@ -4445,6 +4456,10 @@ def _mission_handler(args):
             )
         return lanes.check_lane(root, id, args.task, getattr(args, "only", None))
     if command == "list":
+        if getattr(args, "all", False):
+            from .workspaces import list_all
+
+            return {**list_missions(root), "worktrees": list_all(root)}
         return list_missions(root)
     if command == "recover-lock":
         return recover_lock(root)
@@ -4614,6 +4629,18 @@ def add_parser(subparsers):
         if command == "create":
             for name in ("id", "title", "kind", "base", "input", "request-file"):
                 option(parser, name)
+            parser.add_argument(
+                "--worktree",
+                action="store_true",
+                help="Run the mission in its own Git worktree and branch next to the repository (parallel missions)",
+            )
+            parser.add_argument(
+                "--skip-sync", action="store_true", help="With --worktree, do not set up the pinned runtime"
+            )
+        if command == "list":
+            parser.add_argument(
+                "--all", action="store_true", help="Also list missions in other factory worktrees"
+            )
         if command == "clarify":
             option(
                 parser,

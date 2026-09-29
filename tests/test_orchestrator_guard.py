@@ -640,6 +640,8 @@ def _parser_options():
 EXCLUDED = {
     ("verify",): {"--candidate-root"},
     ("models",): {"--client", "--provider", "--billing", "--picker", "--client-version", "--timeout-ms"},
+    # Creating a parallel mission's worktree beside the repository is the user's decision.
+    ("mission", "create"): {"--worktree", "--skip-sync"},
 }
 
 

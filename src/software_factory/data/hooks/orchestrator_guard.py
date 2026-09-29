@@ -120,7 +120,7 @@ HUMAN_ONLY = {
 FACTORY_SUBCOMMANDS = {
     "mission": {
         "create": ({"--id", "--title", "--kind", "--base", "--input", "--request-file"}, set()),
-        "list": (set(), set()),
+        "list": (set(), {"--all"}),
         "status": MISSION_ONLY,
         "recover-lock": (set(), set()),
         "task-add": INPUT_ONLY,

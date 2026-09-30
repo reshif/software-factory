@@ -188,7 +188,31 @@ def _proposal_file(root, proposal_id: str) -> Path:
 
 def _proposal_hash(proposal: dict) -> str:
     body = {k: proposal[k] for k in ("id", "target", "text", "base_sha256", "origin")}
+    if "items" in proposal:
+        body["items"] = proposal["items"]
+        body["base_text"] = proposal.get("base_text")
     return hashlib.sha256(_canonical(body).encode()).hexdigest()
+
+
+def insert_line(text: str, section: str, line: str) -> str:
+    """Add ``line`` at the end of the ``## section`` of a knowledge document (created if absent)."""
+    lines = text.rstrip("\n").splitlines()
+    heading = f"## {section}"
+    if heading not in lines:
+        return "\n".join([*lines, "", heading, "", line]) + "\n"
+    start = lines.index(heading) + 1
+    end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    added = [line] if end > start else ["", line]
+    return "\n".join([*lines[:end], *added, *lines[end:]]) + "\n"
+
+
+def compose(base: str, items: list[dict]) -> str:
+    text = base
+    for item in items:
+        text = insert_line(text, item["section"], item["line"])
+    return text
 
 
 def load_proposal(root, proposal_id: str) -> dict:
@@ -377,7 +401,7 @@ def _confirm_on_terminal(proposal: dict) -> None:
 
 
 def apply(root, proposal_id: str, *, via: str = "terminal", reference: str | None = None, pin: str | None = None,
-          confirm=None) -> dict:  # fmt: skip
+          confirm=None, items: list[int] | None = None) -> dict:  # fmt: skip
     """Save an approved proposal. ``via`` is "terminal" (typed confirmation) or "chat" (the hook)."""
     from .workflow import state_lock
 
@@ -394,13 +418,29 @@ def apply(root, proposal_id: str, *, via: str = "terminal", reference: str | Non
     kind, _ = parse_target(target)
     if kind == "personal" and via != "terminal":
         raise FactoryError("Personal knowledge (me.md) is saved only from the user's own terminal")
-    validate_text(target, proposal["text"])  # rules may have tightened since it was proposed
     path = target_path(root, target)
     current = _read(path)
     if _sha(current) != proposal["base_sha256"]:
         raise FactoryError(
             f"{target} knowledge changed since {proposal_id} was proposed; propose it again from the current text"
         )
+    chosen = None
+    if "items" in proposal:
+        if not items:
+            raise FactoryError(
+                f"Proposal {proposal_id} holds lessons: approve them one by one by number, for example "
+                f"`approve {proposal_id} crew 1,2` (there is no approve-all for lessons)"
+            )
+        numbers = {item["n"] for item in proposal["items"]}
+        unknown = sorted(set(items) - numbers)
+        if unknown:
+            raise FactoryError(f"Proposal {proposal_id} has no item {', '.join(map(str, unknown))}")
+        chosen = [item for item in proposal["items"] if item["n"] in set(items)]
+        base = current.decode("utf-8") if current is not None else proposal["base_text"]
+        proposal = {**proposal, "text": compose(base, chosen)}
+    elif items:
+        raise FactoryError(f"Proposal {proposal_id} is a whole document; approve it without item numbers")
+    validate_text(target, proposal["text"])  # rules may have tightened since it was proposed
     if kind != "personal":
         blocking = _open_product_missions(root)
         if blocking:
@@ -435,13 +475,18 @@ def apply(root, proposal_id: str, *, via: str = "terminal", reference: str | Non
                     "base_sha256": proposal["base_sha256"],
                     "new_sha256": _sha(data),
                     "origin": proposal["origin"],
+                    **({"items": [item["n"] for item in chosen]} if chosen is not None else {}),
                     "via": via,
                     "reference": reference
                     or ("typed confirmation in the user's terminal" if via == "terminal" else ""),
                 },
             )
-        _set_status(root, proposal, "applied", applied_at=now(), via=via)
+        stored = load_proposal(root, proposal_id)
+        _set_status(root, stored, "applied", applied_at=now(), via=via,
+                    **({"applied_items": [item["n"] for item in chosen]} if chosen is not None else {}))  # fmt: skip
     result = {"applied": proposal_id, "target": target, "path": str(path), "sha256": _sha(data)}
+    if chosen is not None:
+        result["items"] = [item["n"] for item in chosen]
     if entry:
         result["ledger_seq"] = entry["seq"]
         result["commit"] = f'git add {CREW_DIR} && git commit -m "crew: {target} knowledge ({proposal_id})"'
@@ -635,7 +680,23 @@ def handle(args) -> dict:
     if command == "show":
         return show(root, args.target)
     if command == "propose":
+        if (args.target is None) == (args.mission is None):
+            raise FactoryError(
+                "crew propose needs exactly one of --target (a whole document) or --mission (retro lessons)"
+            )
+        if args.mission:
+            from .retro import propose_lessons
+
+            try:
+                value = json.loads(_input_text(root, args.input))
+            except ValueError as exc:
+                raise FactoryError(f"Lessons input is not valid JSON: {exc}") from exc
+            return propose_lessons(root, args.mission, value)
         return propose(root, args.target, _input_text(root, args.input))
+    if command == "retro-signals":
+        from .retro import signals
+
+        return signals(root, args.mission)
     if command == "proposals":
         return {"proposals": list_proposals(root)}
     if command == "withdraw":
@@ -643,7 +704,15 @@ def handle(args) -> dict:
     if command == "defer":
         return defer(root, args.key, args.for_, args.reference, clear=args.clear)
     if command == "apply":
-        return apply(root, args.proposal, pin=args.hash)
+        numbers = None
+        if args.items:
+            try:
+                numbers = sorted({int(n) for n in args.items.split(",") if n.strip()})
+            except ValueError as exc:
+                raise FactoryError(
+                    "--items is a comma-separated list of item numbers, for example 1,3"
+                ) from exc
+        return apply(root, args.proposal, pin=args.hash, items=numbers)
     if command == "forget":
         return forget(root, args.target)
     if command == "refresh":
@@ -661,10 +730,13 @@ def add_parser(subparsers) -> None:
     p = actions.add_parser("show", help="Print one knowledge file and its ledger history")
     p.add_argument("--target", required=True, help="project, personal or recipe:<name>")
     p = actions.add_parser("propose", help="Store an inert knowledge proposal for the user to approve")
-    p.add_argument("--target", required=True, help="project, personal or recipe:<name>")
+    p.add_argument("--target", help="project, personal or recipe:<name> (with the full new text as --input)")
+    p.add_argument("--mission", metavar="ID", help="Mission whose retro lessons JSON is --input")
     p.add_argument(
         "--input", required=True, help="Repository-relative file with the full new text, or - for stdin"
     )
+    p = actions.add_parser("retro-signals", help="Whether a mission's retro is worth offering, and why")
+    p.add_argument("--mission", required=True, metavar="ID", help="Mission ID")
     actions.add_parser("proposals", help="List knowledge proposals")
     p = actions.add_parser("withdraw", help="Withdraw a proposal that has not been applied")
     p.add_argument("--proposal", required=True, metavar="P-0001", help="Proposal ID")
@@ -678,6 +750,7 @@ def add_parser(subparsers) -> None:
     p.add_argument(
         "--hash", help="Optional: the first 8+ hex of the proposal's sha256, to pin what you approved"
     )
+    p.add_argument("--items", metavar="1,3", help="For retro lessons: the item numbers you approve")
     p = actions.add_parser("forget", help="Remove a knowledge file (you, in an interactive terminal)")
     p.add_argument("--target", required=True, help="project, personal or recipe:<name>")
     p = actions.add_parser("match", help="Recipes whose triggers appear in a request text")

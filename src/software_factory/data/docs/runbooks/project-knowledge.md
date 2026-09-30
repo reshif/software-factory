@@ -1,6 +1,6 @@
 # Project knowledge (Crew)
 
-The factory keeps what it learns about your project only with your consent (*Learning with consent* in the [constitution](../../CONSTITUTION.md)). This release ships the knowledge store, loads it into mission briefs, uses recipes in the interview and grades options before building; retros follow in a later release.
+The factory keeps what it learns about your project only with your consent (*Learning with consent* in the [constitution](../../CONSTITUTION.md)). This release ships the knowledge store, loads it into mission briefs, uses recipes in the interview, grades options before building and turns finished missions into lessons you approve.
 
 ## Where it lives
 
@@ -36,6 +36,20 @@ Every round also carries a question you probably had not considered, and each co
 ## Options graded before building
 
 For every kind but patch (*Alternatives before commitment*), after the spec and criteria the planner writes options.md (at least two genuinely different approaches) and a reviewer in a separate context grades them in grading.md against every criterion, bound to the exact options, criteria and grade brief. You see the options and the grading with the assessment; scope approval and accept-scope are refused until the grading is current, and plan.md builds the winner unless you chose another option in a recorded clarification. `"crew": {"options": "off"}` in `factory.json` turns this off, except for requests from a contributor or an anonymous author. `mission status` shows the options, the winner and the scores under `options_summary`.
+
+## Retros and lessons
+
+From READY_PR on, `crew retro-signals --mission ID` says whether a retro is worth it (repairs, blocking findings, holds, course changes, an overridden grading, or a first feature mission with no recipe); the orchestrator offers it once and runs it only if you agree. The retro brief gives the planner the mission's records only: timeline, tasks and attempts, blockers, review findings and resolutions, clarifications, decisions and concerns; never the diff or logs. Its lessons go through `crew propose --mission ID`, which checks each one:
+
+| Type | Goes to | Rule |
+| --- | --- | --- |
+| rule | project.md (Must not break, Off-limits, Rules or Definition of done) | evidence from the record |
+| pitfall, criteria-pattern | the recipe | evidence from the record |
+| default | the recipe's Defaults | quotes your answer exactly as a clarification records it |
+| preference | shown for your own me.md | never written by the factory |
+| control (checks, hooks, roles, CI, policy) | a request for a maintenance mission | never written by the factory |
+
+Every lesson is one plain sentence of at most 200 characters and cites evidence (`finding:<review>/<finding>`, `clarification:<n>`, `concern:C-n`, `task:<id>:attempt:<n>`, `decision:<id>`, `blocker:<n>` or `event:<seq>`) that must resolve against the mission record. Each target becomes one proposal with numbered items; after the mission merges you approve items one by one (`approve P-0003 crew 1,3`, or `crew apply --proposal P-0003 --items 1,3`); there is no approve-all. Requests from a contributor or an anonymous author produce no lessons.
 
 ## How knowledge changes
 

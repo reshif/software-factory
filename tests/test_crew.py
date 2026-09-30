@@ -407,7 +407,7 @@ def test_briefs_get_only_the_knowledge_their_role_needs(repo, profile):  # noqa:
     code = brief_text(repo, id, "code")
     assert "### Must not break" in code and "### Off-limits" in code and "### Rules" not in code
     for kind in set(BRIEF_KINDS) - {"context", "research", "assess", "spec", "options", "plan"}:
-        if kind in ("code", "grade"):
+        if kind in ("code", "grade", "retro"):
             continue
         text = brief_text(repo, id, kind)
         assert "Saved knowledge" not in text and "Project rules" not in text, kind
@@ -834,3 +834,187 @@ def test_status_shows_the_graded_options(repo):  # noqa: F811
     summary = cli(repo, "mission", "status", "--mission", id)["options_summary"]
     assert summary["options"] == ["O-1", "O-2"] and summary["winner"] == "O-1"
     assert summary["grader"] == "factory-reviewer" and summary["scores"]["O-2"] == {"AC-1": 4}
+
+
+# Phase 5: retro and lessons (Export the win)
+
+from test_mission_030 import review
+
+from software_factory.retro import propose_lessons, signals
+from software_factory.workflow import transition_mission
+
+ANSWER = "Storage: reuse the shared cache host, never Redis."
+
+
+def finished(root, source=None):
+    """A patch mission at READY_PR with a clarification, a blocking finding and its resolution."""
+    from test_mission_030 import author, criteria
+
+    put(root, ".factory/local/request.md", "Please change VALUE to 2 in src/app.py.\n")
+    extra = ("--source", source) if source else ()
+    cli(root, "mission", "create", "--id", "M-DONE", "--title", "Value", "--kind", "feature" if source else "patch",
+        "--request-file", ".factory/local/request.md", *extra)  # fmt: skip
+    cli(
+        root,
+        "mission",
+        "clarify",
+        "--mission",
+        "M-DONE",
+        "--input",
+        put(root, ".factory/local/a.md", ANSWER + "\n"),
+    )
+    author(root, "M-DONE")
+    criteria(root, "M-DONE")
+    if source:
+        grade(root, "M-DONE")
+    cli(root, "mission", "accept-scope", "--mission", "M-DONE")
+    task = {
+        "id": "T-ONE",
+        "title": "Change app",
+        "owned_paths": ["src/**"],
+        "checks": ["unit"],
+        "criteria": ["AC-1"],
+    }
+    cli(
+        root,
+        "mission",
+        "task-add",
+        "--mission",
+        "M-DONE",
+        "--input",
+        put(root, ".factory/local/t.json", task),
+    )
+    implement(root, "M-DONE")
+    finding = {
+        "id": "F-1",
+        "severity": "blocking",
+        "path": "src/app.py",
+        "message": "VALUE is read before import",
+    }
+    review(root, "M-DONE", status="changes_requested", verdict="fail", findings=[finding])
+    review(root, "M-DONE", resolutions=[{"finding": "F-1", "reason": "Reordered the import"}])
+    if source:
+        review(root, "M-DONE", kind="acceptance")
+        review(root, "M-DONE", kind="adversarial")
+    transition_mission(root, "M-DONE", "READY_PR")
+    return "M-DONE"
+
+
+LESSONS = {
+    "recipe": {"name": "change-constant", "lane": "patch", "trigger": ["VALUE", "constant"],
+               "use_when": "Changing a module-level constant"},
+    "lessons": [
+        {"id": "L-1", "type": "rule", "section": "Must not break", "text": "The app module stays importable.",
+         "evidence": ["finding:V-code-1/F-1"]},
+        {"id": "L-2", "type": "pitfall", "text": "Read constants only after the import completes.",
+         "evidence": ["finding:V-code-1/F-1", "task:T-ONE:attempt:1"]},
+        {"id": "L-3", "type": "default", "question": "Storage", "answer": "reuse the shared cache host",
+         "text": "Storage default", "evidence": ["clarification:1"]},
+        {"id": "L-4", "type": "preference", "text": "Show the finding before the fix.", "evidence": ["event:1"]},
+        {"id": "L-5", "type": "control", "text": "Add an import smoke check.", "evidence": ["finding:V-code-1/F-1"]},
+    ],
+}  # fmt: skip
+
+
+def test_the_retro_brief_is_built_from_records_only(repo):  # noqa: F811
+    id = create(repo)["id"]
+    with pytest.raises(FactoryError, match="run it from READY_PR on"):
+        brief(repo, id, "retro")
+    done = finished(repo)
+    text = brief_text(repo, done, "retro")
+    assert "## Timeline (events.jsonl)" in text and "finding:V-code-1/F-1 [blocking] VALUE is read" in text
+    assert ANSWER in text and "resolved F-1: Reordered the import" in text
+    assert "## Candidate" not in text and "diff.patch" not in text
+    assert '"type": "rule"' in text and "Recipe lessons need the recipe object" in text
+
+
+def test_retro_signals_say_why_a_retro_is_worth_offering(repo):  # noqa: F811
+    early = create(repo, "M-EARLY", "feature")["id"]
+    assert signals(repo, early)["signals"] and not signals(repo, early)["offer"]
+    done = finished(repo)
+    found = signals(repo, done)
+    assert found["offer"] and any("blocking review findings: V-code-1/F-1" in s for s in found["signals"])
+    crew.defer(repo, f"retro:{done}", "never", "no retros for this one")
+    assert not signals(repo, done)["offer"]
+
+
+def test_a_retro_is_recorded_even_after_cancel_but_nothing_else(repo):  # noqa: F811
+    done = finished(repo)
+    cli(repo, "mission", "record-doc", "--mission", done, "--doc", "retro",
+        "--input", put(repo, ".factory/local/retro.md", "# Retro\n\nThe import order bit us.\n"))  # fmt: skip
+    transition_mission(repo, done, "CANCELED", reason="Superseded")
+    cli(repo, "mission", "record-doc", "--mission", done, "--doc", "retro",
+        "--input", put(repo, ".factory/local/retro.md", "# Retro\n\nCancelled; still worth noting.\n"))  # fmt: skip
+    with pytest.raises(FactoryError, match="immutable in terminal state CANCELED"):
+        cli(repo, "mission", "record-doc", "--mission", done, "--doc", "spec",
+            "--input", put(repo, ".factory/local/s.md", "# Spec\n\nChanged.\n"))  # fmt: skip
+
+
+def test_lessons_become_item_proposals_the_user_approves_one_by_one(repo):  # noqa: F811
+    done = finished(repo)
+    result = propose_lessons(repo, done, LESSONS)
+    project, recipe = sorted(result["proposals"], key=lambda p: p["target"])
+    assert project["target"] == "project" and [i["lesson"] for i in project["items"]] == ["L-1"]
+    assert recipe["target"] == "recipe:change-constant" and [i["lesson"] for i in recipe["items"]] == [
+        "L-2",
+        "L-3",
+    ]
+    assert result["for_your_me_md"] == [{"lesson": "L-4", "text": "Show the finding before the fix."}]
+    assert "Add an import smoke check." in result["maintenance_requests"][0]["request"]
+    with pytest.raises(FactoryError, match="open product mission"):
+        crew.apply(repo, recipe["proposal"], items=[1], confirm=lambda *_: None)
+    transition_mission(repo, done, "CANCELED", reason="Merged elsewhere")
+    with pytest.raises(FactoryError, match="there is no approve-all for lessons"):
+        crew.apply(repo, recipe["proposal"], confirm=lambda *_: None)
+    note = chat(repo, f"approve {recipe['proposal']} crew 2")
+    assert f"saved knowledge proposal {recipe['proposal']}" in note
+    text = (repo / ".factory/crew/recipes/change-constant.md").read_text()
+    assert "| Storage | reuse the shared cache host (M-DONE," in text and "Read constants only" not in text
+    assert crew.read_ledger(repo)[-1]["items"] == [2]
+    (entry,) = crew.library(repo)["recipes"]
+    assert entry["name"] == "change-constant" and entry["ledgered"]
+    crew.apply(repo, project["proposal"], items=[1], confirm=lambda *_: None)
+    assert (
+        "## Must not break\n\n- The app module stays importable. (M-DONE,"
+        in (repo / crew.PROJECT).read_text()
+    )
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda v: v["lessons"][0].update(evidence=["finding:V-code-1/F-9"]), "names no recorded finding"),
+        (lambda v: v["lessons"][0].update(evidence=[]), "needs evidence"),
+        (lambda v: v["lessons"][0].update(evidence=["https://example.com"]), "unknown evidence reference"),
+        (lambda v: v["lessons"][2].update(answer="use Redis everywhere"), "must quote the user's answer"),
+        (lambda v: v["lessons"][1].update(text="Use `eval` here"), "must be plain text"),
+        (lambda v: v["lessons"][1].update(text="x" * 201), "the limit is 200"),
+        (lambda v: v["lessons"][0].update(type="order"), "type must be one of"),
+        (lambda v: v["lessons"][0].update(section="Purpose"), "section must be one of"),
+        (lambda v: v.pop("recipe"), "give the recipe object"),
+        (lambda v: v["lessons"][0].update(id="L-2"), "unique L-<n>"),
+    ],
+)
+def test_lessons_that_do_not_hold_up_are_refused(repo, change, message):  # noqa: F811
+    import copy
+
+    done = finished(repo)
+    value = copy.deepcopy(LESSONS)
+    change(value)
+    with pytest.raises(FactoryError, match=message):
+        propose_lessons(repo, done, value)
+
+
+def test_untrusted_requests_produce_no_lessons(repo):  # noqa: F811
+    done = finished(repo, source="contributor")
+    with pytest.raises(FactoryError, match="produces no lessons"):
+        propose_lessons(repo, done, LESSONS)
+    text = brief_text(repo, done, "retro")
+    assert "produces no lessons" in text and "## Clarifications (the user's words" not in text
+    assert "UNTRUSTED input from a contributor" in text
+
+
+def test_guard_allows_retro_commands():
+    assert guard_decision("software-factory crew retro-signals --mission M-1") == (0, "")
+    assert guard_decision("software-factory crew propose --mission M-1 --input -") == (0, "")
+    assert guard_decision("software-factory crew apply --proposal P-0001 --items 1,2")[0] == 2

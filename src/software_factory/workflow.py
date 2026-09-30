@@ -148,6 +148,7 @@ MIN_EXCERPT = 8
 REVIEW_KINDS = ("code", "acceptance", "adversarial")
 BRIEF_KINDS = (
     "context", "research", "assess", "spec", "options", "grade", "plan", "code", "acceptance", "adversarial", "verify",
+    "retro",
 )  # fmt: skip
 DIFF_BRIEFS = {"code", "acceptance", "adversarial", "verify"}
 DECISION_KINDS = ("scope", "merge", "release", "recovery", "exception", "decline", "exclusion")
@@ -2238,6 +2239,11 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             "- Record reproduced failures as findings with verified true; record criteria_verdicts.",
             '- Record the review with kind "adversarial". Do not start nested agents.',
         ]
+    elif kind == "retro":
+        from .retro import render as render_retro
+
+        request_section()
+        render_retro(root, mission, lines, _fenced, _normalized, document)
     else:
         raise FactoryError("Brief kind must be one of: " + ", ".join(BRIEF_KINDS))
     return "\n".join(lines) + "\n"
@@ -2249,8 +2255,13 @@ def mission_brief(root, id, kind=None, task=None):
     if kind is not None and kind not in BRIEF_KINDS:
         raise FactoryError("Brief kind must be one of: " + ", ".join(BRIEF_KINDS))
     mission = load_mission(root, id)
+    if kind == "retro":
+        from .retro import assert_retro_state
+
+        assert_retro_state(mission)
     candidate = fingerprint(root, mission)
-    if mission["kind"] != "maintenance":
+    # After merge no gate remains for this mission, so changed controls cannot slip past one.
+    if mission["kind"] != "maintenance" and effective_state(mission) in PRE_MERGE_STATES:
         # Agents load instruction and client-config files before any gate runs, so a
         # product mission is not briefed while those differ from the mission base.
         current, baseline = _policy(root, mission)
@@ -4770,7 +4781,7 @@ def _input(args):
     return value
 
 
-MISSION_DOCS = ("context", "assessment", "spec", "options", "grading", "plan", "recovery", "handoff")
+MISSION_DOCS = ("context", "assessment", "spec", "options", "grading", "plan", "recovery", "handoff", "retro")
 # Minimal --input skeletons; every "<...>" is a placeholder the orchestrator replaces.
 INPUT_TEMPLATES = {
     "task": {
@@ -4840,7 +4851,12 @@ def record_doc(root, id, doc, relative):
     path = f".factory/missions/{assert_id(id)}/{doc}.md"
     with state_lock(root):
         mission = load_mission(root, id)
-        if mission["state"] in TERMINAL_STATES:
+        if doc == "retro":
+            # A retro looks back at finished work, so it is the one record a terminal mission may gain.
+            from .retro import assert_retro_state
+
+            assert_retro_state(mission)
+        elif mission["state"] in TERMINAL_STATES:
             raise FactoryError(f"Mission records are immutable in terminal state {mission['state']}")
         if doc in {"context", "spec", "options", "grading", "plan"} and effective_state(mission) not in {
             "PROPOSED",

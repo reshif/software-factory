@@ -32,9 +32,12 @@ APPROVAL = re.compile(
 )
 
 
-# `approve P-0003 crew [hash]`: save knowledge proposal P-0003 exactly as proposed (crew apply).
+# `approve P-0003 crew [1,3] [hash]`: save knowledge proposal P-0003 exactly as proposed (crew apply),
+# only the numbered lesson items for a retro proposal.
 CREW_APPROVAL = re.compile(
-    r"(?im)^[^\S\n]*approve[^\S\n]+(P-[0-9]{4,})[^\S\n]+crew\b(?:[^\S\n]+([0-9a-fA-F]{8,64})\b)?[^\n]*"
+    r"(?im)^[^\S\n]*approve[^\S\n]+(P-[0-9]{4,})[^\S\n]+crew\b"
+    r"(?:[^\S\n]+([0-9]{1,3}(?:[^\S\n]*,[^\S\n]*[0-9]{1,3})*)(?![0-9a-fA-F]))?"
+    r"(?:[^\S\n]+([0-9a-fA-F]{8,64})\b)?[^\n]*"
 )
 
 
@@ -48,13 +51,15 @@ def record_crew(project: Path, prompt: str, session: str, at: str) -> list[str]:
 
     notes = []
     for match in matches:
-        proposal, pin, line = match.group(1), match.group(2), match.group(0).strip()[:300]
+        proposal, pin, line = match.group(1), match.group(3), match.group(0).strip()[:300]
+        items = sorted({int(n) for n in match.group(2).split(",")}) if match.group(2) else None
         try:
             saved = apply(
                 project,
                 proposal,
                 via="chat",
                 pin=pin,
+                items=items,
                 reference=f'Approved by the user in Claude Code chat (session {session}, {at}): "{line}"',
                 confirm=lambda *_: None,
             )

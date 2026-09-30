@@ -31,6 +31,7 @@ h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.005em;text-wrap:balance}
 .app{display:grid;grid-template-columns:268px minmax(0,1fr) 320px;grid-template-rows:52px minmax(0,1fr) 30px;min-height:100%;
   padding-inline:16px;gap:0 14px}
 @media (max-width:1180px){.app{grid-template-columns:240px minmax(0,1fr)}.inspector{grid-column:1/-1}}
+@media (max-width:760px){.proj .crumb{display:none}.pf{margin-left:0;width:100%}.pf button{flex:1;justify-content:center;flex-direction:column;align-items:center;gap:0}.top .ro{display:none}#mmeta .wt{display:none}}
 @media (max-width:760px){.app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto}.main{order:1}.rail{order:2}.inspector{order:3}.status{order:4}}
 
 /* top bar */
@@ -52,7 +53,10 @@ h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.005em;text-wrap:balance}
 .mcard:hover{border-color:var(--line2);background:var(--panel2)}
 .mcard[aria-current="true"]{border-color:var(--ice);box-shadow:inset 3px 0 0 var(--ice);background:var(--panel2)}
 .mhead{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
-.mtitle{font-weight:600}
+.mtitle{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mhead .mono{white-space:nowrap;flex:none}
+.mnote{font-size:11.5px;color:var(--brass);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mnote.k-blocked{color:var(--crit)}.mnote.k-ci{color:var(--ok)}
 .prog{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
 .prog span{height:4px;border-radius:2px;background:var(--line)}
 .prog .d{background:var(--ok)} .prog .n{background:var(--run)} .prog .b{background:var(--crit)}
@@ -111,14 +115,14 @@ td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 tr:last-child td{border-bottom:0}
 .gantt{overflow-x:auto}
 .g{min-width:760px;display:grid;grid-template-columns:150px repeat(24,1fr);row-gap:8px;align-items:center}
-.gax{font-size:10.5px;color:var(--muted);border-left:1px solid var(--line);padding-left:4px;height:18px}
+.gax{white-space:nowrap;overflow:visible;font-size:10.5px;color:var(--muted);border-left:1px solid var(--line);padding-left:4px;height:18px}
 .gbar{height:26px;border-radius:6px;display:flex;align-items:center;padding:0 9px;font-size:11.5px;font-weight:600;white-space:nowrap;overflow:hidden;border:1px solid transparent}
 .gb-ok{background:var(--ok-d);color:var(--ok);border-color:#2A6B4B}.gb-run{background:var(--run-d);color:var(--run);border-color:#34508F}
 .gb-idle{background:transparent;color:var(--idle);border:1px dashed var(--idle)}.gb-crit{background:var(--crit-d);color:var(--crit);border-color:#7A3329}.gb-ice{background:var(--ice-d);color:var(--ice);border-color:#2D5A85}
 .gb-brass{background:var(--brass-d);color:var(--brass);border-color:#7A5A22}
 .concern{border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:4px;background:var(--panel2)}
 .concern.acc{border-left-color:var(--brass)}
-.feed .ev{display:grid;grid-template-columns:74px 1fr;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.feed .ev{display:grid;grid-template-columns:46px 1fr;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
 .feed .ev:last-child{border-bottom:0}
 .phases{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
 @media (max-width:1000px){.phases{grid-template-columns:minmax(0,1fr)}}
@@ -132,6 +136,61 @@ tr:last-child td{border-bottom:0}
 .checks{display:flex;flex-direction:column;gap:6px}
 .checks div{display:flex;gap:8px;align-items:flex-start}
 
+/* portfolio strip, needs-you centre, stage stepper, gate report */
+.proj{display:flex;flex-direction:column;line-height:1.2;min-width:0}
+.proj b{font-size:14px;font-weight:600}
+.proj .crumb{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:36ch}
+.pf{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.pf button{display:flex;align-items:baseline;gap:7px;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:5px 11px;font-size:11.5px;color:var(--muted)}
+.pf button:hover{border-color:var(--line2)}
+.pf b{font-size:17px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+.pf .t-crit b{color:var(--crit)}.pf .t-brass b{color:var(--brass)}.pf .t-ok b{color:var(--ok)}.pf .t-run b{color:var(--run)}
+.pf .t-crit{border-color:#5A2A24}.pf .t-brass{border-color:#5C4620}
+.halt{grid-column:1/-1;margin-top:10px;border:1px solid #7A3329;background:linear-gradient(90deg,var(--crit-d),transparent);color:var(--crit);border-radius:10px;padding:9px 14px;font-weight:600}
+.needs{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:8px}
+.need{text-align:left;display:flex;gap:10px;align-items:flex-start;background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-left:3px solid var(--brass);border-radius:10px;padding:9px 12px}
+.need:hover{border-color:var(--line2)}
+.need.k-blocked{border-left-color:var(--crit)}.need.k-ci{border-left-color:var(--ok)}.need.k-stale,.need.k-paused{border-left-color:var(--warn)}
+.need .ic{flex:none;width:24px;height:24px;border-radius:7px;display:grid;place-items:center;font-size:12px;font-weight:700;background:var(--brass-d);color:var(--brass)}
+.need.k-blocked .ic{background:var(--crit-d);color:var(--crit)}.need.k-ci .ic{background:var(--ok-d);color:var(--ok)}.need.k-stale .ic,.need.k-paused .ic{background:var(--warn-d);color:var(--warn)}
+.need span{display:block}.need .nh{display:flex;gap:8px;align-items:baseline;white-space:nowrap;overflow:hidden}.need .nh>span{display:inline}
+.need .nt{font-size:12.5px;color:var(--ink2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+@media (max-width:760px){.pf button{font-size:10.5px;padding:5px 4px}.pf b{font-size:16px}}
+.need code{font-family:var(--mono);font-size:11.5px;color:var(--brass);background:var(--brass-d);border-radius:4px;padding:0 4px}
+.stepper{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 10px 10px;position:relative}
+.step{display:flex;flex-direction:column;align-items:center;gap:6px;position:relative;min-width:0}
+.step::before{content:"";position:absolute;top:10px;left:-50%;width:100%;height:2px;background:var(--line)}
+.step:first-child::before{display:none}
+.step.d::before,.step.n::before,.step.b::before{background:var(--ok)}
+.step i{position:relative;z-index:1;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-style:normal;font-size:11px;font-weight:700;background:var(--bg2);border:2px solid var(--line2);color:var(--muted)}
+.step.d i{background:var(--ok-d);border-color:var(--ok);color:var(--ok)}
+.step.n i{background:var(--run);border-color:var(--run);color:#0A1016;box-shadow:0 0 0 5px var(--run-d),0 0 18px var(--run);animation:pulse 2.2s ease-in-out infinite}
+.step.b i{background:var(--crit);border-color:var(--crit);color:#0A1016;box-shadow:0 0 0 5px var(--crit-d),0 0 18px var(--crit)}
+.step span{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.step.n span,.step.b span{color:var(--ink)}
+.step .hold{font-size:10px;color:var(--crit);letter-spacing:.02em;text-transform:none}
+@keyframes pulse{50%{box-shadow:0 0 0 8px var(--run-d),0 0 26px var(--run)}}
+@media (max-width:620px){.step span{font-size:9px;letter-spacing:0}.stepper{padding-inline:4px}}
+.segbar{display:flex;gap:3px;height:6px}.segbar span{flex:1;border-radius:3px;background:var(--line)}
+.segbar .ok{background:var(--ok)}.segbar .run{background:var(--run)}.segbar .crit{background:var(--crit)}
+.kpi .sub{font-size:11.5px;color:var(--muted)}
+.kpi{position:relative;overflow:hidden}
+.kpi::after{content:"";position:absolute;inset:0 0 auto 0;height:2px;background:var(--accent,transparent);opacity:.8}
+.verdict{display:flex;gap:14px;align-items:center;border-radius:12px;padding:14px 16px;border:1px solid var(--line)}
+.verdict .big{font-size:22px;font-weight:700;letter-spacing:-.01em}
+.verdict.pass{background:linear-gradient(90deg,var(--ok-d),transparent 70%);border-color:#2A6B4B}.verdict.pass .big{color:var(--ok)}
+.verdict.fail{background:linear-gradient(90deg,var(--crit-d),transparent 70%);border-color:#7A3329}.verdict.fail .big{color:var(--crit)}
+.verdict.none{background:linear-gradient(90deg,var(--idle-d),transparent 70%)}
+.ring{flex:none}
+.gcols{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:12px}
+@media (max-width:1000px){.gcols{grid-template-columns:minmax(0,1fr)}}
+.gl{display:flex;flex-direction:column;gap:0}
+.gl div{display:grid;grid-template-columns:22px 1fr;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);align-items:start}
+.gl div:last-child{border-bottom:0}
+.gl b{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-size:11px;margin-top:1px}
+.gl .x b{background:var(--crit-d);color:var(--crit)}.gl .w b{background:var(--warn-d);color:var(--warn)}.gl .v b{background:var(--ok-d);color:var(--ok)}.gl .o b{background:var(--idle-d);color:var(--idle)}
+.conn-ok::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:currentColor;margin-right:6px;vertical-align:1px;animation:blink 2s infinite}
+@keyframes blink{50%{opacity:.25}}
 .status{grid-column:1/-1;display:flex;align-items:center;gap:18px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted);overflow-x:auto;white-space:nowrap}
 .status b{color:var(--ink2);font-weight:500}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
@@ -144,10 +203,12 @@ tr:last-child td{border-bottom:0}
       <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="1" y="12" width="6" height="9" rx="1.5" fill="#8CC4FF"/><rect x="8" y="7" width="6" height="14" rx="1.5" fill="#5ED39A"/><rect x="15" y="2" width="6" height="19" rx="1.5" fill="#E1AE52"/></svg>
       Mission Deck
     </div>
-    <span class="crumb mono" id="crumb">—</span>
+    <div class="proj"><b id="proj">—</b><span class="crumb mono" id="crumb"></span></div>
     <span class="sample conn-warn" id="conn">Connecting…</span>
-    <span class="ro" style="margin-left:auto">Read-only: approvals stay in your chat or terminal</span>
+    <div class="pf" id="pf" aria-label="Portfolio"></div>
+    <span class="ro" title="Approvals are recorded from your own chat message or terminal, never from this page">Read-only</span>
   </header>
+  <div class="halt" id="halt" hidden></div>
 
   <aside class="rail" aria-label="Missions">
     <div style="display:flex;justify-content:space-between;align-items:baseline"><span class="lbl">Missions</span><span class="muted mono" id="mcount"></span></div>
@@ -159,6 +220,7 @@ tr:last-child td{border-bottom:0}
   </aside>
 
   <main class="main" id="main">
+    <div id="needs-wrap" hidden><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px"><span class="lbl" style="color:var(--brass)">Needs you</span><span class="muted" style="font-size:11.5px">Approvals happen in your chat or terminal</span></div><div class="needs" id="needs"></div></div>
     <div class="mission-head">
       <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
         <span class="lbl" id="mmeta"></span>
@@ -167,6 +229,7 @@ tr:last-child td{border-bottom:0}
       </div>
       <span id="mstate"></span>
     </div>
+    <div class="stepper" id="stepper" aria-label="Mission stage"></div>
     <div class="kpis" id="kpis"></div>
     <div class="tabs" role="tablist" id="tabs"></div>
     <section class="view" id="view-floor" role="tabpanel">
@@ -273,8 +336,32 @@ function adapt(sum){
   concerns,gate:g?[...g.reasons.map(r=>["c-crit",r]),...(g.warnings||[]).map(w=>["c-warn",w]),...(g.pass?[["c-ok","All readiness checks pass"]]:[])]:[["c-idle","The gate has not been run in this view. Use “Run the gate”."]],
   feed:events.slice(-14).reverse().map(e=>[clock(e.at),(e.actor&&e.actor.user)||"cli",`${e.command} → ${e.state}`]),
   status:{rec:d?String(d.events.count):"—",last:since(sum.updated_at),gate:gateWord},
-  history:d?d.events:null,docs:d?d.docs:{}}
+  history:d?d.events:null,docs:d?d.docs:{},attention:sum.attention||[],raw:m||null,gateRaw:g||null,
+  done:tasks.filter(t=>t.state==="ok").length,age:m?span(m.created_at,new Date().toISOString()):"—",idle:since(sum.updated_at),
+  events:events}
 }
+/* Event log lines in plain words. */
+function human(e){const c=e.command||"",o={};c.replace(/--([\w-]+)\s+(\S+)/g,(_,k,v)=>{o[k]=v});const w=c.replace(/^mission\s+/,"").split(/\s+/)[0];
+ const T={create:"Mission created","record-doc":`Recorded ${o.doc||"a document"}`,"task-add":`Planned ${o.task||"a task"}`,"task-update":`Updated ${o.task||"a task"}`,
+  "task-split":`Split ${o.task||"a task"}`,"task-transition":`${o.task||"Task"} → ${o.to||""}`,"lane-open":`Lane opened for ${o.task||"a task"}`,
+  "lane-integrate":`${o.task||"Lane"} integrated into the mission`,"lane-close":`Lane ${o.task||""} closed`,verify:`Checks run on ${o.revision||"the candidate"}`,
+  review:`${o.kind?o.kind[0].toUpperCase()+o.kind.slice(1):"Independent"} review recorded`,transition:`Mission → ${(o.to||e.state||"").replace("_"," ")}`,
+  block:"Blocked: waiting on you",unblock:"Unblocked",pause:"Paused",resume:"Resumed",approve:"You approved in the terminal","ci-result":"CI result recorded",
+  decision:"Decision recorded","accept-scope":"Scope accepted",criteria:"Acceptance criteria recorded",repair:"Repair started",chat:"You approved in chat"};
+ const k=c.startsWith("chat approval")?"chat":w;return {text:T[k]||c,tone:k==="chat"||k==="approve"?"brass":k==="block"?"crit":/DONE|integrate|review|verify/.test(T[k]||"")?"ok":"run"}}
+const NEED_IC={blocked:"!",approve:"✓",ci:"↗",stale:"…",paused:"Ⅱ"};
+function renderPortfolio(){
+ const S=SUMMARIES,working=S.filter(x=>x.tasks&&(x.tasks.RUNNING||x.tasks.VERIFYING)).length,blocked=S.filter(x=>x.state==="BLOCKED"),ready=S.filter(x=>x.state==="READY_PR"),
+  needs=S.flatMap(x=>(x.attention||[]).map(a=>({...a,id:x.id,title:x.title})));
+ $("proj").textContent=WORKSPACE.project||"Mission Deck";$("crumb").textContent=WORKSPACE.root||"";
+ $("pf").innerHTML=[["Missions",S.length,"",S[0]],["Working",working,"t-run",S.find(x=>x.tasks&&(x.tasks.RUNNING||x.tasks.VERIFYING))],["Needs you",needs.length,needs.length?"t-brass":"",needs[0]],
+  ["Blocked",blocked.length,blocked.length?"t-crit":"",blocked[0]],["Ready",ready.length,ready.length?"t-ok":"",ready[0]]]
+  .map(([l,n,c,x])=>`<button class="${c}" ${x?`data-id="${x.id}"`:"disabled"}><b>${n}</b>${l}</button>`).join("");
+ document.querySelectorAll("#pf button[data-id]").forEach(b=>b.onclick=()=>openMission(SUMMARIES.findIndex(x=>x.id===b.dataset.id)));
+ const h=WORKSPACE.halted;$("halt").hidden=!h;if(h)$("halt").textContent=`Factory halted: ${h.reason}. No task starts until you run software-factory mission unhalt.`;
+ $("needs-wrap").hidden=!needs.length;
+ $("needs").innerHTML=needs.map(a=>`<button class="need k-${a.kind}" data-id="${a.id}"><span class="ic">${NEED_IC[a.kind]||"•"}</span><span style="min-width:0"><span class="nh"><span style="font-weight:600">${esc(a.title)}</span> <span class="mono muted">${a.id}</span></span><span class="nt">${esc(a.text).replace(/`([^`]+)`/g,"<code>$1</code>")}</span></span></button>`).join("");
+ document.querySelectorAll(".need").forEach(b=>b.onclick=()=>openMission(SUMMARIES.findIndex(x=>x.id===b.dataset.id)))}
 let WORKSPACE={};
 function renderWorkspace(){const open=SUMMARIES.length,trees=new Set(SUMMARIES.map(x=>x.worktree)).size,active=SUMMARIES.filter(x=>x.tasks&&(x.tasks.RUNNING||x.tasks.VERIFYING)).length;
  $("workspace").innerHTML=`<dt>Missions</dt><dd>${open} open</dd><dt>Worktrees</dt><dd>${trees}</dd><dt>Working now</dt><dd>${active} mission${active===1?"":"s"}</dd><dt>Runtime</dt><dd class="mono">${esc(WORKSPACE.version||"—")}</dd>`}
@@ -283,7 +370,7 @@ async function refresh(openId){
   if(!openId&&!MISSIONS.length){const busy=SUMMARIES.findIndex(x=>x.tasks&&(x.tasks.RUNNING||x.tasks.VERIFYING));if(busy>=0)openId=SUMMARIES[busy].id}
   const keep=openId||(MISSIONS[cur]&&MISSIONS[cur].id);cur=Math.max(0,SUMMARIES.findIndex(x=>x.id===keep));
   if(SUMMARIES[cur]){DETAIL[SUMMARIES[cur].id]=await api("/api/mission/"+encodeURIComponent(SUMMARIES[cur].id))}
-  MISSIONS=SUMMARIES.map(adapt);setConn("Live · read-only","ok");renderWorkspace();render();if(renderer&&MISSIONS.length&&!refresh.framed){refresh.framed=true;home(true)}}
+  MISSIONS=SUMMARIES.map(adapt);setConn("Live","ok");renderWorkspace();renderPortfolio();render();if(renderer&&MISSIONS.length&&!refresh.framed){refresh.framed=true;home(true)}}
  catch(err){setConn("Disconnected: "+err.message,"crit")}}
 async function openMission(i){cur=i;const id=SUMMARIES[i].id;try{DETAIL[id]=await api("/api/mission/"+encodeURIComponent(id))}catch(e){setConn(e.message,"crit")}MISSIONS[i]=adapt(SUMMARIES[i]);render()}
 async function runGate(){const s=SUMMARIES[cur];if(!s)return;const b=$("run-gate");if(b){b.disabled=true;b.textContent="Running the gate…"}
@@ -292,7 +379,7 @@ async function runGate(){const s=SUMMARIES[cur];if(!s)return;const b=$("run-gate
 function setConn(text,kind){const c=$("conn");c.textContent=text;c.className="sample conn-"+kind}
 function stream(){if(!window.EventSource)return;const es=new EventSource("/api/stream?token="+encodeURIComponent(TOKEN));
  let first=true;es.addEventListener("changed",()=>{if(first){first=false;return}refresh()});es.onerror=()=>setConn("Reconnecting…","warn")}
-const galaxyPos=i=>{if(i===0)return[0,0,0];const a=i*2.39996,r=26+9*Math.sqrt(i);return[Math.cos(a)*r,(i%2?5:-5),Math.sin(a)*r-10]};
+const galaxyPos=i=>{if(i===0)return[0,0,0];const a=i*2.39996,r=34+13*Math.sqrt(i);return[Math.cos(a)*r,(i%2?7:-7),Math.sin(a)*r-10]};
 
 
 /* ------------------------------ rail & header ------------------------------ */
@@ -304,17 +391,24 @@ function renderRail(){
  $("mlist").innerHTML=MISSIONS.map((m,i)=>`<button class="mcard" aria-current="${i===cur}" data-i="${i}">
   <div class="mhead"><span class="mtitle">${esc(m.title)}</span><span class="mono muted">${m.id}</span></div>
   <div class="prog">${STAGES.map((_,k)=>`<span class="${k<m.at?"d":k===m.at?(m.blocked?"b":"n"):""}"></span>`).join("")}</div>
-  <div style="display:flex;justify-content:space-between;gap:6px"><span class="chip ${m.chip}">${m.state.replace("_"," ")}</span><span class="muted" style="font-size:11.5px">${m.lane} · ${m.tasks.length} task${m.tasks.length===1?"":"s"}</span></div></button>`).join("");
+  <div style="display:flex;justify-content:space-between;gap:6px"><span class="chip ${m.chip}">${m.state.replace("_"," ")}</span><span class="muted" style="font-size:11.5px">${m.lane} · ${m.tasks.length} task${m.tasks.length===1?"":"s"}</span></div>${m.attention[0]?`<span class="mnote k-${m.attention[0].kind}">${esc(m.attention[0].text.replace(/`/g,""))}</span>`:""}</button>`).join("");
  document.querySelectorAll(".mcard").forEach(b=>b.onclick=()=>openMission(+b.dataset.i));
 }
 function renderHead(m){
- $("mmeta").textContent=`${m.id} · ${m.lane} · ${m.worktree||""}`;$("mname").textContent=m.title;$("mreq").textContent="Your request: "+m.request;
+ $("mmeta").innerHTML=`${m.id} · ${esc(m.lane)}<span class="wt"> · ${esc(m.worktree||"")}</span>`;
+ const SL=["Proposed","Planned","Building","Verifying","Review","Ready PR","Merged"];
+ $("stepper").innerHTML=SL.map((n,k)=>{const c=k<m.at?"d":k===m.at?(m.blocked?"b":m.state==="MERGED"?"d":"n"):"";return `<div class="step ${c}"><i>${k<m.at||(k===m.at&&m.state==="MERGED")?"✓":k===m.at&&m.blocked?"!":k+1}</i><span>${n}</span>${k===m.at&&m.blocked?'<span class="hold">blocked</span>':k===m.at&&m.state==="PAUSED"?'<span class="hold">paused</span>':""}</div>`}).join("");$("mname").textContent=m.title;$("mreq").textContent="Your request: "+m.request;
  $("mstate").innerHTML=`<span class="chip ${m.chip}" style="font-size:12px;padding:4px 10px">${m.state.replace("_"," ")}</span>`;
- const k=m.kpi, riskC=k.risk==="High"?"c-crit":"c-ok", gateC=k.gate==="Pass"?"c-ok":k.gate==="Blocked"?"c-crit":"c-warn";
- $("kpis").innerHTML=[["Lead time",k.lead,spark(m.spark,"#8CC4FF")],["Attempts",k.attempts,`<span class="muted" style="font-size:11.5px">across all lanes</span>`],
-  ["Gate",k.gate,`<span class="chip ${gateC}">${m.status.gate}</span>`],["Risk",k.risk,`<span class="chip ${k.risk==="high"?"c-crit":k.risk==="—"?"c-idle":"c-ok"}">${k.risk==="—"?"from the gate":"risk tier"}</span>`],
-  ["Lanes",k.lanes,`<span class="muted" style="font-size:11.5px">worktree per task</span>`]].map(([a,b,c])=>`<div class="kpi"><span class="lbl">${a}</span><span class="v">${b}</span>${c}</div>`).join("");
- $("feed").innerHTML=m.feed.map(([t,w,x])=>`<div class="ev"><span class="mono muted">${t}</span><span><b style="font-weight:600">${esc(w)}</b> · ${esc(x)}</span></div>`).join("");
+ const k=m.kpi,g=m.gateRaw,risk=g&&g.risk&&g.risk.tier;
+ const seg=m.tasks.length?`<div class="segbar">${m.tasks.map(t=>`<span class="${t.state==="idle"?"":t.state}"></span>`).join("")}</div>`:`<span class="sub">no tasks planned yet</span>`;
+ $("kpis").innerHTML=[
+  ["Stage",`${m.at+1}<span class="muted" style="font-size:13px"> / 7</span>`,`<span class="sub">${m.state.replace("_"," ").toLowerCase()}</span>`,CSSC[tone(m)]],
+  ["Tasks",`${m.done}<span class="muted" style="font-size:13px"> / ${m.tasks.length} done</span>`,seg,CSSC.ok],
+  ["Parallel lanes",k.lanes.split(" ")[0],`<span class="sub">one git worktree per task</span>`,CSSC.run],
+  ["Readiness gate",k.gate,g?`<span class="chip ${g.pass?"c-ok":"c-crit"}">${m.status.gate}${risk?" · risk "+risk:""}</span>`:`<span class="sub">open the Gate tab to run it</span>`,g?(g.pass?CSSC.ok:CSSC.crit):CSSC.idle],
+  ["Age",m.age,`<span class="sub">last change ${m.idle}</span>`,CSSC.ice]
+ ].map(([a,b,c,col])=>`<div class="kpi" style="--accent:${col}"><span class="lbl">${a}</span><span class="v">${b}</span>${c}</div>`).join("");
+ $("feed").innerHTML=m.events.slice(-14).reverse().map(e=>{const h=human(e);return `<div class="ev"><span class="mono muted">${clock(e.at)}</span><span style="display:flex;flex-direction:column;gap:1px"><span style="font-weight:500"><span style="color:${CSSC[h.tone]}">●</span> ${esc(h.text)}</span><span class="muted" style="font-size:11.5px">${esc((e.actor&&e.actor.user)||"cli")} · ${esc((e.state||"").replace("_"," ").toLowerCase())}</span></span></div>`}).join("")||'<p class="muted" style="margin:0">No events yet.</p>';
  $("st-rec").textContent=m.status.rec;$("st-last").textContent=m.status.last;$("st-gate").textContent=m.status.gate;
 }
 
@@ -328,21 +422,41 @@ function renderTabs(){
 function showTab(){TABS.forEach(([k])=>$("view-"+k).hidden=k!==tab);if(tab==="floor")resize();}
 function renderViews(m){
  // timeline: 24 slots of 5 minutes
- const rows=[["Intake + interview","gb-ok",0,4],["Assessment","gb-ok",4,2],["Spec + plan","gb-ok",6,2],["Your scope approval","gb-brass",8,1]];
- const off=9;
+ const rows=[["Intake + interview","gb-ok",0,3],["Assessment","gb-ok",3,3],["Spec + plan","gb-ok",6,3],["Your scope approval","gb-brass",9,2,"You ✓"]];
+ const off=11;
  m.tasks.forEach(t=>{const cls=t.state==="run"?"gb-run":t.state==="ok"?"gb-ok":t.state==="crit"?"gb-crit":"gb-idle";
-   const start=t.deps.length?off+8:off, len=t.state==="idle"?4:t.state==="ok"?6:Math.max(3,Math.round(8*t.progress)+2);rows.push([`${t.id} · ${t.name}`,cls,start,len])});
- rows.push(["Integrate + reviews + gate","gb-ice",off+12,3]);
- let g=`<div></div>`+Array.from({length:24},(_,i)=>`<div class="gax">${i%3?"":"+"+i*5+"m"}</div>`).join("");
- rows.forEach(([n,c,s,l])=>{g+=`<div class="muted" style="font-size:12px;padding-right:8px">${esc(n)}</div><div style="grid-column:${s+2} / span ${l}"><div class="gbar ${c}">${esc(n.split(" · ")[0])}</div></div>`;const r=24-s-l;if(r>0)g+=`<div style="grid-column:span ${r}"></div>`});
+   const start=t.deps.length?off+5:off, len=t.state==="idle"?4:t.state==="ok"?5:Math.max(3,Math.round(5*t.progress)+1);rows.push([`${t.id} · ${t.name}`,cls,start,len])});
+ rows.push(["Integrate + reviews + gate","gb-ice",off+10,3]);
+ let g=`<div></div>`+Array.from({length:24},(_,i)=>`<div class="gax">${i===0?"Discovery":i===off?"Parallel build":i===off+10?"Deliver":""}</div>`).join("");
+ rows.forEach(([n,c,s,l,short])=>{g+=`<div class="muted" style="font-size:12px;padding-right:8px">${esc(n)}</div><div style="grid-column:${s+2} / span ${l}"><div class="gbar ${c}">${esc(short||n.split(" · ")[0])}</div></div>`;const r=24-s-l;if(r>0)g+=`<div style="grid-column:span ${r}"></div>`});
  $("view-timeline").innerHTML=`<div class="card"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px"><h3>Lanes</h3><span class="muted">Schematic: tasks without dependencies start together; the rest wait for theirs.</span></div><div class="gantt"><div class="g">${g}</div></div></div>`;
  $("view-trace").innerHTML=`<div class="card"><h3>Every criterion quotes your words</h3><div class="tbl"><table><thead><tr><th>Criterion</th><th>Your words</th><th>Evidence</th><th>Verdict</th></tr></thead><tbody>${m.trace.map(([a,w,e,c,v])=>`<tr><td class="mono">${a}</td><td>“${esc(w)}”</td><td class="mono">${esc(e)}</td><td><span class="chip ${c}">${v}</span></td></tr>`).join("")}</tbody></table></div></div>`;
- $("view-assess").innerHTML=`<div class="split"><div class="card"><h3>Concerns the planner raised</h3>${m.concerns.map(c=>`<div class="concern ${c.acc?"acc":""}"><b><span class="mono">${c.id}</span> ${esc(c.t)}</b><span class="muted">Evidence: <span class="mono">${esc(c.e)}</span></span><span class="muted">Alternative: ${esc(c.alt)}</span><span class="chip ${c.acc?"c-brass":"c-warn"}" style="align-self:flex-start">${esc(c.note)}</span></div>`).join("")}</div>
+ $("view-assess").innerHTML=`<div class="split"><div class="card"><h3>Concerns the planner raised</h3>${m.concerns.map(c=>`<div class="concern ${c.acc?"acc":""}"><b><span class="mono">${c.id}</span> ${esc(c.t)}</b><span class="muted">Evidence: <span class="mono">${esc(c.e)}</span></span><span class="muted">Alternative: ${esc(c.alt)}</span>${c.note?`<span class="chip ${c.acc?"c-brass":"c-warn"}" style="align-self:flex-start">${esc(c.note)}</span>`:""}</div>`).join("")}</div>
   <div class="card"><h3>What you approved</h3><div class="kv"><dt>Scope</dt><dd>${esc(m.floor.scope)}</dd><dt>Blockers</dt><dd>${m.blocked?"1 open question":"None"}</dd><dt>Assessment</dt><dd class="mono">bound at accept-scope</dd><dt>Overrides</dt><dd>${m.concerns.filter(c=>c.acc).length} accepted risk(s)</dd></div></div></div>`;
- $("view-gate").innerHTML=`<div class="card"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><h3>Readiness gate</h3><button class="ctl" id="run-gate">Run the gate</button></div><div class="checks">${m.gate.map(([c,t])=>`<div><span class="chip ${c}">${c==="c-ok"?"ok":c==="c-warn"?"attention":"blocks"}</span><span>${esc(t)}</span></div>`).join("")}</div></div>`;
+ $("view-gate").innerHTML=gateView(m);
  $("view-docs").innerHTML=`<div class="split">${["request.md","assessment.md","spec.md","plan.md"].map(n=>`<div class="card"><h3>${n}</h3><pre style="white-space:pre-wrap;margin:0;font:12.5px/1.5 var(--mono);color:var(--ink2);max-height:420px;overflow:auto">${esc((m.docs&&m.docs[n])||"Not recorded yet.")}</pre></div>`).join("")}</div>`;
  const h=m.history;$("view-docs").insertAdjacentHTML("beforeend",h?`<div class="card" style="margin-top:12px"><h3>Event log</h3><p class="muted" style="margin:0">${h.present?`${h.count} events · ${h.problems.length?"<b style=\"color:var(--crit)\">chain problems: "+h.problems.map(esc).join("; ")+"</b>":"chain intact"}`:"No event log (created before 0.3.2)"}</p></div>`:"");
 }
+
+function gateView(m){
+ const g=m.gateRaw,r=m.raw||{},need=(g&&g.required_reviews)||(m.lane==="patch"?["code"]:["code","acceptance","adversarial"]);
+ const reviews=need.map(kind=>{const v=(r.reviews||[]).filter(x=>x.kind===kind).pop();return [kind,v?v.status:"missing",v]});
+ const approvals=["scope","exception","merge","release"].map(kind=>[kind,(r.decisions||[]).filter(d=>d.kind===kind).pop()]).filter(([k,d])=>d||k==="scope"||k==="merge");
+ const trace=(g&&g.criteria_trace)||((r.criteria&&r.criteria.items)||[]).map(i=>({id:i.id,text:i.text,verdict:null}));
+ const reasons=g?g.reasons:[],warnings=g?(g.warnings||[]):[];
+ const passedR=reviews.filter(x=>x[1]==="pass").length,passedC=trace.filter(t=>t.verdict==="pass").length;
+ const total=reviews.length+trace.length+1,okN=passedR+passedC+(g&&g.pass?1:0),frac=total?okN/total:0,C=2*Math.PI*26;
+ const col=g?(g.pass?"var(--ok)":"var(--crit)"):"var(--idle)";
+ const donut=`<svg class="ring" width="64" height="64" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="26" fill="none" stroke="var(--line)" stroke-width="6"/><circle cx="32" cy="32" r="26" fill="none" stroke="${col}" stroke-width="6" stroke-linecap="round" stroke-dasharray="${(C*frac).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 32 32)"/><text x="32" y="37" text-anchor="middle" font-size="14" font-weight="700" fill="${col}" font-family="Geist,system-ui">${okN}/${total}</text></svg>`;
+ const banner=`<div class="verdict ${g?(g.pass?"pass":"fail"):"none"}">${donut}<div style="display:flex;flex-direction:column;gap:3px;min-width:0;flex:1"><span class="big">${g?(g.pass?"Ready to merge":`Not ready · ${reasons.length} blocking`):"Gate not run in this view"}</span><span class="muted">${g?`${esc(g.lane||m.lane)} lane · risk ${esc((g.risk&&g.risk.tier)||"—")}${g.risk&&g.risk.reasons&&g.risk.reasons.length?" · "+esc(g.risk.reasons[0]):""}`:"The gate re-derives everything from the files: candidate fingerprint, task results, reviews, approvals and criteria."}</span></div><button class="ctl" id="run-gate">${g?"Run again":"Run the gate"}</button></div>`;
+ const row=(cls,mark,html)=>`<div class="${cls}"><b>${mark}</b><span>${html}</span></div>`;
+ const left=`<div class="card"><h3>${g?(g.pass?"Every readiness check passes":"What blocks readiness"):"Readiness checks"}</h3><div class="gl">${
+  g?(reasons.map(x=>row("x","✕",esc(x))).join("")+warnings.map(x=>row("w","!",esc(x))).join("")+(g.pass?["Candidate fingerprint matches the verified evidence","Every task result is current","Required independent reviews pass","Your approvals bind this exact candidate"].map(x=>row("v","✓",x)).join(""):""))
+   :row("o","·","Run the gate to see what it checks against this candidate.")}</div></div>`;
+ const right=`<div style="display:flex;flex-direction:column;gap:12px"><div class="card"><h3>Independent reviews</h3><div class="gl">${reviews.map(([k,st,v])=>row(st==="pass"?"v":st==="missing"?"o":"x",st==="pass"?"✓":st==="missing"?"·":"✕",`<b style="all:unset;font-weight:600">${k}</b> <span class="muted">${st==="missing"?"not recorded":st+(v&&v.findings&&v.findings.length?` · ${v.findings.length} finding(s)`:"")}</span>`)).join("")}</div></div>
+  <div class="card"><h3>Your approvals</h3><div class="gl">${approvals.map(([k,d])=>row(d?"v":"o",d?"✓":"·",`<b style="all:unset;font-weight:600">${k}</b> <span class="muted">${d?esc(d.reference.replace(/^Approved in Claude Code chat: /,"chat: "))+" · "+clock(d.recorded_at):"not given yet"}</span>`)).join("")}</div></div>
+  <div class="card"><h3>Acceptance criteria</h3><div class="gl">${trace.map(t=>row(t.verdict==="pass"?"v":t.verdict?"x":"o",t.verdict==="pass"?"✓":t.verdict?"✕":"·",`<span class="mono">${t.id}</span> ${esc(t.text||"")}`)).join("")||row("o","·","No criteria recorded yet.")}</div></div></div>`;
+ return `<div style="display:flex;flex-direction:column;gap:12px">${banner}<div class="gcols">${left}${right}</div></div>`}
 
 /* ------------------------------ inspector ------------------------------ */
 function inspect(info){
@@ -384,7 +498,7 @@ function glowTexture(){if(glowTex)return glowTex;const c=document.createElement(
  const g=x.createRadialGradient(64,64,0,64,64,64);g.addColorStop(0,"rgba(255,255,255,1)");g.addColorStop(.2,"rgba(255,255,255,.6)");g.addColorStop(.5,"rgba(255,255,255,.15)");g.addColorStop(1,"rgba(255,255,255,0)");
  x.fillStyle=g;x.fillRect(0,0,128,128);glowTex=new THREE.CanvasTexture(c);return glowTex}
 function glow(color,size,opacity=1){const s=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTexture(),color,transparent:true,opacity,depthWrite:false,blending:THREE.AdditiveBlending}));s.scale.set(size,size,1);return s}
-function label(text,sub,color,scale=8){
+function label(text,sub,color,scale=9.5){
  const c=document.createElement("canvas"),s=2,w=520,h=sub?120:78;c.width=w*s;c.height=h*s;const x=c.getContext("2d");x.scale(s,s);
  x.fillStyle="rgba(12,19,28,.88)";x.strokeStyle="rgba(140,196,255,.3)";x.lineWidth=2;const r=16;
  x.beginPath();x.moveTo(r,1);x.arcTo(w-1,1,w-1,h-1,r);x.arcTo(w-1,h-1,1,h-1,r);x.arcTo(1,h-1,1,1,r);x.arcTo(1,1,w-1,1,r);x.fill();x.stroke();
@@ -427,8 +541,8 @@ function initGL(){
 function clearScene(){for(let i=scene.children.length-1;i>=0;i--){const o=scene.children[i];if(!o.isLight)scene.remove(o)}picks=[];anim=[]}
 function setGoal(o,instant){Object.assign(goal,{theta:o.theta??goal.theta,phi:o.phi??goal.phi,r:o.r??goal.r});if(o.target)goal.target.copy(o.target);
  if(instant){Object.assign(cam,{theta:goal.theta,phi:goal.phi,r:goal.r});cam.target.copy(goal.target)}}
-const HOME={galaxy:{theta:1.3,phi:1.1,r:80,target:[0,-1,-8]},orbit:{theta:1.35,phi:.92,r:62,target:[0,0,0]},floor:{theta:1.22,phi:.9,r:60,target:[2,0,0]}};
-function home(instant){const h={...HOME[view]};if(view==="galaxy"&&MISSIONS.length){const ps=MISSIONS.map((_,i)=>galaxyPos(i));h.target=[0,1,2].map(k=>ps.reduce((a,p)=>a+p[k],0)/ps.length);h.r=h.r+14*Math.sqrt(MISSIONS.length-1)}setGoal({theta:h.theta,phi:h.phi,r:(stageEl.clientWidth<640?1.35:1)*h.r,target:new THREE.Vector3(...h.target)},instant)}
+const HOME={galaxy:{theta:1.3,phi:.84,r:80,target:[0,-1,-8]},orbit:{theta:1.35,phi:.92,r:62,target:[0,0,0]},floor:{theta:1.22,phi:.92,r:50,target:[2,-1,1]}};
+function home(instant){const h={...HOME[view]};if(view==="galaxy"&&MISSIONS.length){const ps=MISSIONS.map((_,i)=>galaxyPos(i));h.target=[0,1,2].map(k=>ps.reduce((a,p)=>a+p[k],0)/ps.length);h.r=h.r+17*Math.sqrt(MISSIONS.length-1)}setGoal({theta:h.theta,phi:h.phi,r:(stageEl.clientWidth<640?1.35:1)*h.r,target:new THREE.Vector3(...h.target)},instant)}
 
 /* Galaxy: every mission is a star system; tasks are moons. */
 function buildGalaxy(){
@@ -450,7 +564,7 @@ function buildGalaxy(){
    const mg=glow(HEX[t.state],3.4,.7);moon.add(mg);moon.userData.info={kind:"task",t,mi:i};picks.push(moon);
    let a=k*2.3+i;const speed=t.state==="run"?.55-.1*k:0;
    anim.push((ts,dt)=>{if(playing)a+=dt*speed;moon.position.set(Math.cos(a)*rad,0,Math.sin(a)*rad);if(t.state==="crit")mg.material.opacity=.4+.5*(.5+.5*Math.sin(ts/260))})});
-  const l=label(m.title,`${m.id} · ${m.state.replace("_"," ")} · ${m.tasks.length} task${m.tasks.length===1?"":"s"}`,CSSC[tn],19);l.position.set(0,size+6.5,0);g.add(l);
+  const l=label(m.title,`${m.id} · ${m.state.replace("_"," ")} · ${m.tasks.length} task${m.tasks.length===1?"":"s"}`,CSSC[tn],i===cur?30:25);l.position.set(0,size+(i===cur?9:7.5),0);g.add(l);
   core.userData.info.pos=g.position.clone();
  });
  // faint links between missions: shared workspace
@@ -524,7 +638,7 @@ function buildFloor(){
  m.tasks.forEach((t,i)=>{const z=zs[i],c=HEX[t.state];
   beltSeg(X.laneA-1.2,0,X.laneA+1.2,z);beltSeg(X.laneA+1.2,z,X.laneB-1.2,z);beltSeg(X.laneB-1.2,z,X.integrate-1.4,0);
   const bay=box(X.laneB-X.laneA-2.4,.08,3.4,c,(X.laneA+X.laneB)/2,.02,z,.06);bay.material.transparent=true;bay.material.opacity=.18;
-  const lab=label(`${t.id} · ${t.name}`,t.tree==="not created"?"queued":"worktree "+t.id,CSSC[t.state],6);lab.position.set((X.laneA+X.laneB)/2,2.9,z-2.6);scene.add(lab);
+  const lab=label(`${t.id} · ${t.name}`,t.tree==="not created"?"queued":"worktree "+t.id,CSSC[t.state],7.6);lab.position.set((X.laneA+X.laneB)/2,2.9,z-2.6);scene.add(lab);
   if(t.state!=="idle"){const agent=new THREE.Mesh(new THREE.CylinderGeometry(.45,.55,1.5,20),mat(0xC9D6E3,.05,.4,.3));agent.position.set(X.laneA+3,.95,z+2.2);agent.castShadow=true;
    const head=new THREE.Mesh(new THREE.SphereGeometry(.42,20,16),mat(c,.5,.3,.2));head.position.set(0,1.05,0);agent.add(head);scene.add(agent);
    agent.userData.info=head.userData.info={kind:"task",t,mi:cur};picks.push(agent,head)}
@@ -533,7 +647,7 @@ function buildFloor(){
   const x0=X.laneA+1.6,x1=X.laneB-3.4;p.position.set(t.state==="idle"?x0-.2:x0+(x1-x0)*t.progress,.8,z);p.userData.info={kind:"task",t,mi:cur};scene.add(p);picks.push(p);
   const speed=.035+.02*i;anim.push((ts,dt)=>{if(!playing)return;if(t.state==="run"){p.position.x+=speed*60*dt;if(p.position.x>x1)p.position.x=x0;p.rotation.y+=dt*.8}
    if(t.state==="crit")p.material.emissiveIntensity=.35+.35*Math.sin(ts/260)});
-  if(t.deps.length){const q=label("waits on "+t.deps.join(", "),null,CSSC.idle,4);q.position.set(x0,1.9,z);scene.add(q)}});
+  if(t.deps.length){const q=label("waits on "+t.deps.join(", "),null,CSSC.idle,5);q.position.set(x0,1.9,z);scene.add(q)}});
  station("integrate","Integrate","merge lanes",st("integrate"),"Finished lanes merge into the mission branch; a conflict blocks only that lane.");
  station("review","Reviews","code · acceptance · adversarial",st("review"),"Read-only reviewers; the reviewer must differ from the maintainer.");
  gateArch("gate","Readiness gate",m.status.gate==="pass"?"Gate passed on the integrated candidate.":"Open gate reasons: "+m.status.gate+".",m.status.gate==="pass");

@@ -34,6 +34,45 @@ def _doc(root: Path, mission_id: str, name: str) -> str | None:
     return path.read_text(encoding="utf-8", errors="replace")[:MAX_DOC]
 
 
+def _attention(path: Path, mission: dict, item: dict) -> list[dict]:
+    """What this mission needs from the user right now, in plain words."""
+    from .workflow import assessment_reasons
+
+    needs = []
+    state, decisions = mission["state"], {d["kind"] for d in mission["decisions"]}
+    if state == "BLOCKED" and mission.get("blockers"):
+        last = mission["blockers"][-1]
+        needs.append(
+            {"kind": "blocked", "text": last if isinstance(last, str) else last.get("reason", "Blocked")}
+        )
+    elif state == "PAUSED":
+        needs.append({"kind": "paused", "text": "Paused; resume it when ready"})
+    if state == "PROPOSED" and "scope" not in decisions:
+        try:
+            assessed = mission.get("request") is not None and not assessment_reasons(path, mission)
+        except (FactoryError, OSError):
+            assessed = False
+        needs.append(
+            {
+                "kind": "approve",
+                "text": f"Review the assessment and spec, then reply `approve {mission['id']} scope`"
+                if assessed
+                else "Waiting for the interview and assessment",
+            }
+        )
+    if state == "READY_PR":
+        if not (mission.get("delivery") or {}).get("ci_ref"):
+            text = "Open the pull request and record its CI result"
+        elif "merge" not in decisions:
+            text = f"CI is recorded: reply `approve {mission['id']} merge` when you are ready to merge"
+        else:
+            text = "Merge approved: merge the pull request, then record MERGED"
+        needs.append({"kind": "ci", "text": text})
+    if item.get("stale"):
+        needs.append({"kind": "stale", "text": f"No change for {item.get('idle_hours')} h"})
+    return needs
+
+
 def missions_payload(root: Path) -> dict:
     from .workflow import list_missions, load_mission
     from .workspaces import factory_worktrees
@@ -49,6 +88,7 @@ def missions_payload(root: Path) -> dict:
             out.append(
                 {
                     **item,
+                    "attention": _attention(path, mission, item),
                     "kind": mission["kind"],
                     "tasks": {s: sum(t["status"] == s for t in tasks) for s in {t["status"] for t in tasks}},
                     "task_count": len(tasks),
@@ -64,8 +104,16 @@ def missions_payload(root: Path) -> dict:
     except FactoryError:
         pass
     from . import __version__
+    from .watch import halted
 
-    return {"root": str(root), "version": __version__, "missions": missions, "generated_at": time.time()}
+    return {
+        "root": str(root),
+        "project": root.name,
+        "version": __version__,
+        "halted": halted(root),
+        "missions": missions,
+        "generated_at": time.time(),
+    }
 
 
 def _locate(root: Path, mission_id: str) -> Path:

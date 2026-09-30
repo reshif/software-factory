@@ -10,6 +10,7 @@ import pytest
 from test_mission_030 import plan_mission, repo  # noqa: F401  (fixture)
 
 from software_factory.serve import DeckServer
+from software_factory.workflow import load_mission
 
 
 @pytest.fixture
@@ -53,6 +54,16 @@ def test_page_and_mission_api(deck):
     assert "Please change VALUE" in detail["docs"]["request.md"]
 
 
+def test_missions_say_what_they_need_from_the_user(deck, repo):  # noqa: F811
+    from software_factory.workflow import transition_mission
+
+    listed = json.loads(call(deck, "/api/missions")[1])
+    assert listed["project"] == repo.name and listed["halted"] is None
+    transition_mission(repo, "M-REQ", "BLOCKED", reason="Which threshold?", next="Ask the user")
+    mission = json.loads(call(deck, "/api/missions")[1])["missions"][0]
+    assert {"kind": "blocked", "text": "Which threshold?"} in mission["attention"]
+
+
 def test_gate_runs_on_request(deck):
     status, body = call(deck, "/api/mission/M-REQ/gate")
     gate = json.loads(body)
@@ -80,3 +91,28 @@ def test_the_deck_is_read_only(deck):
 def test_unknown_mission_is_a_clean_error(deck):
     status, body = call(deck, "/api/mission/M-NOPE")
     assert status == 400 and b"Unknown mission" in body
+
+
+def test_attention_follows_what_the_user_can_do_next(repo):  # noqa: F811
+    from test_mission_030 import ASSESSMENT, create
+
+    from software_factory.serve import _attention
+
+    create(repo, id="M-NEW")
+    mission = load_mission(repo, "M-NEW")
+    assert _attention(repo, mission, {}) == [
+        {"kind": "approve", "text": "Waiting for the interview and assessment"}
+    ]
+    (repo / ".factory/missions/M-NEW/assessment.md").write_text(ASSESSMENT)  # recorded, not yet approved
+    (need,) = _attention(repo, load_mission(repo, "M-NEW"), {})
+    assert need["text"] == "Review the assessment and spec, then reply `approve M-NEW scope`"
+    assert _attention(repo, mission, {"stale": True, "idle_hours": 30})[-1] == {
+        "kind": "stale",
+        "text": "No change for 30 h",
+    }
+    ready = {**mission, "state": "READY_PR"}
+    assert _attention(repo, ready, {})[0]["text"] == "Open the pull request and record its CI result"
+    ready["delivery"] = {"ci_ref": {"url": "x"}}
+    assert "approve M-NEW merge" in _attention(repo, ready, {})[0]["text"]
+    ready["decisions"] = [{"kind": "merge"}]
+    assert _attention(repo, ready, {})[0]["text"].startswith("Merge approved")

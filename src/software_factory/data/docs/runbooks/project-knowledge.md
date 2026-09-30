@@ -1,6 +1,6 @@
 # Project knowledge (Crew)
 
-The factory keeps what it learns about your project only with your consent (*Learning with consent* in the [constitution](../../CONSTITUTION.md)). This release ships the knowledge store, loads it into mission briefs and uses recipes in the interview; graded options and retros follow in later releases.
+The factory keeps what it learns about your project only with your consent (*Learning with consent* in the [constitution](../../CONSTITUTION.md)). This release ships the knowledge store, loads it into mission briefs, uses recipes in the interview and grades options before building; retros follow in a later release.
 
 ## Where it lives
 
@@ -32,6 +32,10 @@ Your profile never reaches a brief the gate re-renders, so gate results do not d
 `software-factory crew match --text "<request>"` lists recipes whose triggers appear in a request; the orchestrator suggests one and uses it only if you confirm (`mission create --recipe NAME`, or `mission recipe --mission ID --use NAME|--clear` while PROPOSED). The recipe is frozen into `crew-context.md`. Round 0 of the interview shows its defaults and asks whether each is still true; your reply is recorded as a clarification next to the defaults you were shown, and only that makes a default quotable by the criteria. Its known pitfalls reach implementer and code-review briefs. Requests from a contributor or an anonymous author never get a recipe.
 
 Every round also carries a question you probably had not considered, and each contradiction between your request, your answers, the saved knowledge and the repository is asked as its own question; it stays an open ambiguity (origin `contradiction`) that blocks scope until you settle it. There is no limit on questions or rounds.
+
+## Options graded before building
+
+For every kind but patch (*Alternatives before commitment*), after the spec and criteria the planner writes options.md (at least two genuinely different approaches) and a reviewer in a separate context grades them in grading.md against every criterion, bound to the exact options, criteria and grade brief. You see the options and the grading with the assessment; scope approval and accept-scope are refused until the grading is current, and plan.md builds the winner unless you chose another option in a recorded clarification. `"crew": {"options": "off"}` in `factory.json` turns this off, except for requests from a contributor or an anonymous author. `mission status` shows the options, the winner and the scores under `options_summary`.
 
 ## How knowledge changes
 

@@ -146,7 +146,9 @@ DELIVERY_FIELDS = {
 REQUEST_LIMIT = 256 * 1024
 MIN_EXCERPT = 8
 REVIEW_KINDS = ("code", "acceptance", "adversarial")
-BRIEF_KINDS = ("context", "research", "assess", "plan", "code", "acceptance", "adversarial", "verify")
+BRIEF_KINDS = (
+    "context", "research", "assess", "spec", "options", "grade", "plan", "code", "acceptance", "adversarial", "verify",
+)  # fmt: skip
 DIFF_BRIEFS = {"code", "acceptance", "adversarial", "verify"}
 DECISION_KINDS = ("scope", "merge", "release", "recovery", "exception", "decline", "exclusion")
 CREATE_FIELDS = ("id", "title", "kind", "base", "request_file", "source", "recipe")
@@ -1050,7 +1052,7 @@ def _adds_content(text, template):
     return added >= MIN_AUTHORED_CHARS
 
 
-SCOPE_DOCS = ("context.md", "assessment.md", "plan.md", "crew-context.md")
+SCOPE_DOCS = ("context.md", "assessment.md", "plan.md", "crew-context.md", "options.md", "grading.md")
 # The assessment the user sees before approving scope: what was understood, and the blockers,
 # concerns (with evidence), risks and assumptions of doing what was asked.
 ASSESSMENT_SECTIONS = (
@@ -1150,6 +1152,9 @@ def scope_reasons(root, mission, config):
             " text; record the gathered context"
         )
     reasons += assessment_reasons(root, mission)
+    from .options import reasons as option_reasons
+
+    reasons += option_reasons(root, mission, config, texts)
     plan = _authored(root, mission, "plan.md")
     if plan is None:
         reasons.append("plan.md is missing or still the unedited template")
@@ -1973,6 +1978,125 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             "- Never invent evidence; say what you could not verify.",
             "- Do not change files and do not start nested agents.",
         ]
+    elif kind == "spec":
+        request_section()
+        saved_knowledge()
+        lines.extend(
+            ["", "## Context (context.md)", "", *_fenced(document("context.md") or "Not recorded yet.")]
+        )
+        lines.extend(
+            [
+                "",
+                "## Assessment (assessment.md)",
+                "",
+                *_fenced(document("assessment.md") or "Not recorded yet."),
+            ]
+        )
+        ambiguity_section()
+        lines.extend(["", "## Template: spec.md", "", *_fenced(mission_template(root, "spec.md", id))])
+        lines += [
+            "",
+            "## Return",
+            "",
+            (
+                "Return the text of spec.md and the criteria JSON (items, exclusions, ambiguities); the plan comes"
+                " after the options are graded. The orchestrator records them; do not write files."
+            ),
+            "",
+            "## Criteria rules",
+            "",
+            (
+                "- Give each criterion an id AC-<n>, an observable text and a route: check, e2e, property, manual"
+                f" or review; route check names configured checks: {', '.join(c['id'] for c in config['checks'])}."
+            ),
+            (
+                f"- Every criterion cites excerpts copied exactly from the request or a clarification (at least"
+                f" {MIN_EXCERPT} characters). A recipe default is quotable only through the clarification that"
+                " recorded the user's reply to it."
+            ),
+            (
+                "- Criteria describe the outcome, not one approach: the options are graded against them next, so"
+                " they must not presuppose the design."
+            ),
+            "- Mark assumptions and unknowns explicitly; never invent references.",
+            "- Do not change files and do not start nested agents.",
+        ]
+    elif kind == "options":
+        from .options import require_criteria
+
+        require_criteria(mission)
+        request_section()
+        saved_knowledge()
+        criteria_section(criteria["items"])
+        lines.extend(
+            ["", "## Specification (spec.md)", "", *_fenced(document("spec.md") or "Not recorded yet.")]
+        )
+        lines.extend(
+            ["", "## Context (context.md)", "", *_fenced(document("context.md") or "Not recorded yet.")]
+        )
+        lines.extend(["", "## Template: options.md", "", *_fenced(mission_template(root, "options.md", id))])
+        lines += [
+            "",
+            "## Return",
+            "",
+            "Return the text of options.md. The orchestrator records it; do not write files.",
+            "",
+            "## Option rules (Alternatives before commitment)",
+            "",
+            (
+                "- Give at least two genuinely different approaches, three by default: different in architecture,"
+                " dependency or trade-off, not the same idea reworded."
+            ),
+            "- For each option: a short sketch, its trade-offs, and how it meets each criterion above.",
+            (
+                "- Only when the request dictates one approach, give one option and a line"
+                ' `Dictated by: "<exact words from the request or a clarification>"`.'
+            ),
+            "- Start with the line `Author: <your session>`; do not rank or pick a winner: a separate reviewer grades.",
+            "- Do not change files and do not start nested agents.",
+        ]
+    elif kind == "grade":
+        from .options import OPTIONS_DOC, require_criteria
+
+        require_criteria(mission)
+        options_text = document(OPTIONS_DOC)
+        if not options_text:
+            raise FactoryError(
+                "Record options.md first (`mission brief --kind options`, then record-doc --doc options)"
+            )
+        request_section()
+        criteria_section(criteria["items"])
+        lines.extend(["", "## Options (options.md)", "", *_fenced(options_text)])
+        lines += [
+            "",
+            "## Bound inputs",
+            "",
+            f"- Options-sha256: {sha256(options_text.encode())}",
+            f"- Criteria-hash: {digest(criteria)}",
+            "",
+            "## Template: grading.md",
+            "",
+            *_fenced(mission_template(root, "grading.md", id)),
+            "",
+            "## Return",
+            "",
+            (
+                "Return the text of grading.md. Copy Options-sha256 and Criteria-hash from Bound inputs; the"
+                " orchestrator fills Brief-sha256 with the sha256 that `mission brief` reported for this brief."
+            ),
+            "",
+            "## Grading rules",
+            "",
+            (
+                "- You work in a context separate from the options' author: judge only the request, the criteria"
+                " and the options above; you are deliberately not shown the planner's context or assessment."
+            ),
+            "- Score every option against every criterion from 0 (fails it) to 5 (meets it fully), harshly.",
+            "- Name the winner (Winner: O-<n>) and list what is still weak about it, for the plan to fix.",
+            "- `Grader:` names your session; it must not be the options' author or the maintainer.",
+            "- Grading is advice: it informs the user's scope approval and satisfies no check.",
+            "- Do not change files and do not start nested agents.",
+        ]
     elif kind == "plan":
         request_section()
         saved_knowledge()
@@ -1982,7 +2106,15 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
         lines.extend(["", "## Assessment (assessment.md)", "", *_fenced(assessment or "Not recorded yet.")])
         ambiguity_section()
         criteria_section(criteria["items"])
-        for name in ("spec.md", "plan.md", "recovery.md"):
+        from .options import GRADING_DOC, OPTIONS_DOC, required
+
+        graded = required(mission, config)
+        if graded:
+            for name, label in ((OPTIONS_DOC, "Options"), (GRADING_DOC, "Grading")):
+                lines.extend(
+                    ["", f"## {label} ({name})", "", *_fenced(document(name) or "Not recorded yet.")]
+                )
+        for name in ("plan.md", "recovery.md") if graded else ("spec.md", "plan.md", "recovery.md"):
             lines.extend(["", f"## Template: {name}", "", *_fenced(mission_template(root, name, id))])
         chain = mission["request"]["chain"]
         configured = ", ".join(c["id"] for c in config["checks"])
@@ -1991,6 +2123,14 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             "## Return",
             "",
             (
+                "Return the text of plan.md and recovery.md; spec.md and the criteria are recorded. plan.md's"
+                " `## Approach` starts with the line `Chosen option: O-<n>`, the grader's winner, and fixes the"
+                " weaknesses the grading lists. Building another option is the user's choice: cite their recorded"
+                " clarification as `Chosen option: O-<n> (user override, clarification <N>)`. The orchestrator"
+                " records them; do not write files."
+            )
+            if graded
+            else (
                 "Return the text of spec.md, plan.md and recovery.md, and the criteria JSON (items, exclusions,"
                 " ambiguities). The orchestrator records them; do not write files."
             ),
@@ -3542,6 +3682,14 @@ def approve_decision(root, id, kind, reference, subject_hash=None, decision_id=N
                 "Scope is approved only after the user has seen the assessment (blockers, concerns, risks): "
                 + "; ".join(problems)
             )
+        from .options import reasons as option_reasons
+
+        problems = option_reasons(root, mission, load_config(root))
+        if problems:
+            raise FactoryError(
+                "Scope is approved only after the user has seen the graded options (Alternatives before "
+                "commitment): " + "; ".join(problems)
+            )
     candidate = fingerprint(root, mission)
     bound = {}
     if candidate.get("spec_hash"):
@@ -4330,6 +4478,11 @@ def mission_status(root, id):
                 "fingerprint": None,
                 "reasons": [str(exc)],
             }
+    from .options import summary as options_summary
+
+    graded = options_summary(root, mission)
+    if graded:
+        mission["options_summary"] = graded
     return mission
 
 
@@ -4617,7 +4770,7 @@ def _input(args):
     return value
 
 
-MISSION_DOCS = ("context", "assessment", "spec", "plan", "recovery", "handoff")
+MISSION_DOCS = ("context", "assessment", "spec", "options", "grading", "plan", "recovery", "handoff")
 # Minimal --input skeletons; every "<...>" is a placeholder the orchestrator replaces.
 INPUT_TEMPLATES = {
     "task": {
@@ -4689,7 +4842,10 @@ def record_doc(root, id, doc, relative):
         mission = load_mission(root, id)
         if mission["state"] in TERMINAL_STATES:
             raise FactoryError(f"Mission records are immutable in terminal state {mission['state']}")
-        if doc in {"context", "spec", "plan"} and effective_state(mission) not in {"PROPOSED", "PLANNED"}:
+        if doc in {"context", "spec", "options", "grading", "plan"} and effective_state(mission) not in {
+            "PROPOSED",
+            "PLANNED",
+        }:
             raise FactoryError(
                 f"{doc}.md can only be recorded in PROPOSED or PLANNED; run accept-scope to return to PLANNED first"
             )

@@ -693,7 +693,7 @@ def add_parser(subparsers) -> None:
 # --- missions: frozen knowledge ----------------------------------------------------------
 
 CONTEXT_DOC = "crew-context.md"
-PLANNER_KINDS = ("context", "research", "assess", "plan")
+PLANNER_KINDS = ("context", "research", "assess", "spec", "options", "plan")
 
 
 def settings(config: dict) -> dict:

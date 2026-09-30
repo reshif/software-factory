@@ -124,10 +124,40 @@ def criteria(root, id, value=CRITERIA):
     )
 
 
+OPTIONS = (
+    "# Options\n\nAuthor: factory-planner\n\n### O-1: Edit the constant\n\nChange VALUE in place.\n\n"
+    "### O-2: Read VALUE from configuration\n\nMore flexible, more to test.\n"
+)
+
+
+def grade(root, id, winner="O-1", grader="factory-reviewer", chosen=None):
+    """Record options.md, an independent grading bound to them and the plan's chosen option."""
+    from software_factory.core import digest
+    from software_factory.options import grade_brief_hash
+
+    directory = root / ".factory/missions" / id
+    (directory / "options.md").write_text(OPTIONS)
+    mission = load_mission(root, id)
+    ids = [item["id"] for item in mission["criteria"]["items"]]
+    rows = "\n".join(f"| {o} | " + " | ".join("4" for _ in ids) + " |" for o in ("O-1", "O-2"))
+    (directory / "grading.md").write_text(
+        f"# Grading\n\nOptions-sha256: {hash_file(root, f'.factory/missions/{id}/options.md')}\n"
+        f"Criteria-hash: {digest(mission['criteria'])}\nBrief-sha256: {grade_brief_hash(root, mission)}\n"
+        f"Grader: {grader}\nWinner: {winner}\n\n## Scores\n\n| Option | {' | '.join(ids)} |\n"
+        f"| --- | {' | '.join('---' for _ in ids)} |\n{rows}\n\n## Weaknesses of the winner\n\nNone found.\n"
+    )
+    plan = directory / "plan.md"
+    text = plan.read_text()
+    if "Chosen option:" not in text:
+        plan.write_text(text.rstrip("\n") + f"\n\n## Approach\n\nChosen option: {chosen or winner}\n")
+
+
 def plan_mission(root, id="M-REQ", kind="patch", owned=("src/**",), value=CRITERIA):
     create(root, id, kind)
     author(root, id)
     criteria(root, id, value)
+    if kind != "patch":
+        grade(root, id)
     cli(root, "mission", "accept-scope", "--mission", id)
     task = {"id": "T-ONE", "title": "Change app", "owned_paths": list(owned), "checks": ["unit"]}
     task["criteria"] = [i["id"] for i in value["items"]]

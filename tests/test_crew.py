@@ -406,8 +406,8 @@ def test_briefs_get_only_the_knowledge_their_role_needs(repo, profile):  # noqa:
     assert "### Must not break" in task and "### Rules" in task and "enterprise automation" not in task
     code = brief_text(repo, id, "code")
     assert "### Must not break" in code and "### Off-limits" in code and "### Rules" not in code
-    for kind in set(BRIEF_KINDS) - {"context", "research", "assess", "plan"}:
-        if kind == "code":
+    for kind in set(BRIEF_KINDS) - {"context", "research", "assess", "spec", "options", "plan"}:
+        if kind in ("code", "grade"):
             continue
         text = brief_text(repo, id, kind)
         assert "Saved knowledge" not in text and "Project rules" not in text, kind
@@ -493,7 +493,7 @@ def test_refresh_refuses_product_commits_since_the_base(repo):  # noqa: F811
 
 # Phase 3: recipes and the interview
 
-from test_mission_030 import CRITERIA, cli
+from test_mission_030 import CRITERIA, cli, grade
 
 RECIPE_WITH_DEFAULT = RECIPE_TEXT.replace(
     "| Auth scope | maintainers only |", "| Storage | reuse the shared cache host (M-0007) |"
@@ -612,6 +612,7 @@ def test_recipe_pitfalls_reach_implementers_and_code_review(repo):  # noqa: F811
         "--input",
         put(repo, ".factory/local/c.json", CRITERIA),
     )
+    grade(repo, "M-REQ")
     cli(repo, "mission", "accept-scope", "--mission", "M-REQ")
     task = {
         "id": "T-ONE",
@@ -640,3 +641,196 @@ def test_recipe_pitfalls_reach_implementers_and_code_review(repo):  # noqa: F811
 )
 def test_guard_allows_choosing_recipes(command):
     assert guard_decision(command) == (0, "")
+
+
+# Phase 4: options graded before building (Alternatives before commitment)
+
+from test_mission_030 import OPTIONS
+
+from software_factory.options import grade_brief_hash
+
+
+def scoped_feature(root, id="M-FEAT"):
+    """A feature mission with request, documents and criteria, but no options yet."""
+    from test_mission_030 import author, criteria
+
+    create(root, id, "feature")
+    author(root, id)
+    criteria(root, id)
+    return id
+
+
+def test_feature_scope_waits_for_graded_options(repo):  # noqa: F811
+    id = scoped_feature(repo)
+    with pytest.raises(FactoryError, match="options.md is missing"):
+        cli(repo, "mission", "accept-scope", "--mission", id)
+    with pytest.raises(
+        FactoryError, match="Scope is approved only after the user has seen the graded options"
+    ):
+        crew_approve_scope(repo, id)
+    grade(repo, id)
+    assert cli(repo, "mission", "accept-scope", "--mission", id)["state"] == "PLANNED"
+    scope_docs = load_mission(repo, id)["scope_docs"]
+    assert "options.md" in scope_docs and "grading.md" in scope_docs
+
+
+def crew_approve_scope(root, id):
+    from software_factory.workflow import approve_decision
+
+    return approve_decision(root, id, "scope", "chat", confirm=lambda *_: None)
+
+
+def test_patch_missions_need_no_options(repo):  # noqa: F811
+    assert plan_mission(repo) == "M-REQ"
+    assert load_mission(repo, "M-REQ")["state"] == "PLANNED"
+
+
+def test_options_can_be_turned_off_except_for_untrusted_requests(repo):  # noqa: F811
+    config = json.loads((repo / "factory.json").read_text())
+    config["crew"] = {"options": "off"}
+    (repo / "factory.json").write_text(json.dumps(config))
+    commit(repo, "options off")
+    id = scoped_feature(repo)
+    assert cli(repo, "mission", "accept-scope", "--mission", id)["state"] == "PLANNED"
+    from software_factory.options import required
+
+    untrusted = {**load_mission(repo, id), "request": {"source": "contributor"}}
+    assert required(untrusted, config)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (
+            lambda d: (d / "options.md").write_text(OPTIONS + "\nEdited after grading.\n"),
+            "judged other options",
+        ),
+        (
+            lambda d: (d / "grading.md").write_text(
+                (d / "grading.md").read_text().replace("Grader: factory-reviewer", "Grader: factory-planner")
+            ),
+            "author or the maintainer",
+        ),
+        (
+            lambda d: (d / "grading.md").write_text(
+                (d / "grading.md").read_text().replace("| O-2 | 4 |", "| O-2 | x |")
+            ),
+            "does not score O-2 against AC-1",
+        ),
+        (
+            lambda d: (d / "grading.md").write_text(
+                (d / "grading.md").read_text().replace("Winner: O-1", "Winner: O-9")
+            ),
+            "winner O-9, which is not an option",
+        ),
+        (
+            lambda d: (d / "grading.md").write_text(
+                (d / "grading.md").read_text().replace("Brief-sha256: ", "Brief-sha256: 0")
+            ),
+            "current grade brief",
+        ),
+        (
+            lambda d: (d / "plan.md").write_text(
+                (d / "plan.md").read_text().replace("Chosen option: O-1", "Chosen option: O-2")
+            ),
+            "only the user can",
+        ),
+        (
+            lambda d: (d / "plan.md").write_text(
+                (d / "plan.md").read_text().replace("Chosen option: O-1", "")
+            ),
+            "needs a line `Chosen option",
+        ),
+        (
+            lambda d: (d / "options.md").write_text("# Options\n\nAuthor: p\n\n### O-1: Only one\n"),
+            "at least two genuinely different options",
+        ),
+    ],
+)
+def test_stale_partial_or_self_graded_options_are_refused(repo, change, message):  # noqa: F811
+    id = scoped_feature(repo)
+    grade(repo, id)
+    change(repo / ".factory/missions" / id)
+    with pytest.raises(FactoryError, match=message):
+        cli(repo, "mission", "accept-scope", "--mission", id)
+
+
+def test_a_criteria_change_makes_the_grading_stale(repo):  # noqa: F811
+    id = scoped_feature(repo)
+    grade(repo, id)
+    changed = {**CRITERIA, "items": [{**CRITERIA["items"][0], "text": "VALUE equals 2 and stays importable"}]}
+    cli(repo, "mission", "criteria", "--mission", id, "--input", put(repo, ".factory/local/c.json", changed))
+    with pytest.raises(FactoryError, match="judged other criteria"):
+        cli(repo, "mission", "accept-scope", "--mission", id)
+
+
+def test_the_user_may_choose_another_option_through_a_clarification(repo):  # noqa: F811
+    id = scoped_feature(repo)
+    cli(repo, "mission", "clarify", "--mission", id,
+        "--input", put(repo, ".factory/local/a.md", "Build O-2: VALUE must come from configuration.\n"))  # fmt: skip
+    criteria_again = put(repo, ".factory/local/c.json", CRITERIA)
+    cli(repo, "mission", "criteria", "--mission", id, "--input", criteria_again)
+    grade(repo, id, chosen="O-2 (user override, clarification 1)")
+    assert cli(repo, "mission", "accept-scope", "--mission", id)["state"] == "PLANNED"
+
+
+def test_a_single_option_needs_the_request_words_that_dictate_it(repo):  # noqa: F811
+    id = scoped_feature(repo)
+    grade(repo, id)
+    directory = repo / ".factory/missions" / id
+    single = '# Options\n\nAuthor: factory-planner\n\nDictated by: "change VALUE to 2 in src/app.py"\n\n### O-1: Edit\n\nIn place.\n'
+    (directory / "options.md").write_text(single)
+    grading = (directory / "grading.md").read_text()
+    from software_factory.core import hash_file
+
+    new_hash = hash_file(repo, f".factory/missions/{id}/options.md")
+    lines = [l for l in grading.splitlines() if not l.startswith("| O-2")]
+    grading = "\n".join(lines).replace(grading.split("Options-sha256: ")[1].split("\n")[0], new_hash)
+    grading = grading.replace(
+        grading.split("Brief-sha256: ")[1].split("\n")[0], grade_brief_hash(repo, load_mission(repo, id))
+    )
+    (directory / "grading.md").write_text(grading + "\n")
+    assert cli(repo, "mission", "accept-scope", "--mission", id)["state"] == "PLANNED"
+    (directory / "options.md").write_text(
+        single.replace("change VALUE to 2 in src/app.py", "rewrite the whole app")
+    )
+    with pytest.raises(FactoryError, match="Dictated by"):
+        cli(repo, "mission", "accept-scope", "--mission", id)
+
+
+def test_the_grade_brief_hides_the_planners_reasoning(repo, profile):  # noqa: F811
+    save_project(repo)
+    id = scoped_feature(repo)
+    (repo / f".factory/missions/{id}/options.md").write_text(OPTIONS)
+    text = brief_text(repo, id, "grade")
+    assert "## Options (options.md)" in text and "Options-sha256: " in text and "Criteria-hash: " in text
+    assert "## Context" not in text and "Assessment" not in text
+    assert "enterprise automation" not in text and "Saved knowledge" not in text
+    options = brief_text(repo, id, "options")
+    assert "Author: <your session>" in options and "do not rank or pick a winner" in options
+
+
+def test_options_and_grading_are_mission_records(repo):  # noqa: F811
+    from test_mission_030 import implement
+
+    id = plan_mission(repo, id="M-FEAT", kind="feature")
+    implement(repo, id)
+    reasons = assess_gate(repo, id)["reasons"]
+    assert not any("options.md" in r or "grading.md" in r for r in reasons)
+
+
+def test_the_plan_brief_builds_on_the_graded_options(repo):  # noqa: F811
+    id = scoped_feature(repo)
+    grade(repo, id)
+    text = brief_text(repo, id, "plan")
+    assert "## Grading (grading.md)" in text and "Chosen option: O-<n>" in text
+    assert "## Template: spec.md" not in text
+    patch = create(repo, "M-PATCH")["id"]
+    assert "## Template: spec.md" in brief_text(repo, patch, "plan")
+
+
+def test_status_shows_the_graded_options(repo):  # noqa: F811
+    id = plan_mission(repo, id="M-FEAT", kind="feature")
+    summary = cli(repo, "mission", "status", "--mission", id)["options_summary"]
+    assert summary["options"] == ["O-1", "O-2"] and summary["winner"] == "O-1"
+    assert summary["grader"] == "factory-reviewer" and summary["scores"]["O-2"] == {"AC-1": 4}

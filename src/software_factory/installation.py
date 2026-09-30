@@ -269,7 +269,7 @@ def load_installation(root: Path) -> dict | None:
     for name, record in manifest["files"].items():
         if (
             not name.startswith(".factory/")
-            or name.startswith((".factory/local/", ".factory/missions/", ".factory/.venv/"))
+            or name.startswith((".factory/local/", ".factory/missions/", ".factory/crew/", ".factory/.venv/"))
             or name == MANIFEST
             or not isinstance(record.get("managed"), bool)
         ):
@@ -796,6 +796,7 @@ def uninstall(root: Path, *, dry_run=False) -> dict:
         "retained": [
             "factory.json",
             ".factory/missions",
+            ".factory/crew",
             ".factory/local",
             ".factory/local/.gitignore",
             ".factory/.venv",

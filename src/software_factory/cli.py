@@ -215,6 +215,15 @@ def doctor(root: Path) -> dict:
                     }
                 )
         report["runtime_fingerprint"] = runtime_fingerprint() if pinned else "not_checked"
+        from .crew import status as crew_status
+
+        try:
+            knowledge = crew_status(root)
+            report["crew"] = {"gaps": knowledge["gaps"]}
+            for problem in knowledge["ledger"]["problems"]:
+                issues.append({"severity": "warning", "code": "crew_ledger", "message": problem})
+        except (FactoryError, OSError, ValueError) as exc:
+            report["crew"] = {"error": str(exc)}
         if any(c["id"] == PLACEHOLDER_CHECK for c in config["checks"]):
             suggested = [c for c in report["suggested_checks"] if c["written_by_init"]]
             issues.append(
@@ -467,6 +476,9 @@ def build_parser() -> argparse.ArgumentParser:
     semantic.add_parser(assistance)
     triage.add_parser(assistance)
     workflow.add_parser(missions)
+    from . import crew
+
+    crew.add_parser(missions)
     order = ("init", "upgrade", "uninstall", "recover", "render", "doctor", "inspect", "version", "auth")
     setup.entries.sort(key=lambda entry: order.index(entry.dest))
     formatter = argparse.HelpFormatter(parser.prog)

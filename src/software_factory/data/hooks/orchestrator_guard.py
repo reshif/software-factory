@@ -115,6 +115,14 @@ HUMAN_ONLY = {
     ("mission", "unhalt"): (
         "software-factory mission unhalt lifts the kill switch; only the user runs it, in their terminal"
     ),
+    ("crew", "apply"): (
+        "software-factory crew apply saves knowledge the user approved; show the user the proposal's exact "
+        "text and ask them to reply `approve P-n crew` in chat or run crew apply in their terminal"
+    ),
+    (
+        "crew",
+        "forget",
+    ): "software-factory crew forget removes knowledge; only the user runs it, in their terminal",
     ("mission", "ci-result"): (
         "software-factory mission ci-result records a remote CI result the user observed; ask the user "
         "to run it in their terminal with the run URL"
@@ -153,6 +161,15 @@ FACTORY_SUBCOMMANDS = {
         "model-plan": INPUT_ONLY,
         "record-delivery": INPUT_ONLY,
         "template": ({"--mission", "--kind"}, set()),
+    },
+    "crew": {
+        "status": (set(), set()),
+        "library": (set(), set()),
+        "show": ({"--target"}, set()),
+        "propose": ({"--target", "--input"}, set()),
+        "proposals": (set(), set()),
+        "withdraw": ({"--proposal"}, set()),
+        "defer": ({"--key", "--for", "--reference"}, {"--clear"}),
     },
     "semantic": {"status": (set(), set()), "example": (set(), set()), "check": SEMANTIC, "verify-claims": SEMANTIC},
     "jev": {"status": (set(), set()), "example": (set(), set()), "check": SEMANTIC, "verify-claims": SEMANTIC},

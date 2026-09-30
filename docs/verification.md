@@ -1,5 +1,31 @@
 # Local release verification
 
+## 0.3.5 (local release, 2026-09-30)
+
+Version 0.3.5 lets the agent propose factory setup (checks, setup commands, check limits, ignore rules) that the user approves in one line; see [implementation.md](implementation.md). Built from commit `b8afd73` on branch `feat/0.3.5-setup-proposals`, stacked on the unmerged 0.3.3 and 0.3.4 branches. Local artifact readiness plus a global CLI install only.
+
+| Check | Result |
+|---|---|
+| `uv run pytest -q` (Python 3.14.4) | 1515 passed, 427 subtests passed |
+| Separate Python 3.11.16 environment, full suite | 1515 passed, 427 subtests passed |
+| `uv run ruff check .`, `uv run ruff format --check .` | Clean |
+| `uv build --no-sources` | `software_factory-0.3.5-py3-none-any.whl` (sha256 `9f88a306…`), `software_factory-0.3.5.tar.gz` (sha256 `26506eae…`) |
+| `uv run python scripts/release_smoke.py <wheel>` | All nine stages pass, including the new setup-proposal stage |
+
+The new smoke stage runs against the installed wheel: `setup propose` leaves `factory.json` unchanged; `setup apply` refuses without a terminal; the pinned guard denies it; the real installed chat hook applies `approve S-0001 setup`, commits exactly the setup files, moves the PROPOSED mission onto that commit and leaves the exports current. A knowledge approval now commits itself and refreshes the waiting mission.
+
+### Independent review
+
+A read-only reviewer (Fable; two Opus attempts failed on a server overload) checked the 0.3.4 and 0.3.5 changes. It found the guard tables, the chat hook and the commit mechanics sound, and these defects, all fixed with regression tests before the release commit:
+
+- **Blocking:** a mission moved on approval could be carried past an earlier commit that weakened `factory.json`. A mission now moves only when the approved commit is the single non-record change since its base, and the proposal warns when that is not the case.
+- **Should-fix:** a moved READY_PR mission kept its CI result; ignore rules were matched as text (`.factory*`, `*.jso[n]` and `*/` slipped through) and are now probed with Git; a failed commit left files changed; a knowledge approval committed the whole knowledge directory; the summary dropped hints that commands add.
+- **Minor:** a `.gitignore` created by a failed apply was left behind; `mission create --base HEAD` skipped the setup check; missions created on another branch were moved; rebase judged setup paths by the current policy instead of the mission's baseline.
+
+### Not run
+
+Live Claude Code, Codex and Copilot sessions: the chat hook and guard ran offline and through the installed pinned runtime only.
+
 ## 0.3.4 (local release, 2026-09-30)
 
 Version 0.3.4 removes the setup friction found by the first real mission on 0.3.3 (see [implementation.md](implementation.md)). Built from commit `0ad8f52` on branch `feat/0.3.4-friction`, stacked on the unmerged 0.3.3 branch. Local artifact readiness plus a global CLI install only.

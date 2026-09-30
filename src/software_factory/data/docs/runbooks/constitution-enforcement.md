@@ -1,6 +1,6 @@
 # Constitution enforcement map
 
-The [constitution](../../CONSTITUTION.md) (2.0.0) states obligations; this runbook records what, if anything, enforces each one in this release. Cite rules by title: numbers change between versions.
+The [constitution](../../CONSTITUTION.md) (2.1.0) states obligations; this runbook records what, if anything, enforces each one in this release. Cite rules by title: numbers change between versions.
 
 Enforcement layers, strongest first:
 
@@ -28,7 +28,7 @@ Enforcement layers, strongest first:
 | --- | --- | --- | --- | --- |
 | 7 | Authority | Claude guard; host | The guard refuses `init`, `upgrade`, `uninstall`, `recover`, `render`, `auth` and `--root` for the orchestrator. Runtime permissions come from the host client. | Everything else; the factory grants and checks no permission. |
 | 8 | The request is the contract | Gate/CLI | `mission create` requires `--request-file` (verbatim, hashed); clarifications extend a hash chain; every criterion quotes an exact request or clarification excerpt; exclusions need an `exclusion` decision bound to the chain head; accept-scope binds criteria hash and chain; the gate requires every AC mapped to a task, evidenced and judged `pass`. | Whether the stored request is really the user's words; legacy (pre-0.3.0) missions carry no request. |
-| 9 | Context first | Gate/CLI (partial) | accept-scope refuses an absent, template-only or heading-only `context.md` or `spec.md`, or one adding fewer than 20 characters of its own; any `open` ambiguity; and a `resolved` or `waived` ambiguity without an existing decision. | Whether the context is accurate, and whether questions were asked together up front. |
+| 9 | Context first | Gate/CLI (partial) | No code path limits the number of interview questions or rounds. accept-scope refuses an absent, template-only or heading-only `context.md` or `spec.md`, or one adding fewer than 20 characters of its own; any `open` ambiguity; and a `resolved` or `waived` ambiguity without an existing decision. | Whether the context is accurate, whether every material question was asked, whether recorded project and personal context was loaded, and whether contradictions with it were raised. Instruction only. |
 | 10 | Escalate instead of guessing | CLI (partial) | Starting a task past its repair budget moves task and mission to BLOCKED; PAUSED/BLOCKED/CANCELED need `--reason`; resume needs `--resolution` and refuses still-exhausted tasks; high-risk changes demand adversarial review. | Stopping for conflicts or unauthorized actions and asking one question. Instruction only. |
 
 ## Evidence
@@ -55,6 +55,8 @@ Enforcement layers, strongest first:
 | --- | --- | --- | --- | --- |
 | 19 | Deliberate repair | CLI (partial) | Attempts count on every RUNNING; a failed verify after RUNNING sets `repair_required`; the budget (`limits.repair_attempts`) blocks; transitions follow `workflow.json`; CANCELED writes a handoff packet; READY_PR needs authored `recovery.md` and `## Risks`. | Diagnosing before retrying, and an up-to-date `handoff.md`. Instruction only. |
 | 20 | Proportionate, complete change | Gate/CLI (partial) | Diff size over `limits.high_risk_lines` raises risk and review depth; every AC needs evidence and verdicts; changed paths must be owned. | Minimality and model/effort choice. Review only. |
+| 21 | Alternatives before commitment | Instruction only (this release) | None yet: options and independent grading are stated in roles and skills; the accept-scope requirement for feature and maintenance lanes lands with the options and grading briefs. | Everything, until then. |
+| 22 | Learning with consent | Gate/CLI (partial) | `.factory/crew/**` is a protected path, so product work cannot change it (see *Never* rule on factory controls). | How knowledge is proposed and approved: instruction only until the knowledge store's `crew apply` lands. |
 
 ## Amending the constitution
 

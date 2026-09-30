@@ -68,6 +68,7 @@ GOVERNED_DIRECTORIES = (
     ".factory/hooks",
     ".factory/templates",
     ".factory/docs",
+    ".factory/crew",
     ".claude",
     ".codex",
     ".agents",

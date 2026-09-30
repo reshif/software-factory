@@ -101,6 +101,8 @@ PROTECTED_FLOOR = (
     ".factory/hooks/**",
     ".factory/templates/**",
     ".factory/docs/**",
+    # Project knowledge (Learning with consent) steers every later brief.
+    ".factory/crew/**",
     # Client configuration is read from nested directories too, so protect it at any depth.
     "**/.claude/**",
     "**/.codex/**",

@@ -606,6 +606,20 @@ def _dispatch(root: Path, command: str, raw: list[str]) -> int | None:
     return None  # pragma: no cover - execv does not return
 
 
+def presented(args, result):
+    """What a command prints: mission commands show a summary of the record unless --full is given."""
+    if (
+        getattr(args, "command", None) == "mission"
+        and getattr(args, "mission_command", None) != "status"
+        and not getattr(args, "full", False)
+    ):
+        from .workflow import is_mission_record, mission_summary
+
+        if is_mission_record(result):
+            return mission_summary(result)
+    return result
+
+
 def main(argv=None):
     raw = list(sys.argv[1:] if argv is None else argv)
     try:
@@ -643,6 +657,7 @@ def main(argv=None):
         COMMAND.set(command_label(cleaned))
         result = args.handler(args)
         code = result.pop("_exit_code", 0) if isinstance(result, dict) else 0
+        result = presented(args, result)
         if result is not None:
             print(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False))
         if code:

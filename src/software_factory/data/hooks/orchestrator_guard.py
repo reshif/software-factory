@@ -147,6 +147,7 @@ FACTORY_SUBCOMMANDS = {
         "block": ({"--mission", "--reason", "--next"}, set()),
         "resume": ({"--mission", "--to", "--model-catalog", "--resolution"}, {"--replan-models"}),
         "recipe": ({"--mission", "--use"}, {"--clear"}),
+        "rebase": MISSION_ONLY,
         "accept-scope": MISSION_ONLY,
         "clarify": INPUT_ONLY,
         "criteria": INPUT_ONLY,
@@ -436,7 +437,9 @@ def check_factory(args: list[str]) -> None:
             raise Denied(HUMAN_ONLY[(command, rest[0])])
         if rest[0] not in table:
             raise Denied(f"software-factory `{command} {rest[0]}` is not an allowed orchestrator command")
-        check_options(f"{command} {rest[0]}", rest[1:], *table[rest[0]])
+        # --full only widens what a mission command prints.
+        options = [a for a in rest[1:] if not (command == "mission" and a == "--full")]
+        check_options(f"{command} {rest[0]}", options, *table[rest[0]])
         return
     if command not in FACTORY_COMMANDS:
         raise Denied(f"software-factory `{command}` is not an allowed orchestrator command")

@@ -9,6 +9,7 @@ import sys
 import pytest
 from test_lanes import ID, add, scoped
 from test_mission_030 import cli, plan_mission, repo  # noqa: F401  (fixture)
+from test_workflow import commit
 
 from software_factory.core import FactoryError, read_json, write_json
 from software_factory.workflow import list_missions, transition_mission, transition_task
@@ -78,6 +79,7 @@ def test_notify_runs_when_a_mission_becomes_blocked(repo):  # noqa: F811
         ]
     }
     write_json(repo, "factory.json", config)
+    commit(repo, "configure notify")
     id = plan_mission(repo)
     cli(repo, "mission", "block", "--mission", id, "--reason", "Need the threshold")
     seen = json.loads((repo / ".factory/local/notified.json").read_text())
@@ -93,5 +95,6 @@ def test_a_failing_notify_command_never_blocks_work(repo):  # noqa: F811
     config = read_json(repo, "factory.json")
     config["notify"] = {"command": ["/nonexistent/notifier"]}
     write_json(repo, "factory.json", config)
+    commit(repo, "configure notify")
     id = plan_mission(repo)
     assert cli(repo, "mission", "block", "--mission", id, "--reason", "Wait")["state"] == "BLOCKED"

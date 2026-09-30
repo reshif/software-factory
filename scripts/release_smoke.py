@@ -221,10 +221,25 @@ def crew_checks(command, work, env, shell):
         exported = [p for p in project.rglob(f"{name}/SKILL.md") if ".factory" not in p.parts]
         assert {p.relative_to(project).parts[0] for p in exported} >= {".claude", ".agents"}, exported
     root = ["--root", str(project)]
+    # 0.3.4: the user sets the test command; a mission is not created on uncommitted setup.
+    added = json.loads(
+        run([command, "checks", "--add", "tests", *root, "--", "python", "-c", "pass"], cwd=project, env=env)
+    )
+    assert added["checks"] == ["tests"], added
     request = project / ".factory/local/request.md"
+    create = [command, "mission", "create", "--id", "M-1", "--title", "Health", "--kind", "feature",
+              "--request-file", ".factory/local/request.md", *root]  # fmt: skip
+    request.parent.mkdir(parents=True, exist_ok=True)
     request.write_text("Please add a health endpoint.\n")
-    run([command, "mission", "create", "--id", "M-1", "--title", "Health", "--kind", "feature",
-         "--request-file", ".factory/local/request.md", *root], cwd=project, env=env)  # fmt: skip
+    unfinished = subprocess.run(
+        create, cwd=project, env=env, capture_output=True, text=True, check=False, timeout=180
+    )
+    assert unfinished.returncode == 1 and "Finish the factory setup" in unfinished.stderr, unfinished.stderr
+    commit = ["git", "-c", "user.name=Smoke", "-c", "user.email=smoke@example.invalid", "commit", "-qm"]
+    run(["git", "add", "-A"], cwd=project, env=env)
+    run([*commit, "Configure the tests check"], cwd=project, env=env)
+    created = json.loads(run(create, cwd=project, env=env))
+    assert created["state"] == "PROPOSED" and created["note"].startswith("Summary"), created
 
     def fails(argv):
         result = subprocess.run(argv, cwd=project, env=env, capture_output=True, text=True,

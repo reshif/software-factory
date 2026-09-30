@@ -31,7 +31,7 @@ uv run --locked --project .factory software-factory doctor
 
 ## Configure the product
 
-Replace the deliberately failing `configure-me` check in `factory.json` with real commands. For example, a Python product might use:
+Replace the deliberately failing `configure-me` check with your real test command: `software-factory checks --add tests -- uv run pytest` writes it into `factory.json`, re-renders and prints the commit line (or edit `factory.json` yourself). Do this before the first mission, also on an empty repository: `factory.json` is a protected path and cannot change once a mission is past PROPOSED. A mission is not created while factory setup has uncommitted changes or stale exports, and `software-factory mission rebase --mission ID` moves a PROPOSED mission past a setup commit you make afterwards, keeping its request and answers. For example, a Python product might use:
 
 ```json
 "checks": [

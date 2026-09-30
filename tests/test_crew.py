@@ -1200,3 +1200,135 @@ def test_lines_land_in_the_real_section_not_a_fenced_example(repo):  # noqa: F81
         crew.insert_line(text, "Rules", "- two")
         == "# P\n\n```\n## Rules\n```\n\n## Rules   \n- one\n- two\n\n## Users\nx\n"
     )
+
+
+# 0.3.4: setup friction (a mission is never created on unfinished setup; PROPOSED missions rebase)
+
+from software_factory.workflow import rebase_mission
+
+
+def enable_enforcement(root):
+    config = json.loads((root / "factory.json").read_text())
+    config["enforcement"] = {"claude_orchestrator_agent": True}
+    (root / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
+
+
+def test_a_mission_is_not_created_on_uncommitted_setup(repo):  # noqa: F811
+    enable_enforcement(repo)
+    with pytest.raises(FactoryError, match="uncommitted changes to factory setup: factory.json") as refused:
+        create(repo)
+    assert "software-factory render" in str(refused.value) and "git restore" in str(refused.value)
+    assert not (repo / ".factory/missions/M-REQ").exists()
+    commit(repo, "Enable orchestrator enforcement")
+    assert create(repo)["state"] == "PROPOSED"
+
+
+def test_stale_exports_stop_a_mission_before_it_starts(tmp_path):
+    from test_workflow import git
+
+    install(tmp_path, selected="claude", skip_sync=True, git_init=True, commit=True)
+    git(tmp_path, "config", "user.name", "t")
+    git(tmp_path, "config", "user.email", "t@example.invalid")
+    enable_enforcement(tmp_path)
+    commit(tmp_path, "edited without rendering")
+    put(tmp_path, ".factory/local/request.md", "Please add a health endpoint.\n")
+    with pytest.raises(FactoryError, match="Generated exports are stale"):
+        cli(tmp_path, "mission", "create", "--id", "M-1", "--title", "Health",
+            "--request-file", ".factory/local/request.md")  # fmt: skip
+
+
+def test_a_proposed_mission_rebases_past_a_setup_commit_and_keeps_its_answers(repo):  # noqa: F811
+    id = create(repo)["id"]
+    cli(
+        repo,
+        "mission",
+        "clarify",
+        "--mission",
+        id,
+        "--input",
+        put(repo, ".factory/local/a.md", "Windows DHCP.\n"),
+    )
+    base = load_mission(repo, id)["base_commit"]
+    enable_enforcement(repo)
+    with pytest.raises(FactoryError, match="first commits or reverts the uncommitted setup change"):
+        brief(repo, id, "context")
+    with pytest.raises(FactoryError, match="Finish the factory setup before starting work"):
+        rebase_mission(repo, id)
+    commit(repo, "Enable orchestrator enforcement")
+    with pytest.raises(FactoryError, match=f"mission rebase --mission {id}"):
+        brief(repo, id, "context")
+    moved = cli(repo, "mission", "rebase", "--mission", id)
+    mission = load_mission(repo, id)
+    assert moved["base_commit"] == mission["base_commit"] != base
+    assert mission["base_history"][-1]["decision"].startswith("SETUP-")
+    assert len(mission["request"]["clarifications"]) == 1
+    assert "Windows DHCP." in brief_text(repo, id, "context")
+
+
+def test_rebase_refuses_product_commits_and_missions_past_proposed(repo):  # noqa: F811
+    id = create(repo)["id"]
+    put(repo, "src/other.py", "X = 1\n")
+    commit(repo, "product change")
+    with pytest.raises(FactoryError, match="change product files"):
+        rebase_mission(repo, id)
+    planned = plan_mission(repo, id="M-PLAN")
+    enable_enforcement(repo)
+    commit(repo, "setup")
+    with pytest.raises(FactoryError, match="only to a PROPOSED mission"):
+        rebase_mission(repo, planned)
+
+
+def test_guard_allows_rebase():
+    assert guard_decision("software-factory mission rebase --mission M-1") == (0, "")
+
+
+def test_checks_add_replaces_the_placeholder_and_renders(tmp_path):
+    from test_workflow import git
+
+    from software_factory.checks import add_check
+
+    install(tmp_path, selected="claude", skip_sync=True, git_init=True, commit=True)
+    git(tmp_path, "config", "user.name", "t")
+    git(tmp_path, "config", "user.email", "t@example.invalid")
+    assert [c["id"] for c in json.loads((tmp_path / "factory.json").read_text())["checks"]] == [
+        "configure-me"
+    ]
+    added = add_check(tmp_path, "tests", ["uv", "run", "pytest"])
+    checks = json.loads((tmp_path / "factory.json").read_text())["checks"]
+    assert [c["id"] for c in checks] == ["tests"] and checks[0]["command"] == ["uv", "run", "pytest"]
+    assert checks[0]["required"] is True and "git add -A && git commit" in added["commit"]
+    from software_factory.rendering import render
+
+    assert render(tmp_path, check=True)["ok"]
+    with pytest.raises(FactoryError, match="already exists"):
+        add_check(tmp_path, "tests", ["pytest"])
+    with pytest.raises(FactoryError, match="Give the check command after --"):
+        add_check(tmp_path, "lint", [])
+
+
+def test_mission_commands_print_a_summary_unless_full(repo):  # noqa: F811
+    from software_factory.cli import build_parser, presented
+
+    def run(*argv):
+        args = build_parser().parse_args(list(argv))
+        args.root = repo
+        return presented(args, args.handler(args))
+
+    put(repo, ".factory/local/request.md", "Please change VALUE to 2 in src/app.py.\n")
+    printed = run("mission", "create", "--id", "M-OUT", "--title", "Value", "--kind", "patch",
+                  "--request-file", ".factory/local/request.md")  # fmt: skip
+    assert printed["id"] == "M-OUT" and printed["state"] == "PROPOSED" and printed["tasks"] == []
+    assert "governance_snapshot" not in printed and printed["request"]["clarifications"] == 0
+    assert printed["note"].startswith("Summary of the mission record")
+    assert "governance_snapshot" in run("mission", "status", "--mission", "M-OUT")
+    full = run("mission", "block", "--mission", "M-OUT", "--reason", "Wait", "--next", "Ask", "--full")
+    assert "governance_snapshot" in full and full["state"] == "BLOCKED"
+    assert run("mission", "list")["missions"][0]["id"] == "M-OUT"  # other outputs are untouched
+
+
+def test_guard_allows_full_output_and_denies_adding_checks():
+    assert guard_decision("software-factory mission block --mission M-1 --reason x --next y --full") == (
+        0,
+        "",
+    )
+    assert guard_decision("software-factory checks --add tests -- uv run pytest")[0] == 2

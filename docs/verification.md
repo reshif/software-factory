@@ -1,5 +1,21 @@
 # Local release verification
 
+## 0.3.4 (local release, 2026-09-30)
+
+Version 0.3.4 removes the setup friction found by the first real mission on 0.3.3 (see [implementation.md](implementation.md)). Built from commit `0ad8f52` on branch `feat/0.3.4-friction`, stacked on the unmerged 0.3.3 branch. Local artifact readiness plus a global CLI install only.
+
+| Check | Result |
+|---|---|
+| `uv run pytest -q` (Python 3.14.4) | 1484 passed, 427 subtests passed |
+| Separate Python 3.11.16 environment, full suite | 1484 passed, 427 subtests passed |
+| `uv run ruff check .`, `uv run ruff format --check .` | Clean |
+| `uv build --no-sources` | `software_factory-0.3.4-py3-none-any.whl` (sha256 `14451cb3…`), `software_factory-0.3.4.tar.gz` (sha256 `76bcd97b…`) |
+| `uv run python scripts/release_smoke.py <wheel>` | All eight stages pass; the crew stage now also runs `checks --add`, the `mission create` refusal on uncommitted setup and the summary output |
+
+Covered by regression tests: a mission is not created on uncommitted setup or stale exports; a PROPOSED mission rebases past a setup commit and keeps its clarifications; rebase refuses product commits and later states; `checks --add` replaces the placeholder and leaves exports current; mission commands print a summary unless `--full`; the guard allows `mission rebase` and `--full` and denies `checks --add`.
+
+Not done for this delta: an independent code review (the 0.3.3 review covered the code it builds on), and any live client session.
+
 ## 0.3.3 (local release, 2026-09-30)
 
 Version 0.3.3 builds Crew's FORGE loop into the factory (constitution 2.1.0; see [implementation.md](implementation.md) and [architecture.md](architecture.md)). It is built from commit `781e651` on branch `feat/0.3.3-crew` (PR #7, open). This is local artifact readiness plus a global CLI install; it makes no claim about publication, remote CI, a merge or deployment.

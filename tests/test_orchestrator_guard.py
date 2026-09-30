@@ -642,6 +642,8 @@ EXCLUDED = {
     ("models",): {"--client", "--provider", "--billing", "--picker", "--client-version", "--timeout-ms"},
     # Creating a parallel mission's worktree beside the repository is the user's decision.
     ("mission", "create"): {"--worktree", "--skip-sync"},
+    # Writing a check into factory.json is the user's setup step.
+    ("checks",): {"--add"},
 }
 
 
@@ -655,6 +657,8 @@ def test_guard_option_allowlist_matches_the_cli_parser():
         real_values, real_flags = parser[path]
         assert values <= real_values and flags <= real_flags, path
         unlisted = (real_values | real_flags) - values - flags
+        if path[0] == "mission":
+            unlisted -= {"--full"}  # Accepted on every mission command: it only widens the printed record.
         assert unlisted == EXCLUDED.get(path, set()), (path, unlisted)
     from software_factory.models import MODEL_COMMANDS
 

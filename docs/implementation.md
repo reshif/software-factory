@@ -44,6 +44,20 @@ Built in seven reviewed steps, each with the full suite, lint, build and an isol
 
 Removed as superseded: the 0.2.x release artifacts, the 0.2.5 architecture set (replaced by [architecture.md](architecture.md)) and the research drafts, at the user's request.
 
+## 0.3.5 setup proposals
+
+The same first real mission then produced a nine-step terminal list for the user: install tools, paste a whole `factory.json`, append ignore rules, render, check, commit, restart, and wait for the mission to be cancelled and recreated. The cause was the design, not the agent: "setup belongs to the user" (*Authority*) and "never change check definitions to obtain a pass" had been implemented as "the user types the change by hand". What those rules protect is the user's decision over the exact change, which a proposal and approval keep.
+
+- `software-factory setup propose` (agents): an inert, hash-named proposal that may change only `checks`, `setup`, the limits `check_timeout_seconds` and `check_output_bytes`, and added `.gitignore` lines. It must keep a required check, cannot un-ignore files or hide factory files, and cannot touch owners, enforcement, approvals, delivery or JEV.
+- The user applies it with their own chat line `approve S-0001 setup` (chat hook) or `setup apply` in a terminal with the ID typed back; the guard denies `setup apply` to the orchestrator. Apply refuses a changed `factory.json`, other unfinished setup and active tasks.
+- Applying writes the files, re-renders, commits exactly those files (the approval is in the commit message) and moves every open pre-merge mission in the working tree onto that commit (`base_history` decision `SETUP-S-n`). Missions past PROPOSED keep their scope; their verification and reviews bind the old configuration through the fingerprint and must run again.
+- Knowledge saves follow the same pattern: on `approve P-n crew` (or `crew apply`) the factory commits exactly the knowledge files and re-freezes PROPOSED missions.
+- Roles: the orchestrator and planner never hand the user setup chores; they prefer tools run without installing (`uvx`, `pipx run`, `npx`) and ask one yes-or-no question for machine-level installs.
+
+An independent review (Fable) of the 0.3.4 and 0.3.5 changes found no fault in the guard tables, the chat hook or the commit mechanics, and these defects, all fixed with regression tests: a mission moved on approval could be carried past an earlier commit that weakened `factory.json` (blocking: a mission now moves only when the approved commit is the single non-record change since its base, and the proposal warns about it); a moved READY_PR mission kept its CI result; ignore rules were matched as text (`.factory*`, `*.jso[n]` and `*/` slipped through) and are now probed with Git; a failed commit left files changed; a knowledge approval committed the whole knowledge directory; the summary dropped hints commands add; and four minor points (a created `.gitignore` left behind, `--base HEAD`, missions from another branch, policy-defined protected paths in rebase).
+
+This is not weaker than before: previously an agent in an unguarded session could commit a `factory.json` change and recreate the mission with no approval at all; now the supported path needs the user's approval of the exact text.
+
 ## 0.3.4 setup friction
 
 Found by the user's first real mission on 0.3.3 (a greenfield Nautobot DHCP project): they had enabled orchestrator enforcement in `factory.json` without rendering or committing, so the mission was created, could not be briefed, was blocked, then cancelled and recreated.

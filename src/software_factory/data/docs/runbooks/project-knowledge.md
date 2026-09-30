@@ -63,7 +63,7 @@ If you used a Crew folder, run `software-factory crew import --from ~/crew` in y
 
 1. An agent proposes the full new text: `software-factory crew propose --target project|recipe:<name>|personal --input -`. It is stored as an inert proposal `P-0001`, and the agent shows you the exact text. Proposals are refused when they hold a secret, invisible or control characters, HTML comments, a line that reads as an approval, or (for recipes) front-matter keys other than `name, lane, trigger, created, updated, source_missions`.
 2. You approve it. In Claude Code reply with a line `approve P-0001 crew` (add the first 8 hex of its sha256 to pin exactly what you read). Anywhere, run `software-factory crew apply --proposal P-0001` in your terminal and type the ID back. Personal knowledge is saved only from your terminal.
-3. Commit what it wrote: apply prints `git add .factory/crew && git commit …`.
+3. Nothing else: on your approval the factory commits exactly the knowledge files (the commit message carries your approval) and re-freezes any PROPOSED mission so it uses them.
 
 Apply refuses a proposal whose target changed since it was proposed, an edited proposal, and any open product mission past PROPOSED in this working tree (its candidate would then contain a protected path): apply from the main worktree while missions run in their own worktrees, or after they merge. A PROPOSED mission picks the new knowledge up with `crew refresh`.
 

@@ -441,7 +441,7 @@ def _confirm_on_terminal(proposal: dict) -> None:
 
 
 def apply(root, proposal_id: str, *, via: str = "terminal", reference: str | None = None, pin: str | None = None,
-          confirm=None, items: list[int] | None = None) -> dict:  # fmt: skip
+          confirm=None, items: list[int] | None = None, commit: bool = False) -> dict:  # fmt: skip
     """Save an approved proposal. ``via`` is "terminal" (typed confirmation) or "chat" (the hook)."""
     from .workflow import state_lock
 
@@ -532,7 +532,41 @@ def apply(root, proposal_id: str, *, via: str = "terminal", reference: str | Non
     if entry:
         result["ledger_seq"] = entry["seq"]
         result["commit"] = f'git add {CREW_DIR} && git commit -m "crew: {target} knowledge ({proposal_id})"'
+        if commit:
+            # The user approved this exact text; commit only the knowledge files and let waiting missions use it.
+            from .setup_proposals import commit_paths
+
+            # Only the approved file and the ledger: a stray edit elsewhere in .factory/crew is not the user's approval.
+            relative = path.relative_to(Path(root).resolve()).as_posix()
+            result["committed"] = commit_paths(
+                root,
+                [relative, LEDGER],
+                f"crew: {target} knowledge ({proposal_id})\n\nApproved by the user: {entry['reference']}",
+            )
+            result["refreshed"], result["not_refreshed"] = (
+                _refresh_proposed(root) if result["committed"] else ([], {})
+            )
+            result["commit"] = "committed " + str(result["committed"])
     return result
+
+
+def _refresh_proposed(root) -> tuple[list[str], dict]:
+    """Re-freeze every PROPOSED mission in this working tree so it uses the knowledge just saved."""
+    from .workflow import list_missions, load_mission
+
+    refreshed, failed = [], {}
+    for item in list_missions(root)["missions"]:
+        if "error" in item or item.get("state") != "PROPOSED":
+            continue
+        mission = load_mission(root, item["id"])
+        if mission["tasks"] or "crew" not in mission:
+            continue
+        try:
+            refresh(root, mission["id"])
+            refreshed.append(mission["id"])
+        except FactoryError as exc:
+            failed[mission["id"]] = str(exc)
+    return refreshed, failed
 
 
 def forget(root, target: str, reference: str | None = None, confirm=None) -> dict:
@@ -840,7 +874,7 @@ def handle(args) -> dict:
                 raise FactoryError(
                     "--items is a comma-separated list of item numbers, for example 1,3"
                 ) from exc
-        return apply(root, args.proposal, pin=args.hash, items=numbers)
+        return apply(root, args.proposal, pin=args.hash, items=numbers, commit=True)
     if command == "forget":
         return forget(root, args.target)
     if command == "refresh":

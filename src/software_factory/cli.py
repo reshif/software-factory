@@ -476,9 +476,10 @@ def build_parser() -> argparse.ArgumentParser:
     semantic.add_parser(assistance)
     triage.add_parser(assistance)
     workflow.add_parser(missions)
-    from . import crew
+    from . import crew, setup_proposals
 
     crew.add_parser(missions)
+    setup_proposals.add_parser(missions)
     order = ("init", "upgrade", "uninstall", "recover", "render", "doctor", "inspect", "version", "auth")
     setup.entries.sort(key=lambda entry: order.index(entry.dest))
     formatter = argparse.HelpFormatter(parser.prog)

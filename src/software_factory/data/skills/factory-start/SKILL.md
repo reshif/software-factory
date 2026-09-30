@@ -11,7 +11,7 @@ Use the user's request or active mission ID. Resolve the Git repository root. Th
 
 ## Procedure
 
-1. Run `uv run --locked --project .factory software-factory doctor`. Inspect Git status, the active profile and whether this client can spawn the factory specialists; if it cannot, stop and report.
+1. Run `uv run --locked --project .factory software-factory doctor` (its `crew.gaps` lists missing project knowledge, proposals awaiting the user and ledger problems; mention each once, in one line, and never let it block the task). Inspect Git status, the active profile and whether this client can spawn the factory specialists; if it cannot, stop and report.
 2. Find existing work with `software-factory mission list` and `mission status --mission ID` (its `live_gate` shows whether a READY_PR-or-later label still holds). Reuse a matching mission; reconcile records with the actual changes. A "Constitution changed" error needs [reconciliation](../../../.factory/docs/runbooks/constitution-enforcement.md#reconciling-in-flight-missions).
 3. Settle the model checkpoint below.
 4. For new work, store the verbatim request with `software-factory mission create --id ID --title T --kind K --request-file -` before anything else, passing the user's words in a quoted heredoc (`<<'EOF'`); `--kind patch` selects the small lane. Do not copy a template as a live mission.

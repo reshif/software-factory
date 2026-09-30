@@ -170,6 +170,7 @@ FACTORY_SUBCOMMANDS = {
         "proposals": (set(), set()),
         "withdraw": ({"--proposal"}, set()),
         "defer": ({"--key", "--for", "--reference"}, {"--clear"}),
+        "refresh": ({"--mission"}, set()),
     },
     "semantic": {"status": (set(), set()), "example": (set(), set()), "check": SEMANTIC, "verify-claims": SEMANTIC},
     "jev": {"status": (set(), set()), "example": (set(), set()), "check": SEMANTIC, "verify-claims": SEMANTIC},

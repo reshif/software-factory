@@ -346,7 +346,9 @@ def _open_product_missions(root) -> list[str]:
         if "error" in item:
             continue
         mission = load_mission(root, item["id"])
-        if mission["kind"] != "maintenance" and effective_state(mission) in PRE_MERGE_STATES:
+        # A PROPOSED mission picks new knowledge up with `crew refresh`, which moves its base past it.
+        state = effective_state(mission)
+        if mission["kind"] != "maintenance" and state in PRE_MERGE_STATES and state != "PROPOSED":
             open_ids.append(mission["id"])
     return open_ids
 
@@ -628,6 +630,8 @@ def handle(args) -> dict:
         return apply(root, args.proposal, pin=args.hash)
     if command == "forget":
         return forget(root, args.target)
+    if command == "refresh":
+        return refresh(root, args.mission)
     raise FactoryError(f"Unknown crew command: {command}")
 
 
@@ -658,5 +662,153 @@ def add_parser(subparsers) -> None:
     )
     p = actions.add_parser("forget", help="Remove a knowledge file (you, in an interactive terminal)")
     p.add_argument("--target", required=True, help="project, personal or recipe:<name>")
+    p = actions.add_parser(
+        "refresh", help="Re-freeze a PROPOSED mission's saved knowledge after you saved new knowledge"
+    )
+    p.add_argument("--mission", required=True, metavar="ID", help="Mission ID")
     for parser in actions.choices.values():
         parser.set_defaults(handler=handle)
+
+
+# --- missions: frozen knowledge ----------------------------------------------------------
+
+CONTEXT_DOC = "crew-context.md"
+PLANNER_KINDS = ("context", "research", "assess", "plan")
+
+
+def settings(config: dict) -> dict:
+    crew = config.get("crew") or {}
+    return {"enabled": crew.get("enabled", True), "personal": crew.get("personal", True)}
+
+
+def personal_snapshot_path(mission_id: str) -> str:
+    return f"{PRIVATE}/me-{mission_id}.md"
+
+
+def _demote(text: str) -> str:
+    return "\n".join("#" + line if line.startswith("#") else line for line in text.rstrip("\n").splitlines())
+
+
+def render_context(mission_id: str, project: bytes | None) -> str:
+    """The deterministic, committed crew-context.md: project knowledge only, never personal text."""
+    lines = [f"# Saved knowledge: {mission_id}", ""]
+    if project is None:
+        lines += ["No project knowledge was recorded in .factory/crew/project.md when this was frozen."]
+    else:
+        lines += [
+            f"## Project knowledge (.factory/crew/project.md, sha256 {_sha(project)})",
+            "",
+            _demote(project.decode("utf-8", "replace")),
+        ]
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def snapshot(root, mission_id: str, config: dict) -> tuple[dict, dict]:
+    """What a new or refreshed mission freezes: {relative path: bytes} to write, and mission["crew"]."""
+    from .workflow import refuse_secrets
+
+    project = _read(safe_path(root, PROJECT))
+    context = render_context(mission_id, project).encode()
+    files = {f".factory/missions/{mission_id}/{CONTEXT_DOC}": context}
+    record = {"project_sha256": _sha(project), "context_sha256": _sha(context), "personal": "disabled",
+              "personal_sha256": None}  # fmt: skip
+    if settings(config)["personal"]:
+        try:
+            me = _read(personal_path())
+        except OSError:
+            me = None
+        if me is None:
+            record["personal"] = "absent"
+        else:
+            record["personal_sha256"] = _sha(me)
+            try:
+                refuse_secrets(me.decode("utf-8", "replace"), "personal profile")
+                if len(me) > LIMITS["personal"]:
+                    raise FactoryError("personal profile is over its size limit")
+                record["personal"] = "present"
+                files[personal_snapshot_path(mission_id)] = me
+            except FactoryError:
+                record["personal"] = "withheld"
+    return files, record
+
+
+def write_snapshot(root, files: dict) -> None:
+    for relative, data in files.items():
+        if relative.startswith(PRIVATE + "/"):
+            _private(root).parent.mkdir(parents=True, exist_ok=True)
+            write_bytes(root, relative, data)
+        else:
+            write_bytes(root, relative, data, mode=0o644)
+
+
+def project_sections(context_text: str, names: tuple[str, ...]) -> list[tuple[str, str]]:
+    """(name, body) of the named project.md sections inside a frozen crew-context.md."""
+    found, current, body = [], None, []
+    for line in context_text.splitlines():
+        if line.startswith("### "):
+            if current in names and "".join(body).strip():
+                found.append((current, "\n".join(body).strip()))
+            current, body = line[4:].strip(), []
+        elif line.startswith("## "):
+            if current in names and "".join(body).strip():
+                found.append((current, "\n".join(body).strip()))
+            current, body = None, []
+        elif current is not None:
+            body.append(line)
+    if current in names and "".join(body).strip():
+        found.append((current, "\n".join(body).strip()))
+    return sorted(found, key=lambda item: names.index(item[0]))
+
+
+def refresh(root, mission_id: str) -> dict:
+    """Re-freeze a PROPOSED mission's knowledge after the user saved new knowledge.
+
+    If the only commits since the mission's base change .factory/crew/**, the base advances to
+    HEAD (recorded in base_history, naming the ledger entry), so the knowledge commit is not part
+    of the mission's candidate.
+    """
+    from .core import git, load_config
+    from .evidence import is_metadata
+    from .workflow import update_mission
+
+    config = load_config(root)
+    files, record = snapshot(root, mission_id, config)
+    head = git(root, "rev-parse", "HEAD")
+    entries = read_ledger(root)
+
+    def mutate(mission):
+        if mission["state"] != "PROPOSED" or mission["tasks"]:
+            raise FactoryError("crew refresh applies only to a PROPOSED mission without tasks")
+        if "crew" not in mission:
+            raise FactoryError("This mission was created before saved knowledge; it has nothing to refresh")
+        base = mission["base_commit"]
+        if base != head:
+            changed = git(
+                root, "diff", "--no-ext-diff", "--name-only", "--no-renames", base, head, "--"
+            ).split()
+            outside = [p for p in changed if not p.startswith(CREW_DIR + "/") and not is_metadata(p)]
+            try:
+                git(root, "merge-base", "--is-ancestor", base, head)
+                ancestor = True
+            except FactoryError:
+                ancestor = False
+            if outside or not ancestor:
+                raise FactoryError(
+                    "The commits since this mission's base change more than .factory/crew "
+                    f"({', '.join(outside[:5]) or 'not a descendant'}); create a new mission from the new trunk"
+                )
+            if changed:
+                if not entries:
+                    raise FactoryError(
+                        "No ledger entry records the knowledge commit; save knowledge with crew apply"
+                    )
+                mission.setdefault("base_history", []).append(
+                    {"from": base, "to": head, "decision": f"CREW-LEDGER-{entries[-1]['seq']}", "at": now()}
+                )
+                mission["base_commit"] = head
+        mission["crew"] = record
+        write_snapshot(root, files)
+        return mission
+
+    mission = update_mission(root, mission_id, mutate)
+    return {"mission": mission_id, "crew": mission["crew"], "base_commit": mission["base_commit"]}

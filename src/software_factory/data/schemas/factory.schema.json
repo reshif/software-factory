@@ -427,6 +427,19 @@
           "default": "none"
         }
       }
+    },
+    "crew": {
+      "description": "Project knowledge (Learning with consent). enabled: freeze saved knowledge into new missions and their briefs (default true). personal: include the user's personal profile in planner briefs (default true; set false for shared team repositories).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "personal": {
+          "type": "boolean"
+        }
+      }
     }
   },
   "definitions": {

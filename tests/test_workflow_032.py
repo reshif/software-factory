@@ -260,6 +260,7 @@ def test_context_and_plan_are_bound_at_scope_acceptance(repo):
         "context.md": hash_file(repo, f"{directory}/context.md"),
         "assessment.md": hash_file(repo, f"{directory}/assessment.md"),
         "plan.md": hash_file(repo, f"{directory}/plan.md"),
+        "crew-context.md": hash_file(repo, f"{directory}/crew-context.md"),
     }
     changed = put(repo, ".factory/local/plan.md", PLAN + "\nA later edit.\n")
     recorded = cli(repo, "mission", "record-doc", "--mission", id, "--doc", "plan", "--input", changed)

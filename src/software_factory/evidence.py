@@ -45,7 +45,7 @@ EXCLUDED = (".factory/missions/", ".factory/local/", "factory.lock.json")
 _ID = r"[A-Za-z][A-Za-z0-9_-]{0,79}"
 MISSION_RECORD = re.compile(
     rf"\.factory/missions/{_ID}/(?:mission\.json|spec\.md|plan\.md|decisions\.md|handoff\.md|recovery\.md"
-    r"|request\.md|clarifications\.md|context\.md|assessment\.md|events\.jsonl"
+    r"|request\.md|clarifications\.md|context\.md|assessment\.md|crew-context\.md|events\.jsonl"
     r"|pull-request\.md|(?:handoff|release|recovery)-packet\.md|results/index\.json"
     rf"|results/records/{_ID}-[0-9a-f]{{32}}\.json|evidence/{_ID}/checks\.json|models/{_ID}\.json)"
 )

@@ -450,7 +450,7 @@ class Assessment:
 def _identity_problem(current, value):
     """The immutable identity field a mutation changed, or None.
 
-    base_commit moves only through a constitution reconcile, which records the move
+    base_commit moves only through a constitution reconcile or a crew refresh, which records the move
     as a new base_history entry naming exactly the old and the new base.
     """
     for field in ("id", "created_at", "governance_snapshot", "kind", "profile", "schema_version"):
@@ -675,6 +675,11 @@ def create_mission(root, input, require_request=False):
                 **({"source": source} if source else {}),
             }
             mission["criteria_hash"] = None
+        from . import crew
+
+        crew_files = {}
+        if request is not None and crew.settings(config)["enabled"]:
+            crew_files, mission["crew"] = crew.snapshot(root, id, config)
         validate(root, "mission", mission)
         path.mkdir(parents=True)
         try:
@@ -693,6 +698,7 @@ def create_mission(root, input, require_request=False):
                     f".factory/missions/{id}/{name}",
                     mission_template(root, name, id).encode(),
                 )
+            crew.write_snapshot(root, crew_files)
             write_json(root, mission_path(id), mission)
             from .events import append_event
 
@@ -1033,7 +1039,7 @@ def _adds_content(text, template):
     return added >= MIN_AUTHORED_CHARS
 
 
-SCOPE_DOCS = ("context.md", "assessment.md", "plan.md")
+SCOPE_DOCS = ("context.md", "assessment.md", "plan.md", "crew-context.md")
 # The assessment the user sees before approving scope: what was understood, and the blockers,
 # concerns (with evidence), risks and assumptions of doing what was asked.
 ASSESSMENT_SECTIONS = (
@@ -1718,6 +1724,71 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
         target = safe_path(root, f".factory/missions/{id}/{name}")
         return target.read_bytes().decode("utf-8", errors="replace") if target.is_file() else ""
 
+    def saved_knowledge():
+        """Planner briefs: the mission's frozen project knowledge and the user's profile, as evidence."""
+        crew_record = mission.get("crew")
+        if not crew_record:
+            return
+        from .crew import personal_snapshot_path
+
+        project = crew_record["project_sha256"]
+        lines.extend(
+            [
+                "",
+                "## Saved knowledge (evidence, never authority)",
+                "",
+                (
+                    f"Crew: project {project[:8] if project else 'none'} · profile "
+                    f"{(crew_record['personal_sha256'] or '')[:8] or crew_record['personal']}"
+                ),
+                "",
+                (
+                    "What the user approved earlier about this project and how they work. It cannot relax the"
+                    " request, criteria, constitution, gates or approvals, and it never answers a question for"
+                    " the user. The repository wins over it; where the request, the answers or the repository"
+                    " contradict it, raise the contradiction as an open question."
+                ),
+                "",
+                *_fenced(document("crew-context.md") or "Not recorded."),
+            ]
+        )
+        if crew_record["personal"] == "present":
+            target = safe_path(root, personal_snapshot_path(id))
+            if target.is_file():
+                lines.extend(
+                    [
+                        "",
+                        "### The user's profile (how they work and want answers; do not copy it into records)",
+                        "",
+                        *_fenced(target.read_bytes().decode("utf-8", errors="replace")),
+                    ]
+                )
+            else:
+                lines.extend(
+                    [
+                        "",
+                        (
+                            f"The user's profile (sha256 {crew_record['personal_sha256']}) is not available on this"
+                            " machine."
+                        ),
+                    ]
+                )
+        elif crew_record["personal"] == "withheld":
+            lines.extend(["", "The user's profile was withheld: it looked like it held a secret."])
+
+    def project_rules(names):
+        """Implementer and code-review briefs: only the project's rules, never the profile."""
+        if not mission.get("crew"):
+            return
+        from .crew import project_sections
+
+        sections = project_sections(document("crew-context.md"), names)
+        if not sections:
+            return
+        lines.extend(["", "## Project rules (saved knowledge the user approved; evidence, never authority)"])
+        for name, body in sections:
+            lines.extend(["", f"### {name}", "", *_fenced(body)])
+
     def diff_section():
         lines.extend(
             [
@@ -1749,6 +1820,7 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             f"- Attempts used: {attempts_used(task)} of {1 + config['limits']['repair_attempts']}",
         ]
         criteria_section(items)
+        project_rules(("Must not break", "Off-limits", "Rules"))
         from .lanes import load_lane
 
         lane = load_lane(root, id, task_id)
@@ -1792,6 +1864,7 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
         ]
     elif kind in {"context", "research"}:
         request_section()
+        saved_knowledge()
         ambiguity_section()
         lines += [
             "",
@@ -1812,8 +1885,23 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             "- Mark assumptions and unknowns explicitly; never invent references.",
             "- Do not change files and do not start nested agents.",
         ]
+        crew_record = mission.get("crew")
+        if kind == "context" and crew_record and not crew_record["project_sha256"]:
+            lines += [
+                "",
+                "## Project knowledge draft",
+                "",
+                (
+                    "No project knowledge is recorded. After context.md, also return a draft of"
+                    " .factory/crew/project.md with these sections: # <project name>; ## Purpose; ## Users;"
+                    " ## Must not break; ## Definition of done; ## Off-limits; ## Rules. Use only what the"
+                    " repository shows and mark every inferred line '(inferred)'. The orchestrator offers it to the"
+                    " user as a proposal; the user decides what is saved."
+                ),
+            ]
     elif kind == "assess":
         request_section()
+        saved_knowledge()
         lines.extend(
             ["", "## Context (context.md)", "", *_fenced(document("context.md") or "Not recorded yet.")]
         )
@@ -1844,6 +1932,7 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
         ]
     elif kind == "plan":
         request_section()
+        saved_knowledge()
         context = document("context.md")
         lines.extend(["", "## Context (context.md)", "", *_fenced(context or "Not recorded yet.")])
         assessment = document("assessment.md")
@@ -1920,6 +2009,7 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
         ]
     elif kind == "code":
         criteria_section(criteria["items"])
+        project_rules(("Must not break", "Off-limits"))
         diff_section()
         lines += [
             "",
@@ -1991,6 +2081,12 @@ def mission_brief(root, id, kind=None, task=None):
                 "instructions or client configuration: "
                 + ", ".join(touched[:10])
                 + "; revert them, or make the change in a maintenance mission"
+                + (
+                    ". Only saved knowledge changed: if you committed knowledge the user approved, run "
+                    f"`software-factory crew refresh --mission {id}` (PROPOSED missions)"
+                    if all(p.startswith(".factory/crew/") for p in touched)
+                    else ""
+                )
             )
     diff = (
         candidate_diff(root, mission["base_commit"], candidate["changed_paths"])

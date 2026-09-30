@@ -350,3 +350,142 @@ def test_uninstall_and_upgrade_keep_project_knowledge(tmp_path):
     report = uninstall(tmp_path)
     assert ".factory/crew" in report["retained"]
     assert (tmp_path / crew.PROJECT).read_text() == PROJECT_TEXT
+
+
+# Phase 2: saved knowledge frozen into missions and their briefs
+
+from test_mission_030 import create, implement
+from test_workflow import commit
+
+from software_factory.workflow import BRIEF_KINDS, load_mission, mission_brief
+
+PROFILE = "# Me\n\nI build enterprise automation. Interview me first when a request is vague.\n"
+
+
+def save_project(root, text=PROJECT_TEXT):
+    propose(root, text=text)
+    approve(root, crew.list_proposals(root)[-1]["id"])
+    commit(root, "crew: project knowledge")
+
+
+def brief_text(root, id, kind=None, task=None):
+    return (root / mission_brief(root, id, kind=kind, task=task)["path"]).read_text()
+
+
+@pytest.fixture
+def profile(me):
+    me.parent.mkdir(parents=True)
+    me.write_text(PROFILE)
+    return me
+
+
+def test_mission_freezes_project_knowledge_and_only_hashes_the_profile(repo, profile):  # noqa: F811
+    save_project(repo)
+    id = create(repo)["id"]
+    mission = load_mission(repo, id)
+    record = mission["crew"]
+    assert record["project_sha256"] == crew._sha(PROJECT_TEXT.encode())
+    assert record["personal"] == "present" and record["personal_sha256"] == crew._sha(PROFILE.encode())
+    frozen = (repo / f".factory/missions/{id}/crew-context.md").read_text()
+    assert "### Must not break\n- The nightly finance export." in frozen
+    assert "enterprise automation" not in frozen
+    assert "enterprise automation" not in (repo / f".factory/missions/{id}/mission.json").read_text()
+    assert (repo / crew.personal_snapshot_path(id)).read_text() == PROFILE
+
+
+def test_briefs_get_only_the_knowledge_their_role_needs(repo, profile):  # noqa: F811
+    save_project(repo)
+    id = plan_mission(repo, kind="feature")
+    for kind in ("context", "assess", "plan"):
+        text = brief_text(repo, id, kind)
+        assert "## Saved knowledge (evidence, never authority)" in text
+        assert "No new service without asking." in text and "enterprise automation" in text
+        assert "## Project knowledge draft" not in text
+    implement(repo, id)
+    task = brief_text(repo, id, task="T-ONE")
+    assert "### Must not break" in task and "### Rules" in task and "enterprise automation" not in task
+    code = brief_text(repo, id, "code")
+    assert "### Must not break" in code and "### Off-limits" in code and "### Rules" not in code
+    for kind in set(BRIEF_KINDS) - {"context", "research", "assess", "plan"}:
+        if kind == "code":
+            continue
+        text = brief_text(repo, id, kind)
+        assert "Saved knowledge" not in text and "Project rules" not in text, kind
+        assert "enterprise automation" not in text and "nightly finance export" not in text, kind
+
+
+def test_the_profile_never_reaches_a_brief_the_gate_re_renders(repo, profile):  # noqa: F811
+    save_project(repo)
+    id = plan_mission(repo, kind="feature")
+    implement(repo, id)
+    for kind in ("code", "acceptance", "adversarial", "verify"):
+        assert "enterprise automation" not in brief_text(repo, id, kind)
+
+
+def test_briefs_with_knowledge_are_deterministic(repo, profile):  # noqa: F811
+    save_project(repo)
+    id = create(repo)["id"]
+    assert brief(repo, id, "context")["sha256"] == brief(repo, id, "context")["sha256"]
+
+
+def test_without_project_knowledge_the_context_brief_asks_for_a_draft(repo, me):  # noqa: F811
+    id = create(repo)["id"]
+    assert load_mission(repo, id)["crew"]["personal"] == "absent"
+    text = brief_text(repo, id, "context")
+    assert "## Project knowledge draft" in text and "## Must not break" in text
+    assert "No project knowledge was recorded" in text
+
+
+def test_a_profile_that_looks_like_a_secret_is_withheld(repo, me):  # noqa: F811
+    me.parent.mkdir(parents=True)
+    me.write_text(PROFILE + "token ghp_" + "b" * 36 + "\n")
+    id = create(repo)["id"]
+    assert load_mission(repo, id)["crew"]["personal"] == "withheld"
+    assert not (repo / crew.personal_snapshot_path(id)).exists()
+    assert "The user's profile was withheld" in brief_text(repo, id, "context")
+
+
+def test_settings_turn_knowledge_or_the_profile_off(repo, profile):  # noqa: F811
+    config = json.loads((repo / "factory.json").read_text())
+    config["crew"] = {"personal": False}
+    (repo / "factory.json").write_text(json.dumps(config))
+    commit(repo, "no personal profile here")
+    id = create(repo)["id"]
+    assert load_mission(repo, id)["crew"]["personal"] == "disabled"
+    assert "enterprise automation" not in brief_text(repo, id, "context")
+    config["crew"] = {"enabled": False}
+    (repo / "factory.json").write_text(json.dumps(config))
+    commit(repo, "knowledge off")
+    other = create(repo, id="M-OFF")["id"]
+    assert "crew" not in load_mission(repo, other)
+    assert "Saved knowledge" not in brief_text(repo, other, "context")
+
+
+def test_frozen_knowledge_is_bound_at_scope(repo):  # noqa: F811
+    id = plan_mission(repo)
+    frozen = repo / f".factory/missions/{id}/crew-context.md"
+    frozen.write_text(frozen.read_text() + "- Tampered.\n")
+    reasons = assess_gate(repo, id)["reasons"]
+    assert any("crew-context.md changed after scope acceptance" in r for r in reasons)
+
+
+def test_a_proposed_mission_picks_up_new_knowledge_with_refresh(repo):  # noqa: F811
+    id = create(repo)["id"]
+    base = load_mission(repo, id)["base_commit"]
+    save_project(repo)  # apply is allowed: the only open mission is PROPOSED
+    with pytest.raises(FactoryError, match="crew refresh --mission M-REQ"):
+        brief(repo, id, "context")
+    refreshed = crew_cli(repo, "crew", "refresh", "--mission", id)
+    mission = load_mission(repo, id)
+    assert refreshed["base_commit"] == mission["base_commit"] != base
+    assert mission["base_history"][-1]["decision"] == "CREW-LEDGER-1"
+    assert mission["crew"]["project_sha256"] == crew._sha(PROJECT_TEXT.encode())
+    assert "No new service without asking." in brief_text(repo, id, "context")
+
+
+def test_refresh_refuses_product_commits_since_the_base(repo):  # noqa: F811
+    id = create(repo)["id"]
+    put(repo, "src/other.py", "X = 1\n")
+    commit(repo, "product change")
+    with pytest.raises(FactoryError, match="change more than .factory/crew"):
+        crew.refresh(repo, id)

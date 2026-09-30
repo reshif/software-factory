@@ -25,7 +25,7 @@ The user approved a flow in which the main session only orchestrates: it stores 
 
 ## 0.3.3 constitution 2.1.0 (Crew)
 
-The user approved on 2026-09-30 building Crew's FORGE loop (Feed context, Outcome, Reverse interview, Generate then grade, Export the win) into the factory; the design is [research/crew-in-factory.md](research/crew-in-factory.md). Constitution 2.1.0 is MINOR: it adds obligations and removes none.
+The user approved on 2026-09-30 building Crew's FORGE loop (Feed context, Outcome, Reverse interview, Generate then grade, Export the win) into the factory. Its design was merged from three independent model reviews (Opus, Fable, Sonnet) and is summarised in these sections. Constitution 2.1.0 is MINOR: it adds obligations and removes none.
 
 Changed rules: *Never* 1 (remembered answers, recipe defaults and lessons are never the user's answer or approval), 5 (personal profiles join what never enters records or prompts), 6 (project knowledge, `.factory/crew/**`, is a factory control; it joins the protected floor and the default policy's protected paths); *The request is the contract* (a recipe default joins the contract only through a recorded clarification); *Context first* (load recorded project and personal context as evidence; interview in as many rounds as the answers require, with no fixed number; raise contradictions; stop when no answer would change the result or the user says go). New in Craft: 21 *Alternatives before commitment* and 22 *Learning with consent*.
 

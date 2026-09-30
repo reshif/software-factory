@@ -1,4 +1,4 @@
-"""0.3.3 Crew in the factory (docs/research/crew-in-factory.md): constitution 2.1.0 and project knowledge."""
+"""0.3.3 Crew in the factory: constitution 2.1.0, project knowledge, briefs and recipes."""
 
 from __future__ import annotations
 

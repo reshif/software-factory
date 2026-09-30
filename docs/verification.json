@@ -215,7 +215,7 @@
       "outcome": "verified; no blocking issues"
     },
     {
-      "scope": "0.2.6: official TypeSafe guidance adopted \u2014 bounded retries (<=2 on 408/429/529/5xx/connection errors within deadline), model-selection confidence gate (jev.min_confidence 0.6 -> unresolved), claim review threshold (jev.claim_accept_confidence 0.8 -> needs_review), README key/skill guidance; verified with fake local HTTP server and tamper tests",
+      "scope": "0.2.6: official TypeSafe guidance adopted — bounded retries (<=2 on 408/429/529/5xx/connection errors within deadline), model-selection confidence gate (jev.min_confidence 0.6 -> unresolved), claim review threshold (jev.claim_accept_confidence 0.8 -> needs_review), README key/skill guidance; verified with fake local HTTP server and tamper tests",
       "outcome": "verified; no blocking issues; one doc wording defect fixed before release"
     }
   ],
@@ -237,7 +237,6 @@
     "A replaced entry-point skill fails doctor (entry_skill_replaced) but is not a gate reason",
     "Symlink refusal under .factory/missions runs during upgrade history validation (when a relevant schema changes); ordinary commands use safe_path on the records they read"
   ],
-  "restart_record": "docs/restart-record.json",
   "original_checkout": "/home/reshif/software-factory",
   "original_revision": "e1dfd9327a21568763cf0c933843d976e50c680d",
   "original_working_tree": "Existing modified and untracked work preserved; no reset or cleanup",

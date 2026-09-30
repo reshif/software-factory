@@ -435,7 +435,11 @@ def test_task_transition_rules(repo):
     with pytest.raises(FactoryError, match="Task checks must be a list"):
         edit_task(repo, id, "T-ONE", {"checks": 5, "reason": "x"})
     transition_mission(repo, id, "PAUSED", reason="Pause")
-    add_task(repo, id, {"id": "T-TWO", "title": "Added during a hold", "owned_paths": ["src/**"]})
+    add_task(
+        repo,
+        id,
+        {"id": "T-TWO", "title": "Added during a hold", "owned_paths": ["src/**"], "depends_on": ["T-ONE"]},
+    )
     with pytest.raises(FactoryError, match="VERIFYING requires every task"):
         resume_mission(repo, id, "VERIFYING", resolution="Continue")
 

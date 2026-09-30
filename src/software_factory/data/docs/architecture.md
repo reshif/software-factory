@@ -18,7 +18,7 @@ flowchart TD
     CTX --> CLAR["Ask all ambiguities up front<br/>mission clarify (verbatim, chained hash)"]
     CLAR --> SPEC["mission brief --kind plan → planner<br/>spec.md + criteria AC-n citing request excerpts<br/>plan.md with ## Architecture mermaid · recovery.md"]
     SPEC --> ACCEPT["record-doc · criteria · decision · accept-scope<br/>task-add mapped to AC ids → PLANNED"]
-    ACCEPT --> BRIEF["mission brief --task T → one implementer<br/>one writer per workspace"]
+    ACCEPT --> BRIEF["mission lane-open per ready task → one implementer per lane<br/>lanes run at once, integrate one at a time"]
     BRIEF --> VERIFY["Orchestrator runs software-factory verify"]
     VERIFY -->|fail| REPAIR{"Budget left and no conflict?"}
     REPAIR -->|Yes| BRIEF

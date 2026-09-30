@@ -87,6 +87,11 @@
           "type": "integer",
           "minimum": 50,
           "default": 400
+        },
+        "stale_hours": {
+          "description": "Hours without a record change after which mission list and doctor call an open mission stale (default 24).",
+          "type": "integer",
+          "minimum": 1
         }
       }
     },
@@ -127,7 +132,27 @@
             "type": "integer",
             "minimum": 1024,
             "maximum": 67108864
+          },
+          "env": {
+            "$ref": "#/definitions/env"
           }
+        }
+      }
+    },
+    "check_env": {
+      "description": "How checks and setup steps receive the factory's environment. `inherit` (default) passes it minus TYPESAFE_API_KEY; `allowlist` passes only PATH, HOME, LANG, LC_*, TERM, TMPDIR, TEMP, TMP and VIRTUAL_ENV (plus SYSTEMROOT, COMSPEC and PATHEXT on Windows) and the names a check lists in `env`. A check with `env` always uses the allowlist.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "inherit",
+            "allowlist"
+          ],
+          "default": "inherit"
         }
       }
     },
@@ -278,6 +303,9 @@
             "type": "integer",
             "minimum": 1024,
             "maximum": 67108864
+          },
+          "env": {
+            "$ref": "#/definitions/env"
           }
         }
       }
@@ -362,6 +390,43 @@
           "default": 0.6
         }
       }
+    },
+    "notify": {
+      "description": "Best-effort notification when a mission becomes BLOCKED or the factory is halted: an argv command (no shell) run with SF_EVENT, SF_MISSION, SF_STATE and SF_REASON set.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command"
+      ],
+      "properties": {
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60
+        }
+      }
+    },
+    "ci": {
+      "description": "How a recorded CI success is checked. none (default): the URL and conclusion are recorded as given. gh: the GitHub CLI must confirm the GitHub Actions run completed successfully for the candidate commit, and MERGED requires that verification.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verify": {
+          "enum": [
+            "none",
+            "gh"
+          ],
+          "default": "none"
+        }
+      }
     }
   },
   "definitions": {
@@ -371,6 +436,18 @@
       "items": {
         "type": "string",
         "minLength": 1
+      }
+    },
+    "env": {
+      "description": "Environment variable names (never values) passed to this check in addition to the safe base; implies the allowlist mode. TYPESAFE_API_KEY is never passed and may not be listed.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+        "not": {
+          "pattern": "^[Tt][Yy][Pp][Ee][Ss][Aa][Ff][Ee]_[Aa][Pp][Ii]_[Kk][Ee][Yy]$"
+        }
       }
     },
     "profile": {

@@ -112,6 +112,9 @@ HUMAN_ONLY = {
         "software-factory mission approve records the user's own approval; show the user the exact "
         "command (accept-scope and the gate print it) and ask them to run it in their terminal"
     ),
+    ("mission", "unhalt"): (
+        "software-factory mission unhalt lifts the kill switch; only the user runs it, in their terminal"
+    ),
     ("mission", "ci-result"): (
         "software-factory mission ci-result records a remote CI result the user observed; ask the user "
         "to run it in their terminal with the run URL"
@@ -119,12 +122,14 @@ HUMAN_ONLY = {
 }
 FACTORY_SUBCOMMANDS = {
     "mission": {
-        "create": ({"--id", "--title", "--kind", "--base", "--input", "--request-file"}, set()),
-        "list": (set(), set()),
+        "create": ({"--id", "--title", "--kind", "--base", "--input", "--request-file", "--source"}, set()),
+        "list": (set(), {"--all"}),
+        "halt": ({"--reason"}, set()),
         "status": MISSION_ONLY,
         "recover-lock": (set(), set()),
         "task-add": INPUT_ONLY,
         "task-update": ({"--mission", "--input", "--task"}, set()),
+        "task-split": ({"--mission", "--input", "--task"}, set()),
         "task-transition": ({"--mission", "--task", "--to", "--reason", "--model-catalog"}, set()),
         "transition": ({"--mission", "--to", "--reason", "--next", "--decision"}, set()),
         "block": ({"--mission", "--reason", "--next"}, set()),
@@ -134,6 +139,12 @@ FACTORY_SUBCOMMANDS = {
         "criteria": INPUT_ONLY,
         "brief": ({"--mission", "--task", "--kind"}, set()),
         "risk": MISSION_ONLY,
+        "lanes": MISSION_ONLY,
+        "history": MISSION_ONLY,
+        "lane-open": ({"--mission", "--task"}, set()),
+        "lane-integrate": ({"--mission", "--task"}, set()),
+        "lane-close": ({"--mission", "--task", "--reason"}, set()),
+        "lane-check": ({"--mission", "--task", "--only"}, set()),
         "record-doc": ({"--mission", "--doc", "--input"}, set()),
         "decision": INPUT_ONLY,
         "review": INPUT_ONLY,

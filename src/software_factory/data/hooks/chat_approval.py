@@ -38,7 +38,10 @@ def record(project: Path, payload: dict) -> list[str]:
     if not matches:
         return []
     from software_factory.core import FactoryError
+    from software_factory.events import COMMAND
     from software_factory.workflow import approve_decision, load_mission
+
+    COMMAND.set("chat approval")
 
     session = payload.get("session_id") if isinstance(payload.get("session_id"), str) else "unknown"
     at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

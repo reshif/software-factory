@@ -42,6 +42,85 @@ def successful_check(record):
 # Every process a check starts inherits this marker, so descendants that left
 # the check's process group (setsid, double fork) can still be found on Linux.
 RUN_MARKER = "SOFTWARE_FACTORY_CHECK_RUN"
+AUTH_DISABLED = "SOFTWARE_FACTORY_AUTH_DISABLED"
+
+# The factory's own inference credential: no check ever receives it.
+FACTORY_SECRET = "TYPESAFE_API_KEY"
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# What an allowlisted check always receives: enough to find programs, locate
+# the home and temporary directories and decode text. Everything else, PYTHON*
+# included, must be listed by name.
+BASE_ENV = frozenset({"PATH", "HOME", "LANG", "TERM", "TMPDIR", "TEMP", "TMP", "VIRTUAL_ENV"})
+BASE_ENV_PREFIXES = ("LC_",)
+WINDOWS_BASE_ENV = frozenset({"SYSTEMROOT", "COMSPEC", "PATHEXT"})
+ENV_MODES = ("inherit", "allowlist")
+
+
+def check_env_mode(check, default="inherit"):
+    """A check's environment mode: its own `env` list always implies the allowlist."""
+    return "allowlist" if "env" in check else default
+
+
+def check_environment(check, mode="inherit", source=None):
+    """The environment a check process receives, before the factory's run marker is added.
+
+    ``inherit`` passes the factory's environment minus the inference key.
+    ``allowlist`` passes only the safe base plus the names the check lists that
+    exist. A malformed name, or listing the inference key, is refused.
+    """
+    source = os.environ if source is None else source
+    names = check.get("env", [])
+    if mode not in ENV_MODES or not isinstance(names, list):
+        raise FactoryError(f"Invalid environment configuration for {check.get('id')}")
+    for name in names:
+        if not isinstance(name, str) or not ENV_NAME.fullmatch(name):
+            raise FactoryError(f"Invalid environment variable name for {check.get('id')}: {name!r}")
+        if name.upper() == FACTORY_SECRET:
+            raise FactoryError(f"Check {check.get('id')} may not receive {FACTORY_SECRET}")
+    env = {
+        k: v
+        for k, v in source.items()
+        if k.upper() != FACTORY_SECRET and (mode == "inherit" or env_name_allowed(k, names))
+    }
+    env[AUTH_DISABLED] = "1"
+    return env
+
+
+def env_name_allowed(key, names):
+    """Whether an allowlisted check may receive variable key (factory-set names included)."""
+    if os.name == "nt":
+        # Windows environment names are case-insensitive.
+        key = key.upper()
+        wanted = {n.upper() for n in (*BASE_ENV, *WINDOWS_BASE_ENV, *names)}
+    else:
+        wanted = {*BASE_ENV, *names}
+    return key.upper() != FACTORY_SECRET and (
+        key in wanted or key.startswith(BASE_ENV_PREFIXES) or key in (RUN_MARKER, AUTH_DISABLED)
+    )
+
+
+def environment_reasons(phase, item, expected, default_mode):
+    """Why a recorded check environment disagrees with the check's current configuration."""
+    mode = check_env_mode(expected, default_mode)
+    recorded = item.get("environment")
+    if recorded is None:
+        # Evidence from before environments were recorded ran with the inherited environment.
+        return [] if mode == "inherit" else [f"{phase} {item['id']} ran without a recorded allowlist"]
+    reasons = []
+    if recorded["mode"] != mode:
+        reasons.append(
+            f"{phase} {item['id']} environment mode {recorded['mode']} differs from configured {mode}"
+        )
+    names = recorded["names"]
+    if any(n.upper() == FACTORY_SECRET for n in names):
+        reasons.append(f"{phase} {item['id']} received {FACTORY_SECRET}")
+    if mode == "allowlist":
+        extra = sorted(n for n in names if not env_name_allowed(n, expected.get("env", [])))
+        if extra:
+            reasons.append(
+                f"{phase} {item['id']} received variables outside its allowlist: " + ", ".join(extra)
+            )
+    return reasons
 
 
 def resolve_program(program, cwd, env):
@@ -115,11 +194,15 @@ def run_check(
     max_output_bytes=1048576,
     log_files=None,
     capture_bytes=65536,
+    env_mode="inherit",
 ):
     """Run one check argv without a shell, bounded in time and output.
 
-    The check inherits the factory's environment (minus the factory inference
-    key); the program it resolves to is recorded as resolved_program with its
+    In ``inherit`` mode the check receives the factory's environment minus the
+    factory inference key; in ``allowlist`` mode (env_mode, or a per-check
+    ``env`` list) only the safe base plus the names it lists. The mode and the
+    variable names (never values) are recorded as ``environment``. The program
+    it resolves to is recorded as resolved_program with its
     sha256. Anything the check leaves running after it exits is killed and the
     check is labeled background_process.
     """
@@ -146,11 +229,8 @@ def run_check(
     leftovers = set()
     # Product checks never receive the factory's own inference credential.
     marker = f"{os.getpid()}-{time.monotonic_ns()}-{threading.get_ident()}"
-    env = {
-        **{k: v for k, v in os.environ.items() if k != "TYPESAFE_API_KEY"},
-        "SOFTWARE_FACTORY_AUTH_DISABLED": "1",
-        RUN_MARKER: marker,
-    }
+    mode = check_env_mode(check, env_mode)
+    env = {**check_environment(check, mode), RUN_MARKER: marker}
     program, program_sha256 = resolve_program(command[0], cwd, env)
 
     def kill_group():
@@ -329,6 +409,7 @@ def run_check(
         "truncated": total > max_output_bytes,
         "resolved_program": program,
         "program_sha256": program_sha256,
+        "environment": {"mode": mode, "names": sorted(env)},
         "stdout": captured["stdout"].decode(errors="replace"),
         "stderr": captured["stderr"].decode(errors="replace"),
     }
@@ -361,6 +442,7 @@ def _execute_suite(root, config, selected, log_root=None, record_root=None):
             ),
             log_files={c: safe_path(record_root or root, p) for c, p in paths.items()} if paths else None,
             capture_bytes=0,
+            env_mode=config.get("check_env", {}).get("mode", "inherit"),
         )
         result.pop("stdout")
         result.pop("stderr")
@@ -714,6 +796,10 @@ def validate_verification(root, mission, config, candidate, tasks=None, referenc
                     or item["required"] != (True if phase == "setup" else expected["required"])
                 ):
                     reasons.append(f"{phase} {item['id']} differs from current command configuration")
+                if expected:
+                    reasons += environment_reasons(
+                        phase, item, expected, config.get("check_env", {}).get("mode", "inherit")
+                    )
                 if check_logs:
                     for channel in ("stdout", "stderr"):
                         log = item[f"{channel}_log"]

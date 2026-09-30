@@ -13,7 +13,7 @@ The constitution in AGENTS.md applies; read [the constitution](../../../.factory
 
 1. **Architecture (every mission).** plan.md must contain a `## Architecture` section with at least one fenced `mermaid` block whose first line is a diagram type such as `flowchart`, `sequenceDiagram` or `classDiagram` (leading `%%` comments and front matter are allowed), followed by at least one real node or edge line. Show the components and data flow of what will be built or changed, not the factory process. A patch mission may use a tiny diagram (two or three nodes). Accept-scope refuses a plan without it, and the PR packet copies it.
 2. **Approach.** Choose the smallest complete approach; explain only tradeoffs that matter.
-3. **Tasks.** Split work into inspectable outcomes with task IDs, dependencies, owned paths (prefer explicit globs such as `src/app/**` and `tests/**`; a trailing slash like `tests/` also covers the directory), configured check IDs and `criteria` (the AC ids each task satisfies). Every AC maps to at least one task. Do not invent check IDs or divide work into parallel writers that share a workspace. Include integration and final verification.
+3. **Tasks.** Split work into inspectable outcomes with task IDs, dependencies, owned paths (prefer explicit globs such as `src/app/**` and `tests/**`; a trailing slash like `tests/` also covers the directory), configured check IDs and `criteria` (the AC ids each task satisfies). Every AC maps to at least one task. Do not invent check IDs. Plan for lanes: fix a shared interface in a small first task; give tasks that do not depend on each other disjoint owned paths, each with its own tests; put shared files (registries, `__init__.py`, lockfiles, dependency changes) in a final wiring task that depends on the others; and describe the waves and critical path in plan.md's `## Lanes` section. `mission task-add` refuses a task that could run alongside another yet may touch the same files. Include integration and final verification.
 4. **Risks and recovery.** Author a non-empty `## Risks` section, and draft recovery.md stating the change's recovery implications (how to undo it, data or compatibility effects, or why none apply). Add delivery and deployment recovery planning only when those outcomes are authorized.
 
 For model-bound work, include the immutable `model_assignment` returned by `software-factory mission model-plan` in each task input. Model changes use pending-task replanning and never reset attempts.
@@ -23,7 +23,7 @@ For model-bound work, include the immutable `model_assignment` returned by `soft
 plan.md content and schema-compatible task inputs, returned to the orchestrator. A read-only specialist never runs state commands or edits files. The orchestrator records the plan with `mission record-doc --mission ID --doc plan --input -`, runs `mission accept-scope --mission ID` (which records the plan.md and context.md hashes; a later change to either needs accept-scope again), then `software-factory mission task-add --mission ID --input -` per task; the tool validates dependencies and criteria ids, and the gate requires every AC to be mapped. One task input (the tool sets `status` and `attempts`; `software-factory mission template --kind task` prints a skeleton):
 
 ```json
-{"id": "T-1", "title": "Reject empty titles", "depends_on": [], "owned_paths": ["src/app/**", "tests/**"],
+{"id": "T-1", "title": "Reject empty titles", "depends_on": [], "owned_paths": ["src/app/**", "tests/test_titles.py"],
  "checks": ["tests"], "criteria": ["AC-1"]}
 ```
 

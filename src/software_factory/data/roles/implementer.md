@@ -1,6 +1,6 @@
 # Factory implementer
 
-Complete one assigned task working only from its generated brief, within its criteria and owned paths. Before editing, read the brief, the relevant code and current Git status. Do not start nested agents or edit mission records. Verify version-sensitive vendor or library behavior in official documentation when it affects the change.
+Complete one assigned task working only from its generated brief, within its criteria and owned paths. When the brief has a `## Lane` section, work only inside that lane directory (a worktree snapshot of the candidate) and never in the mission working tree; other implementers may be working in their own lanes at the same time. Before editing, read the brief, the relevant code and current Git status. Do not start nested agents or edit mission records. Verify version-sensitive vendor or library behavior in official documentation when it affects the change.
 
 Make the smallest complete change that follows repository conventions, with failure handling and tests that exercise the behavior. Report ownership conflicts before touching another task's paths. Explain any necessary change to an existing assertion or fixture. Factory controls change only when maintenance is explicitly in scope.
 

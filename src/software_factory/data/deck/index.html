@@ -217,6 +217,11 @@ tr:last-child td{border-bottom:0}
       <span class="lbl">Workspace</span>
       <div class="kv" id="workspace"></div>
     </div>
+    <div class="card" style="gap:6px">
+      <span class="lbl">Knowledge</span>
+      <div class="kv" id="knowledge"></div>
+      <p class="muted" style="margin:0;font-size:11.5px">Saved only with your approval; every save is in the ledger.</p>
+    </div>
   </aside>
 
   <main class="main" id="main">
@@ -336,7 +341,7 @@ function adapt(sum){
   concerns,gate:g?[...g.reasons.map(r=>["c-crit",r]),...(g.warnings||[]).map(w=>["c-warn",w]),...(g.pass?[["c-ok","All readiness checks pass"]]:[])]:[["c-idle","The gate has not been run in this view. Use “Run the gate”."]],
   feed:events.slice(-14).reverse().map(e=>[clock(e.at),(e.actor&&e.actor.user)||"cli",`${e.command} → ${e.state}`]),
   status:{rec:d?String(d.events.count):"—",last:since(sum.updated_at),gate:gateWord},
-  history:d?d.events:null,docs:d?d.docs:{},attention:sum.attention||[],raw:m||null,gateRaw:g||null,
+  history:d?d.events:null,docs:d?d.docs:{},optionsRaw:d?d.options:null,attention:sum.attention||[],raw:m||null,gateRaw:g||null,
   done:tasks.filter(t=>t.state==="ok").length,age:m?span(m.created_at,new Date().toISOString()):"—",idle:since(sum.updated_at),
   events:events}
 }
@@ -349,19 +354,28 @@ function human(e){const c=e.command||"",o={};c.replace(/--([\w-]+)\s+(\S+)/g,(_,
   block:"Blocked: waiting on you",unblock:"Unblocked",pause:"Paused",resume:"Resumed",approve:"You approved in the terminal","ci-result":"CI result recorded",
   decision:"Decision recorded","accept-scope":"Scope accepted",criteria:"Acceptance criteria recorded",repair:"Repair started",chat:"You approved in chat"};
  const k=c.startsWith("chat approval")?"chat":w;return {text:T[k]||c,tone:k==="chat"||k==="approve"?"brass":k==="block"?"crit":/DONE|integrate|review|verify/.test(T[k]||"")?"ok":"run"}}
-const NEED_IC={blocked:"!",approve:"✓",ci:"↗",stale:"…",paused:"Ⅱ"};
+const NEED_IC={blocked:"!",approve:"✓",ci:"↗",stale:"…",paused:"Ⅱ",retro:"↺",knowledge:"✎"};
 function renderPortfolio(){
  const S=SUMMARIES,working=S.filter(x=>x.tasks&&(x.tasks.RUNNING||x.tasks.VERIFYING)).length,blocked=S.filter(x=>x.state==="BLOCKED"),ready=S.filter(x=>x.state==="READY_PR"),
-  needs=S.flatMap(x=>(x.attention||[]).map(a=>({...a,id:x.id,title:x.title})));
+  K=WORKSPACE.knowledge||{},
+  needs=[...S.flatMap(x=>(x.attention||[]).map(a=>({...a,id:x.id,title:x.title}))),
+   ...(K.proposals||[]).map(p=>({kind:"knowledge",id:"",title:`Knowledge ${p.id}`,text:`${p.target}: ${p.approve}`}))];
  $("proj").textContent=WORKSPACE.project||"Mission Deck";$("crumb").textContent=WORKSPACE.root||"";
  $("pf").innerHTML=[["Missions",S.length,"",S[0]],["Working",working,"t-run",S.find(x=>x.tasks&&(x.tasks.RUNNING||x.tasks.VERIFYING))],["Needs you",needs.length,needs.length?"t-brass":"",needs[0]],
   ["Blocked",blocked.length,blocked.length?"t-crit":"",blocked[0]],["Ready",ready.length,ready.length?"t-ok":"",ready[0]]]
-  .map(([l,n,c,x])=>`<button class="${c}" ${x?`data-id="${x.id}"`:"disabled"}><b>${n}</b>${l}</button>`).join("");
+  .map(([l,n,c,x])=>`<button class="${c}" ${x&&x.id?`data-id="${x.id}"`:"disabled"}><b>${n}</b>${l}</button>`).join("");
  document.querySelectorAll("#pf button[data-id]").forEach(b=>b.onclick=()=>openMission(SUMMARIES.findIndex(x=>x.id===b.dataset.id)));
  const h=WORKSPACE.halted;$("halt").hidden=!h;if(h)$("halt").textContent=`Factory halted: ${h.reason}. No task starts until you run software-factory mission unhalt.`;
  $("needs-wrap").hidden=!needs.length;
- $("needs").innerHTML=needs.map(a=>`<button class="need k-${a.kind}" data-id="${a.id}"><span class="ic">${NEED_IC[a.kind]||"•"}</span><span style="min-width:0"><span class="nh"><span style="font-weight:600">${esc(a.title)}</span> <span class="mono muted">${a.id}</span></span><span class="nt">${esc(a.text).replace(/`([^`]+)`/g,"<code>$1</code>")}</span></span></button>`).join("");
- document.querySelectorAll(".need").forEach(b=>b.onclick=()=>openMission(SUMMARIES.findIndex(x=>x.id===b.dataset.id)))}
+ $("needs").innerHTML=needs.map(a=>`<button class="need k-${a.kind}" data-id="${a.id}"><span class="ic">${NEED_IC[a.kind]||"•"}</span><span style="min-width:0"><span class="nh"><span style="font-weight:600">${esc(a.title)}</span> <span class="mono muted">${esc(a.id)}</span></span><span class="nt">${esc(a.text).replace(/`([^`]+)`/g,"<code>$1</code>")}</span></span></button>`).join("");
+ document.querySelectorAll(".need").forEach(b=>b.onclick=()=>{const i=SUMMARIES.findIndex(x=>x.id===b.dataset.id);if(i>=0)openMission(i)})}
+function renderKnowledge(){const K=WORKSPACE.knowledge||{};if(K.error){$("knowledge").innerHTML=`<dt>Status</dt><dd>${esc(K.error)}</dd>`;return}
+ const p=K.project||{},l=K.ledger||{count:0,problems:[]},r=K.recipes||[];
+ $("knowledge").innerHTML=`<dt>Project</dt><dd>${p.present?(p.ledgered?"recorded":"<span style=\"color:var(--warn)\">edited outside the ledger</span>"):"not yet"}</dd>`
+  +`<dt>Recipes</dt><dd>${r.length?r.map(x=>esc(x.name)).join(", "):"none yet"}</dd>`
+  +`<dt>Profile</dt><dd>${K.personal&&K.personal.present?"present (never shown)":"none"}</dd>`
+  +`<dt>Ledger</dt><dd>${l.count} save${l.count===1?"":"s"}${l.problems.length?` · <span style="color:var(--crit)">${l.problems.length} problem(s)</span>`:" · chain intact"}</dd>`
+  +`<dt>Pending</dt><dd>${(K.proposals||[]).length} proposal${(K.proposals||[]).length===1?"":"s"}</dd>`}
 let WORKSPACE={};
 function renderWorkspace(){const open=SUMMARIES.length,trees=new Set(SUMMARIES.map(x=>x.worktree)).size,active=SUMMARIES.filter(x=>x.tasks&&(x.tasks.RUNNING||x.tasks.VERIFYING)).length;
  $("workspace").innerHTML=`<dt>Missions</dt><dd>${open} open</dd><dt>Worktrees</dt><dd>${trees}</dd><dt>Working now</dt><dd>${active} mission${active===1?"":"s"}</dd><dt>Runtime</dt><dd class="mono">${esc(WORKSPACE.version||"—")}</dd>`}
@@ -370,7 +384,7 @@ async function refresh(openId){
   if(!openId&&!MISSIONS.length){const busy=SUMMARIES.findIndex(x=>x.tasks&&(x.tasks.RUNNING||x.tasks.VERIFYING));if(busy>=0)openId=SUMMARIES[busy].id}
   const keep=openId||(MISSIONS[cur]&&MISSIONS[cur].id);cur=Math.max(0,SUMMARIES.findIndex(x=>x.id===keep));
   if(SUMMARIES[cur]){DETAIL[SUMMARIES[cur].id]=await api("/api/mission/"+encodeURIComponent(SUMMARIES[cur].id))}
-  MISSIONS=SUMMARIES.map(adapt);setConn("Live","ok");renderWorkspace();renderPortfolio();render();if(renderer&&MISSIONS.length&&!refresh.framed){refresh.framed=true;home(true)}}
+  MISSIONS=SUMMARIES.map(adapt);setConn("Live","ok");renderWorkspace();renderPortfolio();renderKnowledge();render();if(renderer&&MISSIONS.length&&!refresh.framed){refresh.framed=true;home(true)}}
  catch(err){setConn("Disconnected: "+err.message,"crit")}}
 async function openMission(i){cur=i;const id=SUMMARIES[i].id;try{DETAIL[id]=await api("/api/mission/"+encodeURIComponent(id))}catch(e){setConn(e.message,"crit")}MISSIONS[i]=adapt(SUMMARIES[i]);render()}
 async function runGate(){const s=SUMMARIES[cur];if(!s)return;const b=$("run-gate");if(b){b.disabled=true;b.textContent="Running the gate…"}
@@ -434,7 +448,7 @@ function renderViews(m){
  $("view-assess").innerHTML=`<div class="split"><div class="card"><h3>Concerns the planner raised</h3>${m.concerns.map(c=>`<div class="concern ${c.acc?"acc":""}"><b><span class="mono">${c.id}</span> ${esc(c.t)}</b><span class="muted">Evidence: <span class="mono">${esc(c.e)}</span></span><span class="muted">Alternative: ${esc(c.alt)}</span>${c.note?`<span class="chip ${c.acc?"c-brass":"c-warn"}" style="align-self:flex-start">${esc(c.note)}</span>`:""}</div>`).join("")}</div>
   <div class="card"><h3>What you approved</h3><div class="kv"><dt>Scope</dt><dd>${esc(m.floor.scope)}</dd><dt>Blockers</dt><dd>${m.blocked?"1 open question":"None"}</dd><dt>Assessment</dt><dd class="mono">bound at accept-scope</dd><dt>Overrides</dt><dd>${m.concerns.filter(c=>c.acc).length} accepted risk(s)</dd></div></div></div>`;
  $("view-gate").innerHTML=gateView(m);
- $("view-docs").innerHTML=`<div class="split">${["request.md","assessment.md","spec.md","plan.md"].map(n=>`<div class="card"><h3>${n}</h3><pre style="white-space:pre-wrap;margin:0;font:12.5px/1.5 var(--mono);color:var(--ink2);max-height:420px;overflow:auto">${esc((m.docs&&m.docs[n])||"Not recorded yet.")}</pre></div>`).join("")}</div>`;
+ $("view-docs").innerHTML=`<div class="split">${["request.md","assessment.md","spec.md","options.md","grading.md","plan.md","retro.md","crew-context.md"].filter(n=>["request.md","assessment.md","spec.md","plan.md"].includes(n)||(m.docs&&m.docs[n])).map(n=>`<div class="card"><h3>${n}</h3><pre style="white-space:pre-wrap;margin:0;font:12.5px/1.5 var(--mono);color:var(--ink2);max-height:420px;overflow:auto">${esc((m.docs&&m.docs[n])||"Not recorded yet.")}</pre></div>`).join("")}</div>`;
  const h=m.history;$("view-docs").insertAdjacentHTML("beforeend",h?`<div class="card" style="margin-top:12px"><h3>Event log</h3><p class="muted" style="margin:0">${h.present?`${h.count} events · ${h.problems.length?"<b style=\"color:var(--crit)\">chain problems: "+h.problems.map(esc).join("; ")+"</b>":"chain intact"}`:"No event log (created before 0.3.2)"}</p></div>`:"");
 }
 
@@ -455,6 +469,7 @@ function gateView(m){
    :row("o","·","Run the gate to see what it checks against this candidate.")}</div></div>`;
  const right=`<div style="display:flex;flex-direction:column;gap:12px"><div class="card"><h3>Independent reviews</h3><div class="gl">${reviews.map(([k,st,v])=>row(st==="pass"?"v":st==="missing"?"o":"x",st==="pass"?"✓":st==="missing"?"·":"✕",`<b style="all:unset;font-weight:600">${k}</b> <span class="muted">${st==="missing"?"not recorded":st+(v&&v.findings&&v.findings.length?` · ${v.findings.length} finding(s)`:"")}</span>`)).join("")}</div></div>
   <div class="card"><h3>Your approvals</h3><div class="gl">${approvals.map(([k,d])=>row(d?"v":"o",d?"✓":"·",`<b style="all:unset;font-weight:600">${k}</b> <span class="muted">${d?esc(d.reference.replace(/^Approved in Claude Code chat: /,"chat: "))+" · "+clock(d.recorded_at):"not given yet"}</span>`)).join("")}</div></div>
+  ${m.optionsRaw?`<div class="card"><h3>Options graded before building</h3><div class="gl">${(m.optionsRaw.options||[]).map(o=>row(o===m.optionsRaw.winner?"v":"o",o===m.optionsRaw.winner?"★":"·",`<b style="all:unset;font-weight:600">${esc(o)}</b> <span class="muted">${Object.entries((m.optionsRaw.scores||{})[o]||{}).map(([c,v])=>`${esc(c)} ${v}/5`).join(" · ")||"not scored"}${o===m.optionsRaw.winner?" · winner":""}</span>`)).join("")}</div><p class="muted" style="margin:0;font-size:11.5px">Graded by ${esc(m.optionsRaw.grader||"—")}, separately from the planner.</p></div>`:""}
   <div class="card"><h3>Acceptance criteria</h3><div class="gl">${trace.map(t=>row(t.verdict==="pass"?"v":t.verdict?"x":"o",t.verdict==="pass"?"✓":t.verdict?"✕":"·",`<span class="mono">${t.id}</span> ${esc(t.text||"")}`)).join("")||row("o","·","No criteria recorded yet.")}</div></div></div>`;
  return `<div style="display:flex;flex-direction:column;gap:12px">${banner}<div class="gcols">${left}${right}</div></div>`}
 

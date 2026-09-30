@@ -22,7 +22,10 @@ from urllib.parse import parse_qs, urlparse
 
 from .core import FactoryError, assert_id, asset_root, load_config
 
-DOCS = ("request.md", "context.md", "assessment.md", "spec.md", "plan.md")
+DOCS = (
+    "request.md", "context.md", "assessment.md", "spec.md", "options.md", "grading.md", "plan.md", "retro.md",
+    "crew-context.md",
+)  # fmt: skip
 MAX_DOC = 60_000
 EVENTS_SHOWN = 300
 
@@ -70,7 +73,53 @@ def _attention(path: Path, mission: dict, item: dict) -> list[dict]:
         needs.append({"kind": "ci", "text": text})
     if item.get("stale"):
         needs.append({"kind": "stale", "text": f"No change for {item.get('idle_hours')} h"})
+    try:
+        from .retro import signals
+
+        offer = signals(path, mission["id"])
+        if offer["offer"]:
+            needs.append(
+                {
+                    "kind": "retro",
+                    "text": f"A retro is worth it ({offer['signals'][0]}): ask for /factory-retro {mission['id']}",
+                }
+            )
+    except (FactoryError, OSError, ValueError, KeyError):
+        pass
     return needs
+
+
+def knowledge_payload(root: Path) -> dict:
+    """Project knowledge for the Deck: what is recorded, the ledger and proposals awaiting the user."""
+    from .crew import list_proposals
+    from .crew import status as crew_status
+
+    try:
+        report = crew_status(root)
+    except (FactoryError, OSError, ValueError) as exc:
+        return {"error": str(exc)}
+    pending = []
+    for proposal in list_proposals(root):
+        if proposal.get("status") != "proposed":
+            continue
+        items = proposal.get("items") or []
+        if proposal.get("target") == "personal":
+            how = f"run `software-factory crew apply --proposal {proposal['id']}` in your terminal"
+        elif items:
+            how = (
+                f"reply `approve {proposal['id']} crew {','.join(map(str, items))}` (or a subset) after merge"
+            )
+        else:
+            how = f"reply `approve {proposal['id']} crew`"
+        pending.append({**proposal, "approve": how})
+    return {
+        "project": report["project"],
+        "personal": {"present": report["personal"]["present"]},
+        "recipes": report["recipes"],
+        "ledger": report["ledger"],
+        "proposals": pending,
+        "gaps": report["gaps"],
+    }
 
 
 def missions_payload(root: Path) -> dict:
@@ -111,6 +160,7 @@ def missions_payload(root: Path) -> dict:
         "project": root.name,
         "version": __version__,
         "halted": halted(root),
+        "knowledge": knowledge_payload(root),
         "missions": missions,
         "generated_at": time.time(),
     }
@@ -146,7 +196,17 @@ def mission_payload(root: Path, mission_id: str) -> dict:
             "recent": read_events(where, mission_id)[-EVENTS_SHOWN:],
         },
         "docs": {name: _doc(where, mission_id, name) for name in DOCS},
+        "options": _options(where, mission),
     }
+
+
+def _options(where: Path, mission: dict) -> dict | None:
+    from .options import summary
+
+    try:
+        return summary(where, mission)
+    except (FactoryError, OSError):
+        return None
 
 
 def gate_payload(root: Path, mission_id: str) -> dict:
@@ -162,7 +222,7 @@ def gate_payload(root: Path, mission_id: str) -> dict:
 
 
 def _signature(root: Path) -> str:
-    """Changes whenever any mission record in this repository or its worktrees changes."""
+    """Changes whenever a mission record (here or in other worktrees), knowledge or a proposal changes."""
     from .workspaces import factory_worktrees
 
     newest, count = 0.0, 0
@@ -170,8 +230,10 @@ def _signature(root: Path) -> str:
         places = [root, *factory_worktrees(root)]
     except FactoryError:
         places = [root]
-    for place in places:
-        for current, _dirs, files in os.walk(place / ".factory/missions"):
+    watched = [place / ".factory/missions" for place in places]
+    watched += [root / ".factory/crew", root / ".factory/local/crew/proposals"]
+    for directory in watched:
+        for current, _dirs, files in os.walk(directory):
             for name in files:
                 try:
                     newest = max(newest, os.stat(os.path.join(current, name)).st_mtime)

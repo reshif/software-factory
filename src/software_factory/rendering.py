@@ -24,7 +24,9 @@ CHAT_APPROVAL = ".factory/hooks/chat_approval.py"
 SPECIALISTS = ("factory-planner", "factory-implementer", "factory-verifier", "factory-reviewer")
 ENFORCEMENT_FLAGS = {"claude": "claude_orchestrator_agent"}
 # Entry prompts named in the rendered CLAUDE.md and copilot-instructions.md text.
-ENTRY_PROMPTS = ("factory-build", "factory-blueprint", "factory-resume", "factory-status")
+ENTRY_PROMPTS = (
+    "factory-build", "factory-blueprint", "factory-resume", "factory-status", "factory-onboard", "factory-retro",
+)  # fmt: skip
 VENV_CLI = ".factory/.venv/bin/software-factory"
 CODEX_INSTRUCTIONS_LIMIT = 32768  # Codex project_doc_max_bytes default.
 GUARD_SELF_TEST = (
@@ -558,7 +560,7 @@ def plan_render(
     outputs["AGENTS.md"] = common.encode()
     if "claude" in selected_profiles:
         outputs["CLAUDE.md"] = (
-            b"@AGENTS.md\n\nUse /factory-build, /factory-blueprint, /factory-resume or /factory-status. The constitution in AGENTS.md applies; read .factory/CONSTITUTION.md only if it is not in your context. Follow the assigned canonical skill.\n"
+            b"@AGENTS.md\n\nUse /factory-build, /factory-blueprint, /factory-resume or /factory-status; /factory-onboard records project knowledge and /factory-retro turns a finished mission into lessons. The constitution in AGENTS.md applies; read .factory/CONSTITUTION.md only if it is not in your context. Follow the assigned canonical skill.\n"
             + (
                 b"For hook-enforced orchestration start `claude --agent factory-orchestrator`.\n"
                 if orchestrator_agent
@@ -569,7 +571,7 @@ def plan_render(
         outputs[".github/copilot-instructions.md"] = (
             b"Follow AGENTS.md for factory work. Factory missions are supported in VS Code Local (the local "
             b"agent session in VS Code): select the factory agent and invoke /factory-build, /factory-blueprint, "
-            b"/factory-resume or /factory-status. Copilot CLI and the Copilot cloud agent are not supported for "
+            b"/factory-resume, /factory-status, /factory-onboard or /factory-retro. Copilot CLI and the Copilot cloud agent are not supported for "
             b"missions: do not start or advance a mission there.\n"
         )
     copilot_prefix = "factory-copilot-" if "claude" in selected_profiles else "factory-"

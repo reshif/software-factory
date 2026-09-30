@@ -1,6 +1,6 @@
 # Project knowledge (Crew)
 
-The factory keeps what it learns about your project only with your consent (*Learning with consent* in the [constitution](../../CONSTITUTION.md)). This release ships the knowledge store, loads it into mission briefs, uses recipes in the interview, grades options before building and turns finished missions into lessons you approve.
+The factory keeps what it learns about your project only with your consent (*Learning with consent* in the [constitution](../../CONSTITUTION.md)). Knowledge is loaded into mission briefs, recipes shape the interview, options are graded before building, and finished missions become lessons you approve. `/factory-onboard` drafts project (or personal) knowledge from the repository and an interview, and `/factory-retro` runs a retro.
 
 ## Where it lives
 
@@ -50,6 +50,14 @@ From READY_PR on, `crew retro-signals --mission ID` says whether a retro is wort
 | control (checks, hooks, roles, CI, policy) | a request for a maintenance mission | never written by the factory |
 
 Every lesson is one plain sentence of at most 200 characters and cites evidence (`finding:<review>/<finding>`, `clarification:<n>`, `concern:C-n`, `task:<id>:attempt:<n>`, `decision:<id>`, `blocker:<n>` or `event:<seq>`) that must resolve against the mission record. Each target becomes one proposal with numbered items; after the mission merges you approve items one by one (`approve P-0003 crew 1,3`, or `crew apply --proposal P-0003 --items 1,3`); there is no approve-all. Requests from a contributor or an anonymous author produce no lessons.
+
+## Coming from Crew
+
+If you used a Crew folder, run `software-factory crew import --from ~/crew` in your terminal. It previews your profile (`context/me.md`) and this project's notes (`context/projects/<this repository>.md`, with any missing section added as "Not recorded yet."); `--propose` turns them into proposals you then approve as usual. It never writes to the Crew folder. Crew's saved workflows are Claude skills that can grant tools, so they are listed, not converted: recipes come from a finished mission's retro.
+
+## In the Mission Deck
+
+`software-factory serve` shows a Knowledge panel (project knowledge and whether it matches the ledger, recipes, whether a profile exists but never its text, ledger saves and chain state, pending proposals), lists each pending proposal under Needs you with the exact line to approve it, offers a retro for finished missions worth one, and shows options, grading, retro and the frozen `crew-context.md` among a mission's documents. It stays read-only: approvals happen only in your chat or terminal.
 
 ## How knowledge changes
 

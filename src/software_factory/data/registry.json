@@ -49,6 +49,8 @@
     "factory-build",
     "factory-blueprint",
     "factory-resume",
-    "factory-status"
+    "factory-status",
+    "factory-onboard",
+    "factory-retro"
   ]
 }

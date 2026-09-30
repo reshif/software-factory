@@ -236,6 +236,7 @@ def list_proposals(root) -> list[dict]:
             continue
         found.append(
             {k: proposal.get(k) for k in ("id", "target", "status", "created_at", "sha256", "origin")}
+            | ({"items": [item["n"] for item in proposal["items"]]} if "items" in proposal else {})
         )
     return found
 
@@ -662,6 +663,95 @@ def status(root) -> dict:
     return report
 
 
+# --- import from a Crew folder --------------------------------------------------------------
+
+
+def _import_file(path: Path, limit: int) -> str | None:
+    if not path.is_file() or path.is_symlink():
+        return None
+    data = path.read_bytes()
+    if len(data) > limit:
+        raise FactoryError(f"{path} is {len(data)} bytes; the limit is {limit}: shorten it before importing")
+    return data.decode("utf-8")
+
+
+def import_crew(root, source: str, propose_now: bool = False) -> dict:
+    """Read a Crew folder (never written) and propose its profile and this project's notes.
+
+    Crew's saved workflows are Claude skills that can grant tools; they are listed, not converted:
+    recipes come from a finished mission's retro.
+    """
+    folder = Path(source).expanduser().resolve()
+    if not (folder / "context").is_dir():
+        raise FactoryError(f"{folder} is not a Crew folder (no context/ directory)")
+    found, skipped = [], []
+    me = _import_file(folder / "context/me.md", LIMITS["personal"])
+    if me is not None:
+        found.append(("personal", me, "context/me.md"))
+    name = Path(root).resolve().name.lower()
+    notes = _import_file(folder / f"context/projects/{name}.md", LIMITS["project"])
+    if notes is not None:
+        headings = _headings(notes)
+        additions = [
+            f"## {section}\n\nNot recorded yet." for section in PROJECT_SECTIONS if section not in headings
+        ]
+        text = notes.rstrip("\n") + ("\n\n" + "\n\n".join(additions) if additions else "") + "\n"
+        found.append(("project", text, f"context/projects/{name}.md"))
+    else:
+        skipped.append(f"context/projects/{name}.md: no Crew notes for this project")
+    skills = sorted(p.parent.name for p in (folder / ".claude/skills").glob("crew-*/SKILL.md"))
+    workflows = [s for s in skills if s not in ("crew-brief", "crew-debrief", "crew-onboard")]
+    skipped += [
+        f"{w}: a Crew workflow is a Claude skill that can grant tools, so it is not converted; recipes come "
+        "from a finished mission's retro"
+        for w in workflows
+    ]
+    results = []
+    for target, text, origin in found:
+        # Hidden text is never saved as knowledge; drop HTML comments and say so.
+        comments = len(re.findall(r"<!--.*?-->", text, flags=re.DOTALL))
+        text = re.sub(r"\n?[ \t]*<!--.*?-->[ \t]*", "", text, flags=re.DOTALL)
+        note = {"removed": f"{comments} HTML comment(s): text a reader cannot see"} if comments else {}
+        try:
+            text = validate_text(target, text)
+        except FactoryError as exc:
+            from .redaction import secret_kinds
+
+            flagged = [f"line {n}: {line.strip()[:120]}" for n, line in enumerate(text.splitlines(), 1)
+                       if secret_kinds(line)]  # fmt: skip
+            refusal = {"target": target, "from": origin, "refused": str(exc)}
+            if flagged:
+                refusal["lines"] = flagged
+                refusal["hint"] = (
+                    "The secret scan reads `word: value` after words like secret, token or password as a "
+                    "credential. If these lines hold no secret, reword them in the Crew file (for example "
+                    "'secrets (credentials, tokens)' instead of 'secrets: credentials, tokens') and import again."
+                )
+            results.append(refusal)
+            continue
+        if propose_now:
+            try:
+                proposed = propose(root, target, text, origin=f"import:{origin}")
+                results.append({"target": target, "from": origin, "proposal": proposed["proposal"],
+                                "approve": proposed["approve"], **note})  # fmt: skip
+            except FactoryError as exc:
+                results.append({"target": target, "from": origin, "refused": str(exc)})
+        else:
+            results.append({"target": target, "from": origin, "text": text, **note})
+    return {
+        "from": str(folder),
+        "dry_run": not propose_now,
+        "results": results,
+        "skipped": skipped,
+        "note": "Nothing is written to the Crew folder. Proposals are inert until you approve them; "
+        + (
+            "review each text above, then run again with --propose"
+            if not propose_now
+            else "approve them as shown"
+        ),
+    }
+
+
 # --- CLI ---------------------------------------------------------------------------------
 
 
@@ -719,6 +809,8 @@ def handle(args) -> dict:
         return refresh(root, args.mission)
     if command == "match":
         return match(root, args.text)
+    if command == "import":
+        return import_crew(root, args.from_, propose_now=args.propose)
     raise FactoryError(f"Unknown crew command: {command}")
 
 
@@ -753,6 +845,13 @@ def add_parser(subparsers) -> None:
     p.add_argument("--items", metavar="1,3", help="For retro lessons: the item numbers you approve")
     p = actions.add_parser("forget", help="Remove a knowledge file (you, in an interactive terminal)")
     p.add_argument("--target", required=True, help="project, personal or recipe:<name>")
+    p = actions.add_parser(
+        "import", help="Propose your profile and this project's notes from a Crew folder (you)"
+    )
+    p.add_argument(
+        "--from", dest="from_", required=True, metavar="PATH", help="The Crew folder, for example ~/crew"
+    )
+    p.add_argument("--propose", action="store_true", help="Create the proposals (default: preview only)")
     p = actions.add_parser("match", help="Recipes whose triggers appear in a request text")
     p.add_argument("--text", required=True, help="The request text, or a short summary of it")
     p = actions.add_parser(

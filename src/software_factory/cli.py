@@ -186,7 +186,7 @@ def doctor(root: Path) -> dict:
                     {
                         "severity": "error",
                         "code": "entry_skill_replaced",
-                        "message": "Factory entry-point skills (factory-build, factory-blueprint, "
+                        "message": "Factory entry-point skills (factory-build, factory-blueprint, factory-onboard, factory-retro, "
                         "factory-resume, factory-status) are relinquished and replaced by content the "
                         "factory does not render: "
                         + ", ".join(replaced)

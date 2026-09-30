@@ -123,6 +123,10 @@ HUMAN_ONLY = {
         "crew",
         "forget",
     ): "software-factory crew forget removes knowledge; only the user runs it, in their terminal",
+    ("crew", "import"): (
+        "software-factory crew import reads the user's own Crew folder outside this repository; ask the user "
+        "to run it in their terminal"
+    ),
     ("mission", "ci-result"): (
         "software-factory mission ci-result records a remote CI result the user observed; ask the user "
         "to run it in their terminal with the run URL"

@@ -335,7 +335,7 @@ def test_guard_allows_reading_and_proposing_knowledge(command):
         ("software-factory crew apply --proposal P-0001", "saves knowledge the user approved"),
         ("software-factory crew forget --target project", "only the user runs it"),
         ("software-factory crew propose --target project --input - --root /x", "--root"),
-        ("software-factory crew import --from ~/crew", "not an allowed orchestrator command"),
+        ("software-factory crew import --from ~/crew", "reads the user's own Crew folder"),
     ],
 )
 def test_guard_keeps_applying_knowledge_human_only(command, fragment):
@@ -1018,3 +1018,89 @@ def test_guard_allows_retro_commands():
     assert guard_decision("software-factory crew retro-signals --mission M-1") == (0, "")
     assert guard_decision("software-factory crew propose --mission M-1 --input -") == (0, "")
     assert guard_decision("software-factory crew apply --proposal P-0001 --items 1,2")[0] == 2
+
+
+# Phase 6: the Deck, import from a Crew folder and entry prompts
+
+from software_factory.serve import (
+    _signature,
+    knowledge_payload,
+    mission_payload,
+    missions_payload,
+)
+
+
+def test_the_deck_shows_knowledge_and_what_awaits_the_user(repo):  # noqa: F811
+    save_project(repo)
+    propose(repo, "recipe:add-endpoint", RECIPE_TEXT)
+    before = _signature(repo)
+    propose(repo, text=PROJECT_TEXT.replace("internal teams", "all teams"))
+    assert _signature(repo) != before  # a new proposal refreshes the Deck
+    knowledge = knowledge_payload(repo)
+    assert knowledge["project"]["present"] and knowledge["ledger"]["count"] == 1
+    approvals = {p["id"]: p["approve"] for p in knowledge["proposals"]}
+    assert approvals == {"P-0002": "reply `approve P-0002 crew`", "P-0003": "reply `approve P-0003 crew`"}
+    assert "enterprise" not in json.dumps(knowledge)  # no profile text, ever
+    assert missions_payload(repo)["knowledge"]["proposals"]
+
+
+def test_the_deck_offers_a_retro_and_shows_graded_options(repo):  # noqa: F811
+    done = finished(repo)
+    (item,) = [m for m in missions_payload(repo)["missions"] if m["id"] == done]
+    assert any(a["kind"] == "retro" and f"/factory-retro {done}" in a["text"] for a in item["attention"])
+    feature = plan_mission(repo, id="M-FEAT", kind="feature")
+    payload = mission_payload(repo, feature)
+    assert payload["options"]["winner"] == "O-1" and payload["docs"]["grading.md"]
+
+
+def crew_folder(tmp_path, project_name):
+    folder = tmp_path / "crew"
+    (folder / "context/projects").mkdir(parents=True)
+    (folder / "context/me.md").write_text(PROFILE + "\n## What good looks like\n<!-- No examples yet -->\n")
+    (folder / f"context/projects/{project_name}.md").write_text(
+        f"# {project_name}\nPath: /somewhere\n\n## Purpose\nPayments.\n\n## Users\nFinance.\n\n"
+        "## Must not break\n- Exports.\n\n## Definition of done\nmake check.\n\n## Off-limits\n- prod\n"
+    )
+    for name in ("crew-brief", "crew-model-radar"):
+        (folder / f".claude/skills/{name}").mkdir(parents=True)
+        (folder / f".claude/skills/{name}/SKILL.md").write_text("---\nname: x\nallowed-tools: Bash\n---\n")
+    return folder
+
+
+def test_import_previews_then_proposes_and_never_writes_the_crew_folder(repo, tmp_path, me):  # noqa: F811
+    folder = crew_folder(tmp_path, repo.name.lower())
+    snapshot = {p: p.read_bytes() for p in folder.rglob("*") if p.is_file()}
+    preview = crew.import_crew(repo, str(folder))
+    assert preview["dry_run"] and not crew.list_proposals(repo)
+    by_target = {r["target"]: r for r in preview["results"]}
+    assert "## Rules\n\nNot recorded yet." in by_target["project"]["text"]
+    assert by_target["personal"]["text"] == PROFILE + "\n## What good looks like\n"
+    assert by_target["personal"]["removed"] == "1 HTML comment(s): text a reader cannot see"
+    assert any("crew-model-radar" in s and "not converted" in s for s in preview["skipped"])
+    assert not any("crew-brief" in s for s in preview["skipped"])
+    proposed = crew.import_crew(repo, str(folder), propose_now=True)
+    assert sorted(r["target"] for r in proposed["results"] if "proposal" in r) == ["personal", "project"]
+    assert {p: p.read_bytes() for p in folder.rglob("*") if p.is_file()} == snapshot
+    with pytest.raises(FactoryError, match="is not a Crew folder"):
+        crew.import_crew(repo, str(tmp_path / "nowhere"))
+
+
+def test_entry_prompts_for_onboarding_and_retros_are_installed(tmp_path):
+    install(tmp_path, selected="claude", skip_sync=True)
+    onboard = (tmp_path / ".claude/skills/factory-onboard/SKILL.md").read_text()
+    retro = (tmp_path / ".claude/skills/factory-retro/SKILL.md").read_text()
+    assert (
+        "crew propose --target project|personal" in onboard and "no limit on questions or rounds" in onboard
+    )
+    assert "crew propose --mission ID" in retro and "no approve-all" in retro
+    assert "/factory-onboard records project knowledge" in (tmp_path / "CLAUDE.md").read_text()
+
+
+def test_import_names_the_lines_the_secret_scan_refuses(repo, tmp_path):  # noqa: F811
+    folder = crew_folder(tmp_path, repo.name.lower())
+    (folder / "context/me.md").write_text(PROFILE + "## Never\n- Commit secrets: credentials, tokens.\n")
+    (result,) = [r for r in crew.import_crew(repo, str(folder))["results"] if r["target"] == "personal"]
+    assert "looks like a secret" in result["refused"]
+    assert (
+        result["lines"] == ["line 5: - Commit secrets: credentials, tokens."] and "reword" in result["hint"]
+    )

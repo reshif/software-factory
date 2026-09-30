@@ -16,7 +16,7 @@ The factory keeps what it learns about your project only with your consent (*Lea
 
 ## How missions use it
 
-`mission create` freezes the project knowledge into the mission record `crew-context.md` (bound at accept-scope) and records hashes in `mission.json` under `crew`. Your profile is copied only to `.factory/local/crew/me-<ID>.md`; the mission records only its hash, or `withheld` when it looks like it holds a secret.
+`mission create` freezes the approved project knowledge into the mission record `crew-context.md` (bound at accept-scope; text edited outside `crew apply` is not loaded until you approve it, and an unapproved recipe is refused) and records hashes in `mission.json` under `crew`. Your profile is copied only to `.factory/local/crew/me-<ID>.md`; the mission records only its hash, or `withheld` when it looks like it holds a secret.
 
 | Brief | Receives |
 | --- | --- |

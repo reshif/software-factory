@@ -171,10 +171,19 @@ def reasons(root, mission: dict, config: dict, texts: list[str] | None = None) -
     elif chosen.group(1) != winner:
         clarification = chosen.group(2)
         count = len((mission.get("request") or {}).get("clarifications", []))
-        if not clarification or not 1 <= int(clarification) <= count:
+        named = False
+        if (
+            clarification
+            and 1 <= int(clarification) <= count
+            and texts is not None
+            and len(texts) > int(clarification)
+        ):
+            named = re.search(rf"\b{re.escape(chosen.group(1))}\b", texts[int(clarification)]) is not None
+        if not named:
             problems.append(
                 f"plan.md chooses {chosen.group(1)} over the grader's winner {winner}; only the user can, so cite "
-                "their recorded clarification: `Chosen option: O-<n> (user override, clarification <N>)`"
+                "their recorded clarification that names that option: "
+                "`Chosen option: O-<n> (user override, clarification <N>)`"
             )
     return problems
 

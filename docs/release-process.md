@@ -51,6 +51,19 @@ In the disposable-project smoke run, also confirm:
 
 Record live Claude, Codex and Copilot behaviour as not run until observed in a live client.
 
+## 0.3.3 additions
+
+The release ships constitution 2.1.0 (MINOR). In the disposable-project smoke run, also confirm:
+
+- The managed AGENTS.md section carries 2.1.0, and no installed text caps interview questions.
+- `/factory-onboard` and `/factory-retro` are exported for each selected client.
+- `crew propose` stores a proposal without writing `.factory/crew`; `crew apply` refuses without an interactive terminal; the Claude guard denies `crew apply`, `crew forget` and `crew import`.
+- A product mission that changes `.factory/crew/project.md` fails its brief and gate.
+- A feature mission cannot accept scope without current graded options.
+- `uninstall` keeps `.factory/crew`.
+
+Record the chat hook's `approve P-n crew` path as not run until observed in a live client.
+
 ## Review decisions in this port
 
 Independent reviewers covered installation/ownership/transactions, JEV, models/calibration, and workflow/evidence/checks. Repairs bind operations to early preimages, protect journals before writes, reject path/ownership aliases, preserve shared text, validate required assets, bound model discovery writes, collect final filesystem-monitor events, discover ignored governance files on each snapshot, and observe configuration before running checks. These strengthen consistency checks without adding permissions or changing the constitution.

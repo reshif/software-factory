@@ -3695,7 +3695,7 @@ def approve_decision(root, id, kind, reference, subject_hash=None, decision_id=N
             )
         from .options import reasons as option_reasons
 
-        problems = option_reasons(root, mission, load_config(root))
+        problems = option_reasons(root, mission, load_config(root), request_texts(root, mission))
         if problems:
             raise FactoryError(
                 "Scope is approved only after the user has seen the graded options (Alternatives before "

@@ -195,13 +195,21 @@ def _proposal_hash(proposal: dict) -> str:
 
 
 def insert_line(text: str, section: str, line: str) -> str:
-    """Add ``line`` at the end of the ``## section`` of a knowledge document (created if absent)."""
+    """Add ``line`` at the end of the ``## section`` of a knowledge document (created if absent).
+
+    Headings inside fenced code blocks are not sections, and trailing spaces do not matter.
+    """
     lines = text.rstrip("\n").splitlines()
-    heading = f"## {section}"
-    if heading not in lines:
-        return "\n".join([*lines, "", heading, "", line]) + "\n"
-    start = lines.index(heading) + 1
-    end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
+    headings, fenced = [], False
+    for index, current in enumerate(lines):
+        if current.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced and current.startswith("## "):
+            headings.append((index, current[3:].strip()))
+    start = next((index + 1 for index, name in headings if name == section), None)
+    if start is None:
+        return "\n".join([*lines, "", f"## {section}", "", line]) + "\n"
+    end = next((index for index, _ in headings if index >= start), len(lines))
     while end > start and not lines[end - 1].strip():
         end -= 1
     added = [line] if end > start else ["", line]
@@ -353,6 +361,37 @@ def _append_ledger(root, entry: dict) -> dict:
     return record
 
 
+ALLOWED_KNOWLEDGE = re.compile(
+    r"\.factory/crew/(?:project\.md|ledger\.jsonl|recipes/[a-z][a-z0-9-]{0,39}\.md)"
+)
+
+
+def integrity_problems(root) -> list[str]:
+    """Why the knowledge on disk is not exactly what the user approved (empty when it is)."""
+    problems = [f"ledger: {p}" for p in verify_ledger(root)["problems"]]
+    latest = _last_applied(read_ledger(root))
+    directory = safe_path(root, CREW_DIR)
+    for path in sorted(directory.rglob("*")) if directory.is_dir() else []:
+        if not path.is_file():
+            continue
+        relative = path.relative_to(Path(root).resolve()).as_posix()
+        if not ALLOWED_KNOWLEDGE.fullmatch(relative):
+            problems.append(f"{relative} is not a knowledge file crew apply writes")
+        elif relative != LEDGER:
+            target = "project" if relative == PROJECT else f"recipe:{path.stem}"
+            if latest.get(target) != _sha(path.read_bytes()):
+                problems.append(f"{relative} differs from the version the user approved (crew apply)")
+    return problems
+
+
+def _approved(root, target: str) -> bytes | None:
+    """The target's bytes when they are exactly what the ledger records as approved, else None."""
+    data = _read(target_path(root, target))
+    if data is None or verify_ledger(root)["problems"]:
+        return None
+    return data if _last_applied(read_ledger(root)).get(target) == _sha(data) else None
+
+
 def _last_applied(entries: list[dict]) -> dict:
     latest = {}
     for entry in entries:
@@ -411,6 +450,8 @@ def apply(root, proposal_id: str, *, via: str = "terminal", reference: str | Non
         raise FactoryError(
             f"Proposal {proposal_id} is {proposal['status']}; propose again to change knowledge"
         )
+    if pin is not None and not re.fullmatch(r"[0-9a-fA-F]{8,64}", pin):
+        raise FactoryError("A pinned hash is the first 8 to 64 hex characters of the proposal's sha256")
     if pin and not proposal["sha256"].startswith(pin.lower()):
         raise FactoryError(
             f"Proposal {proposal_id} is not the one approved (hash {proposal['sha256'][:8]}, not {pin})"
@@ -653,10 +694,7 @@ def status(root) -> dict:
             "No personal profile: offer once, in one line, to draft one with the user (crew propose --target "
             "personal); never block the task"
         )
-    if not report["project"]["ledgered"]:
-        gaps.append(".factory/crew/project.md changed outside crew apply since the last approved version")
-    gaps += [f"Recipe {r['name']} changed outside crew apply" for r in report["recipes"] if not r["ledgered"]]
-    gaps += [f"Ledger: {p}" for p in report["ledger"]["problems"]]
+    gaps += [f"Knowledge not approved: {p}" for p in integrity_problems(root)]
     gaps += [f"Proposal {p['id']} awaits the user's approval ({p.get('target')})" for p in report["proposals"]
              if p.get("status") == "proposed"]  # fmt: skip
     report["gaps"] = gaps
@@ -889,6 +927,11 @@ def load_recipe(root, name: str) -> bytes:
         known = ", ".join(r["name"] for r in library(root)["recipes"]) or "none"
         raise FactoryError(f"No recipe {name} in .factory/crew/recipes (known: {known})")
     validate_text(target, data.decode("utf-8", "replace"))
+    if _approved(root, target) is None:
+        raise FactoryError(
+            f"Recipe {name} is not the version the user approved (edited outside crew apply, or the ledger does "
+            "not verify); propose it and have the user approve it before a mission uses it"
+        )
     return data
 
 
@@ -896,7 +939,12 @@ def render_context(mission_id: str, project: bytes | None, recipe: tuple[str, by
     """The deterministic, committed crew-context.md: project knowledge only, never personal text."""
     lines = [f"# Saved knowledge: {mission_id}", ""]
     if project is None:
-        lines += ["No project knowledge was recorded in .factory/crew/project.md when this was frozen."]
+        lines += [
+            (
+                "No approved project knowledge was recorded in .factory/crew/project.md when this was frozen"
+                " (text edited outside crew apply is not loaded until the user approves it)."
+            )
+        ]
     else:
         lines += [
             f"## Project knowledge (.factory/crew/project.md, sha256 {_sha(project)})",
@@ -924,12 +972,14 @@ def snapshot(root, mission_id: str, config: dict, recipe: str | None = None) -> 
     """What a new or refreshed mission freezes: {relative path: bytes} to write, and mission["crew"]."""
     from .workflow import refuse_secrets
 
-    project = _read(safe_path(root, PROJECT))
+    present = _read(safe_path(root, PROJECT))
+    project = _approved(root, "project") if present is not None else None
     recipe_data = load_recipe(root, recipe) if recipe else None
     context = render_context(mission_id, project, (recipe, recipe_data) if recipe else None).encode()
     files = {f".factory/missions/{mission_id}/{CONTEXT_DOC}": context}
     record = {
         "project_sha256": _sha(project),
+        **({"project": "unapproved"} if present is not None and project is None else {}),
         "context_sha256": _sha(context),
         "personal": "disabled",
         "personal_sha256": None,
@@ -1017,9 +1067,24 @@ def refresh(root, mission_id: str, recipe=KEEP) -> dict:
         recipe = ((current.get("crew") or {}).get("recipe") or {}).get("name")
     elif recipe is not None:
         assert_recipe_allowed((current.get("request") or {}).get("source"))
+    problems = integrity_problems(root)
+    if problems:
+        raise FactoryError(
+            "crew refresh moves a mission past knowledge commits only when that knowledge is exactly what the "
+            "user approved: " + "; ".join(problems[:5])
+        )
     files, record = snapshot(root, mission_id, config, recipe)
     head = git(root, "rev-parse", "HEAD")
     entries = read_ledger(root)
+    previous = {relative: _read(safe_path(root, relative)) for relative in files}
+
+    def restore():
+        for relative, data in previous.items():
+            target = safe_path(root, relative)
+            if data is None:
+                target.unlink(missing_ok=True)
+            else:
+                write_bytes(root, relative, data, mode=0o600 if relative.startswith(PRIVATE + "/") else 0o644)
 
     def mutate(mission):
         if mission["state"] != "PROPOSED" or mission["tasks"]:
@@ -1031,7 +1096,7 @@ def refresh(root, mission_id: str, recipe=KEEP) -> dict:
             changed = git(
                 root, "diff", "--no-ext-diff", "--name-only", "--no-renames", base, head, "--"
             ).split()
-            outside = [p for p in changed if not p.startswith(CREW_DIR + "/") and not is_metadata(p)]
+            outside = [p for p in changed if not ALLOWED_KNOWLEDGE.fullmatch(p) and not is_metadata(p)]
             try:
                 git(root, "merge-base", "--is-ancestor", base, head)
                 ancestor = True
@@ -1039,7 +1104,7 @@ def refresh(root, mission_id: str, recipe=KEEP) -> dict:
                 ancestor = False
             if outside or not ancestor:
                 raise FactoryError(
-                    "The commits since this mission's base change more than .factory/crew "
+                    "The commits since this mission's base change more than the approved knowledge files "
                     f"({', '.join(outside[:5]) or 'not a descendant'}); create a new mission from the new trunk"
                 )
             if changed:
@@ -1055,5 +1120,5 @@ def refresh(root, mission_id: str, recipe=KEEP) -> dict:
         write_snapshot(root, files)
         return mission
 
-    mission = update_mission(root, mission_id, mutate)
+    mission = update_mission(root, mission_id, mutate, rollback=restore)
     return {"mission": mission_id, "crew": mission["crew"], "base_commit": mission["base_commit"]}

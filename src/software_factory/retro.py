@@ -359,9 +359,10 @@ def propose_lessons(root, mission_id: str, value: dict) -> dict:
             if kind == "default":
                 question = _plain(lesson.get("question"), f"{lid} question")
                 answer = _plain(lesson.get("answer"), f"{lid} answer")
-                if not any(_normalized(answer) in t for t in texts):
+                if len(_normalized(answer)) < 8 or not any(_normalized(answer) in t for t in texts):
                     raise FactoryError(
-                        f"{lid} default must quote the user's answer exactly as a clarification records it"
+                        f"{lid} default must quote the user's answer (at least 8 characters) exactly as a "
+                        "clarification records it"
                     )
                 line = f"| {question} | {answer} ({stamp}) |"
             else:

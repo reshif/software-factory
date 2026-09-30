@@ -130,7 +130,7 @@ HUMAN_ONLY = {
 }
 FACTORY_SUBCOMMANDS = {
     "mission": {
-        "create": ({"--id", "--title", "--kind", "--base", "--input", "--request-file", "--source"}, set()),
+        "create": ({"--id", "--title", "--kind", "--base", "--input", "--request-file", "--source", "--recipe"}, set()),
         "list": (set(), {"--all"}),
         "halt": ({"--reason"}, set()),
         "status": MISSION_ONLY,
@@ -142,6 +142,7 @@ FACTORY_SUBCOMMANDS = {
         "transition": ({"--mission", "--to", "--reason", "--next", "--decision"}, set()),
         "block": ({"--mission", "--reason", "--next"}, set()),
         "resume": ({"--mission", "--to", "--model-catalog", "--resolution"}, {"--replan-models"}),
+        "recipe": ({"--mission", "--use"}, {"--clear"}),
         "accept-scope": MISSION_ONLY,
         "clarify": INPUT_ONLY,
         "criteria": INPUT_ONLY,
@@ -171,6 +172,7 @@ FACTORY_SUBCOMMANDS = {
         "withdraw": ({"--proposal"}, set()),
         "defer": ({"--key", "--for", "--reference"}, {"--clear"}),
         "refresh": ({"--mission"}, set()),
+        "match": ({"--text"}, set()),
     },
     "semantic": {"status": (set(), set()), "example": (set(), set()), "check": SEMANTIC, "verify-claims": SEMANTIC},
     "jev": {"status": (set(), set()), "example": (set(), set()), "check": SEMANTIC, "verify-claims": SEMANTIC},

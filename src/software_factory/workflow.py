@@ -149,7 +149,7 @@ REVIEW_KINDS = ("code", "acceptance", "adversarial")
 BRIEF_KINDS = ("context", "research", "assess", "plan", "code", "acceptance", "adversarial", "verify")
 DIFF_BRIEFS = {"code", "acceptance", "adversarial", "verify"}
 DECISION_KINDS = ("scope", "merge", "release", "recovery", "exception", "decline", "exclusion")
-CREATE_FIELDS = ("id", "title", "kind", "base", "request_file", "source")
+CREATE_FIELDS = ("id", "title", "kind", "base", "request_file", "source", "recipe")
 # A decision reference that is still a template placeholder such as "<who decided, and where>".
 PLACEHOLDER = re.compile(r"\s*<[^<>]*>\s*")
 MIN_AUTHORED_CHARS = 20
@@ -618,6 +618,13 @@ def create_mission(root, input, require_request=False):
     source = input.get("source")
     if source is not None and source not in REQUEST_SOURCES:
         raise FactoryError("Request source must be one of: " + ", ".join(REQUEST_SOURCES))
+    recipe = input.get("recipe")
+    if recipe is not None:
+        from .crew import RECIPE_NAME, assert_recipe_allowed
+
+        if not isinstance(recipe, str) or not RECIPE_NAME.fullmatch(recipe):
+            raise FactoryError("Recipe name must be lowercase letters, digits and hyphens")
+        assert_recipe_allowed(source)
     if source in UNTRUSTED_SOURCES and kind == "patch":
         raise FactoryError(
             f"A request from a {source} is untrusted input, so it takes the feature lane (--kind feature), "
@@ -679,7 +686,11 @@ def create_mission(root, input, require_request=False):
 
         crew_files = {}
         if request is not None and crew.settings(config)["enabled"]:
-            crew_files, mission["crew"] = crew.snapshot(root, id, config)
+            crew_files, mission["crew"] = crew.snapshot(root, id, config, recipe)
+        elif recipe is not None:
+            raise FactoryError(
+                "Saved knowledge is turned off (factory.json crew.enabled), so a recipe cannot be used"
+            )
         validate(root, "mission", mission)
         path.mkdir(parents=True)
         try:
@@ -1717,7 +1728,13 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
         open_questions = [a for a in criteria["ambiguities"] if a["status"] == "open"]
         lines.extend(["", "## Open ambiguities", ""])
         lines.extend(
-            [f"- {a['id']}: {_normalized(a['text'])}" for a in open_questions] or ["- None recorded."]
+            [
+                f"- {a['id']}"
+                + (f" ({a['origin']})" if a.get("origin") else "")
+                + f": {_normalized(a['text'])}"
+                for a in open_questions
+            ]
+            or ["- None recorded."]
         )
 
     def document(name):
@@ -1820,7 +1837,7 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             f"- Attempts used: {attempts_used(task)} of {1 + config['limits']['repair_attempts']}",
         ]
         criteria_section(items)
-        project_rules(("Must not break", "Off-limits", "Rules"))
+        project_rules(("Must not break", "Off-limits", "Rules", "Known pitfalls"))
         from .lanes import load_lane
 
         lane = load_lane(root, id, task_id)
@@ -1886,6 +1903,32 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             "- Do not change files and do not start nested agents.",
         ]
         crew_record = mission.get("crew")
+        if kind == "context":
+            lines += [
+                "",
+                "## Interview rules",
+                "",
+                (
+                    "- There is no limit on questions or rounds: ask everything whose answer would change the"
+                    " result, ordered by impact, and nothing whose answer would not."
+                ),
+                (
+                    "- Include at least one question marked '(probably not considered)': the belief, constraint or"
+                    " edge case the request does not mention that would decide whether it succeeds."
+                ),
+                (
+                    "- List every contradiction between the request, the clarifications, the saved knowledge and the"
+                    " repository as its own question marked '(contradiction)', naming both sides. It stays an open"
+                    " ambiguity with origin contradiction until the user settles it."
+                ),
+            ]
+            if crew_record and crew_record.get("recipe"):
+                lines.append(
+                    f"- Round 0: open with the Defaults of recipe {crew_record['recipe']['name']} as one block,"
+                    " each with the mission it came from, and ask whether each is still true. Only the user's"
+                    " reply, recorded as a clarification together with the defaults shown, counts; the recipe"
+                    " itself never answers a question."
+                )
         if kind == "context" and crew_record and not crew_record["project_sha256"]:
             lines += [
                 "",
@@ -1960,7 +2003,8 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             ),
             (
                 f"- Every criterion cites excerpts copied exactly from the request or a clarification (at least"
-                f" {MIN_EXCERPT} characters)."
+                f" {MIN_EXCERPT} characters). A recipe default is quotable only through the clarification that"
+                " recorded the user's reply to it."
             ),
             (
                 "- Criteria with route e2e, property or manual need evidence:<path> evidence at completion;"
@@ -1972,7 +2016,8 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             ),
             (
                 "- Ambiguities are Q-<n> with status open, resolved or waived; resolved and waived name the"
-                " decision that settled them. Scope cannot be accepted while any ambiguity is open."
+                " decision that settled them. Scope cannot be accepted while any ambiguity is open. An ambiguity"
+                " may carry origin: request, contradiction, recipe-default or unconsidered."
             ),
             (
                 "- plan.md needs a '## Architecture' section with a fenced mermaid diagram that is not the"
@@ -2009,7 +2054,7 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
         ]
     elif kind == "code":
         criteria_section(criteria["items"])
-        project_rules(("Must not break", "Off-limits"))
+        project_rules(("Must not break", "Off-limits", "Known pitfalls"))
         diff_section()
         lines += [
             "",
@@ -4657,12 +4702,16 @@ def _mission_handler(args):
     root, command = args.root, args.mission_command
     id = getattr(args, "mission", None)
     catalog = read_json(root, args.model_catalog) if getattr(args, "model_catalog", None) else None
+    if command == "recipe":
+        from .crew import set_recipe
+
+        return set_recipe(root, args.mission, None if args.clear else args.use)
     if command == "create":
         request_file = getattr(args, "request_file", None)
         if args.input:
             flags = [
                 f"--{n}"
-                for n in ("id", "title", "kind", "base", "source")
+                for n in ("id", "title", "kind", "base", "source", "recipe")
                 if getattr(args, n, None) is not None
             ]
             if flags:
@@ -4691,6 +4740,7 @@ def _mission_handler(args):
                 "kind": args.kind,
                 "base": args.base,
                 **({"source": args.source} if args.source else {}),
+                **({"recipe": args.recipe} if args.recipe else {}),
                 "request_file": request_file,
             }
         if getattr(args, "worktree", False):
@@ -4819,6 +4869,7 @@ def add_parser(subparsers):
         "transition": "Move the mission to another state (--to)",
         "block": "Block the mission with a reason and next step",
         "resume": "Resume a blocked mission with a recorded resolution",
+        "recipe": "Use a saved recipe the user confirmed (--use NAME) or stop using one (--clear); PROPOSED only",
         "accept-scope": "Record acceptance of the mission scope",
         "clarify": "Append a verbatim clarification from a --input text file",
         "criteria": "Record acceptance criteria, exclusions and ambiguities from --input JSON",
@@ -4848,6 +4899,7 @@ def add_parser(subparsers):
         "kind": ("KIND", "Mission work type"),
         "base": ("REV", "Baseline Git revision"),
         "source": ("WHO", "Who the request comes from: maintainer (default), contributor or anonymous"),
+        "recipe": ("NAME", "Saved recipe to start from (the user confirmed it); see crew match"),
         "input": ("PATH", "Repository path of the input JSON, or - for stdin"),
         "task": ("ID", "Task ID"),
         "to": ("STATE", "Target state"),
@@ -4886,6 +4938,7 @@ def add_parser(subparsers):
         "transition",
         "block",
         "resume",
+        "recipe",
         "accept-scope",
         "clarify",
         "criteria",
@@ -4930,7 +4983,7 @@ def add_parser(subparsers):
                 help="Input kind: " + ", ".join(INPUT_TEMPLATES),
             )
         if command == "create":
-            for name in ("id", "title", "kind", "base", "input", "request-file", "source"):
+            for name in ("id", "title", "kind", "base", "input", "request-file", "source", "recipe"):
                 option(parser, name)
             parser.add_argument(
                 "--worktree",
@@ -4940,6 +4993,10 @@ def add_parser(subparsers):
             parser.add_argument(
                 "--skip-sync", action="store_true", help="With --worktree, do not set up the pinned runtime"
             )
+        if command == "recipe":
+            chosen = parser.add_mutually_exclusive_group(required=True)
+            chosen.add_argument("--use", metavar="NAME", help="Recipe the user confirmed for this mission")
+            chosen.add_argument("--clear", action="store_true", help="Stop using a recipe")
         if command == "list":
             parser.add_argument(
                 "--all", action="store_true", help="Also list missions in other factory worktrees"

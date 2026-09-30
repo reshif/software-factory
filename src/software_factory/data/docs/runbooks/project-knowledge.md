@@ -1,6 +1,6 @@
 # Project knowledge (Crew)
 
-The factory keeps what it learns about your project only with your consent (*Learning with consent* in the [constitution](../../CONSTITUTION.md)). This release ships the knowledge store and loads it into mission briefs; recipe defaults in interviews, graded options and retros follow in later releases.
+The factory keeps what it learns about your project only with your consent (*Learning with consent* in the [constitution](../../CONSTITUTION.md)). This release ships the knowledge store, loads it into mission briefs and uses recipes in the interview; graded options and retros follow in later releases.
 
 ## Where it lives
 
@@ -26,6 +26,12 @@ The factory keeps what it learns about your project only with your consent (*Lea
 | acceptance, adversarial, verify | nothing |
 
 Your profile never reaches a brief the gate re-renders, so gate results do not depend on the machine. Knowledge you save later does not change a mission already created: for a PROPOSED mission run `crew refresh --mission ID` after committing it; refresh moves the mission's base past the knowledge commit when that commit changed only `.factory/crew`. Without project knowledge the context brief asks the planner for a draft `project.md`, which the orchestrator proposes for you to approve. In `factory.json`, `"crew": {"personal": false}` keeps your profile out of this repository's briefs (use it for shared team repositories) and `"crew": {"enabled": false}` turns saved knowledge off for new missions.
+
+## Recipes in the interview
+
+`software-factory crew match --text "<request>"` lists recipes whose triggers appear in a request; the orchestrator suggests one and uses it only if you confirm (`mission create --recipe NAME`, or `mission recipe --mission ID --use NAME|--clear` while PROPOSED). The recipe is frozen into `crew-context.md`. Round 0 of the interview shows its defaults and asks whether each is still true; your reply is recorded as a clarification next to the defaults you were shown, and only that makes a default quotable by the criteria. Its known pitfalls reach implementer and code-review briefs. Requests from a contributor or an anonymous author never get a recipe.
+
+Every round also carries a question you probably had not considered, and each contradiction between your request, your answers, the saved knowledge and the repository is asked as its own question; it stays an open ambiguity (origin `contradiction`) that blocks scope until you settle it. There is no limit on questions or rounds.
 
 ## How knowledge changes
 

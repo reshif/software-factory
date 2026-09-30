@@ -551,6 +551,22 @@ def library(root) -> dict:
     return {"recipes": recipes}
 
 
+def match(root, text: str) -> dict:
+    """Recipes whose trigger words appear in the text; the orchestrator suggests, the user confirms."""
+    words = (text or "").lower()
+    found = []
+    for recipe in library(root)["recipes"]:
+        hits = [t for t in recipe.get("trigger") or [] if isinstance(t, str) and t.lower() in words]
+        if hits:
+            found.append({"name": recipe["name"], "lane": recipe.get("lane"), "matched": hits})
+    found.sort(key=lambda r: -len(r["matched"]))
+    return {
+        "matches": found,
+        "note": "Suggest the best match to the user and use it only if they confirm "
+        "(mission create --recipe NAME, or mission recipe --use NAME while PROPOSED)",
+    }
+
+
 def show(root, target: str) -> dict:
     path = target_path(root, target)
     data = _read(path)
@@ -632,6 +648,8 @@ def handle(args) -> dict:
         return forget(root, args.target)
     if command == "refresh":
         return refresh(root, args.mission)
+    if command == "match":
+        return match(root, args.text)
     raise FactoryError(f"Unknown crew command: {command}")
 
 
@@ -662,6 +680,8 @@ def add_parser(subparsers) -> None:
     )
     p = actions.add_parser("forget", help="Remove a knowledge file (you, in an interactive terminal)")
     p.add_argument("--target", required=True, help="project, personal or recipe:<name>")
+    p = actions.add_parser("match", help="Recipes whose triggers appear in a request text")
+    p.add_argument("--text", required=True, help="The request text, or a short summary of it")
     p = actions.add_parser(
         "refresh", help="Re-freeze a PROPOSED mission's saved knowledge after you saved new knowledge"
     )
@@ -689,7 +709,18 @@ def _demote(text: str) -> str:
     return "\n".join("#" + line if line.startswith("#") else line for line in text.rstrip("\n").splitlines())
 
 
-def render_context(mission_id: str, project: bytes | None) -> str:
+def load_recipe(root, name: str) -> bytes:
+    """A recipe's exact bytes, refused unless it still passes the knowledge rules."""
+    target = f"recipe:{name}"
+    data = _read(target_path(root, target))
+    if data is None:
+        known = ", ".join(r["name"] for r in library(root)["recipes"]) or "none"
+        raise FactoryError(f"No recipe {name} in .factory/crew/recipes (known: {known})")
+    validate_text(target, data.decode("utf-8", "replace"))
+    return data
+
+
+def render_context(mission_id: str, project: bytes | None, recipe: tuple[str, bytes] | None = None) -> str:
     """The deterministic, committed crew-context.md: project knowledge only, never personal text."""
     lines = [f"# Saved knowledge: {mission_id}", ""]
     if project is None:
@@ -700,18 +731,38 @@ def render_context(mission_id: str, project: bytes | None) -> str:
             "",
             _demote(project.decode("utf-8", "replace")),
         ]
+    if recipe:
+        name, data = recipe
+        _, body = _front_matter(data.decode("utf-8", "replace"))
+        lines += [
+            "",
+            f"## Recipe: {name} (.factory/crew/recipes/{name}.md, sha256 {_sha(data)})",
+            "",
+            (
+                "A repeatable kind of mission the user saved. Its defaults are the answers they gave last time:"
+                " suggestions to confirm in round 0, never answers."
+            ),
+            "",
+            _demote(body),
+        ]
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def snapshot(root, mission_id: str, config: dict) -> tuple[dict, dict]:
+def snapshot(root, mission_id: str, config: dict, recipe: str | None = None) -> tuple[dict, dict]:
     """What a new or refreshed mission freezes: {relative path: bytes} to write, and mission["crew"]."""
     from .workflow import refuse_secrets
 
     project = _read(safe_path(root, PROJECT))
-    context = render_context(mission_id, project).encode()
+    recipe_data = load_recipe(root, recipe) if recipe else None
+    context = render_context(mission_id, project, (recipe, recipe_data) if recipe else None).encode()
     files = {f".factory/missions/{mission_id}/{CONTEXT_DOC}": context}
-    record = {"project_sha256": _sha(project), "context_sha256": _sha(context), "personal": "disabled",
-              "personal_sha256": None}  # fmt: skip
+    record = {
+        "project_sha256": _sha(project),
+        "context_sha256": _sha(context),
+        "personal": "disabled",
+        "personal_sha256": None,
+        "recipe": {"name": recipe, "sha256": _sha(recipe_data)} if recipe else None,
+    }
     if settings(config)["personal"]:
         try:
             me = _read(personal_path())
@@ -760,7 +811,24 @@ def project_sections(context_text: str, names: tuple[str, ...]) -> list[tuple[st
     return sorted(found, key=lambda item: names.index(item[0]))
 
 
-def refresh(root, mission_id: str) -> dict:
+KEEP = object()
+
+
+def assert_recipe_allowed(source: str | None) -> None:
+    if source in ("contributor", "anonymous"):
+        raise FactoryError(
+            f"A request from a {source} is untrusted input, so it never receives remembered answers (a recipe)"
+        )
+
+
+def set_recipe(root, mission_id: str, name: str | None) -> dict:
+    """Choose (or clear) the recipe of a PROPOSED mission; its knowledge is frozen again."""
+    if name is not None and not RECIPE_NAME.fullmatch(name):
+        raise FactoryError("Recipe name must be lowercase letters, digits and hyphens")
+    return refresh(root, mission_id, recipe=name)
+
+
+def refresh(root, mission_id: str, recipe=KEEP) -> dict:
     """Re-freeze a PROPOSED mission's knowledge after the user saved new knowledge.
 
     If the only commits since the mission's base change .factory/crew/**, the base advances to
@@ -769,10 +837,15 @@ def refresh(root, mission_id: str) -> dict:
     """
     from .core import git, load_config
     from .evidence import is_metadata
-    from .workflow import update_mission
+    from .workflow import load_mission, update_mission
 
     config = load_config(root)
-    files, record = snapshot(root, mission_id, config)
+    current = load_mission(root, mission_id)
+    if recipe is KEEP:
+        recipe = ((current.get("crew") or {}).get("recipe") or {}).get("name")
+    elif recipe is not None:
+        assert_recipe_allowed((current.get("request") or {}).get("source"))
+    files, record = snapshot(root, mission_id, config, recipe)
     head = git(root, "rev-parse", "HEAD")
     entries = read_ledger(root)
 

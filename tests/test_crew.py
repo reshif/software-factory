@@ -489,3 +489,154 @@ def test_refresh_refuses_product_commits_since_the_base(repo):  # noqa: F811
     commit(repo, "product change")
     with pytest.raises(FactoryError, match="change more than .factory/crew"):
         crew.refresh(repo, id)
+
+
+# Phase 3: recipes and the interview
+
+from test_mission_030 import CRITERIA, cli
+
+RECIPE_WITH_DEFAULT = RECIPE_TEXT.replace(
+    "| Auth scope | maintainers only |", "| Storage | reuse the shared cache host (M-0007) |"
+)
+
+
+def save_recipe(root, text=RECIPE_WITH_DEFAULT):
+    propose(root, "recipe:add-endpoint", text)
+    approve(root, crew.list_proposals(root)[-1]["id"])
+    commit(root, "crew: recipe")
+
+
+def create_with(root, *extra, id="M-REQ"):
+    put(root, ".factory/local/request.md", "Please add an export endpoint for invoices.\n")
+    return cli(
+        root, "mission", "create", "--id", id, "--title", "Export", "--kind", "feature",
+        "--request-file", ".factory/local/request.md", *extra,
+    )["id"]  # fmt: skip
+
+
+def test_a_confirmed_recipe_is_frozen_into_the_mission(repo):  # noqa: F811
+    save_recipe(repo)
+    assert crew.match(repo, "Add an endpoint for exports")["matches"][0]["name"] == "add-endpoint"
+    id = create_with(repo, "--recipe", "add-endpoint")
+    record = load_mission(repo, id)["crew"]["recipe"]
+    assert record == {"name": "add-endpoint", "sha256": crew._sha(RECIPE_WITH_DEFAULT.encode())}
+    frozen = (repo / f".factory/missions/{id}/crew-context.md").read_text()
+    assert "## Recipe: add-endpoint" in frozen and "### Known pitfalls" in frozen
+    context = brief_text(repo, id, "context")
+    assert "- Round 0: open with the Defaults of recipe add-endpoint" in context
+    assert "reuse the shared cache host" in context
+
+
+def test_recipes_are_refused_for_untrusted_requests_and_unknown_names(repo):  # noqa: F811
+    save_recipe(repo)
+    with pytest.raises(FactoryError, match="never receives remembered answers"):
+        create_with(repo, "--recipe", "add-endpoint", "--source", "contributor")
+    with pytest.raises(FactoryError, match=r"No recipe missing .*known: add-endpoint"):
+        create_with(repo, "--recipe", "missing")
+    id = create_with(repo, "--source", "anonymous")
+    with pytest.raises(FactoryError, match="never receives remembered answers"):
+        cli(repo, "mission", "recipe", "--mission", id, "--use", "add-endpoint")
+
+
+def test_the_recipe_can_change_only_while_proposed(repo):  # noqa: F811
+    save_recipe(repo)
+    id = create_with(repo)
+    cli(repo, "mission", "recipe", "--mission", id, "--use", "add-endpoint")
+    assert load_mission(repo, id)["crew"]["recipe"]["name"] == "add-endpoint"
+    cli(repo, "mission", "recipe", "--mission", id, "--clear")
+    assert load_mission(repo, id)["crew"]["recipe"] is None
+    assert "## Recipe:" not in (repo / f".factory/missions/{id}/crew-context.md").read_text()
+    planned = plan_mission(repo, id="M-PLAN")
+    with pytest.raises(FactoryError, match="only to a PROPOSED mission"):
+        cli(repo, "mission", "recipe", "--mission", planned, "--use", "add-endpoint")
+
+
+def test_a_recipe_default_counts_only_once_the_user_answered_it(repo):  # noqa: F811
+    save_recipe(repo)
+    id = create_with(repo, "--recipe", "add-endpoint")
+    cited = {"items": [{**CRITERIA["items"][0], "excerpts": ["reuse the shared cache host"]}]}
+    with pytest.raises(FactoryError, match="matches nothing in the request or clarifications"):
+        cli(
+            repo, "mission", "criteria", "--mission", id, "--input", put(repo, ".factory/local/c.json", cited)
+        )
+    round0 = (
+        "Round 0 (recipe add-endpoint), still true?\n- Storage: reuse the shared cache host\n\nUser: ok\n"
+    )
+    cli(repo, "mission", "clarify", "--mission", id, "--input", put(repo, ".factory/local/r0.md", round0))
+    cli(repo, "mission", "criteria", "--mission", id, "--input", put(repo, ".factory/local/c.json", cited))
+
+
+def test_an_open_contradiction_blocks_scope_and_is_labelled(repo):  # noqa: F811
+    save_project(repo)
+    id = create(repo)["id"]
+    from test_mission_030 import author
+
+    author(repo, id)
+    contradiction = {"id": "Q-1", "text": "Request needs Redis; project rules say no new service",
+                     "status": "open", "origin": "contradiction", "decision": None}  # fmt: skip
+    cli(repo, "mission", "criteria", "--mission", id,
+        "--input", put(repo, ".factory/local/c.json", {**CRITERIA, "ambiguities": [contradiction]}))  # fmt: skip
+    with pytest.raises(FactoryError, match="Open ambiguities need a clarification or decision: Q-1"):
+        cli(repo, "mission", "accept-scope", "--mission", id)
+    assert "- Q-1 (contradiction): Request needs Redis" in brief_text(repo, id, "plan")
+
+
+def test_every_context_brief_carries_the_interview_rules(repo):  # noqa: F811
+    id = create(repo)["id"]
+    text = brief_text(repo, id, "context")
+    assert "There is no limit on questions or rounds" in text
+    assert "'(probably not considered)'" in text and "'(contradiction)'" in text
+
+
+def test_there_is_no_limit_on_interview_rounds(repo):  # noqa: F811
+    id = create(repo)["id"]
+    for number in range(1, 26):
+        cli(repo, "mission", "clarify", "--mission", id,
+            "--input", put(repo, ".factory/local/a.md", f"Round {number}: answer {number}.\n"))  # fmt: skip
+    assert len(load_mission(repo, id)["request"]["clarifications"]) == 25
+
+
+def test_recipe_pitfalls_reach_implementers_and_code_review(repo):  # noqa: F811
+    save_recipe(repo)
+    create(repo, kind="feature")
+    cli(repo, "mission", "recipe", "--mission", "M-REQ", "--use", "add-endpoint")
+    from test_mission_030 import author
+
+    author(repo, "M-REQ")
+    cli(
+        repo,
+        "mission",
+        "criteria",
+        "--mission",
+        "M-REQ",
+        "--input",
+        put(repo, ".factory/local/c.json", CRITERIA),
+    )
+    cli(repo, "mission", "accept-scope", "--mission", "M-REQ")
+    task = {
+        "id": "T-ONE",
+        "title": "Change app",
+        "owned_paths": ["src/**"],
+        "checks": ["unit"],
+        "criteria": ["AC-1"],
+    }
+    cli(
+        repo, "mission", "task-add", "--mission", "M-REQ", "--input", put(repo, ".factory/local/t.json", task)
+    )
+    implement(repo, "M-REQ")
+    for text in (brief_text(repo, "M-REQ", task="T-ONE"), brief_text(repo, "M-REQ", "code")):
+        assert "### Known pitfalls" in text and "Freeze time in limiter tests." in text
+    assert "Freeze time" not in brief_text(repo, "M-REQ", "acceptance")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "software-factory crew match --text 'add an endpoint'",
+        "software-factory crew refresh --mission M-1",
+        "software-factory mission recipe --mission M-1 --use add-endpoint",
+        "software-factory mission recipe --mission M-1 --clear",
+    ],
+)
+def test_guard_allows_choosing_recipes(command):
+    assert guard_decision(command) == (0, "")

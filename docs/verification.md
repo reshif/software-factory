@@ -1,5 +1,41 @@
 # Local release verification
 
+## 0.3.3 (local release, 2026-09-30)
+
+Version 0.3.3 builds Crew's FORGE loop into the factory (constitution 2.1.0; see [implementation.md](implementation.md) and [architecture.md](architecture.md)). It is built from commit `781e651` on branch `feat/0.3.3-crew` (PR #7, open). This is local artifact readiness plus a global CLI install; it makes no claim about publication, remote CI, a merge or deployment.
+
+### Results
+
+| Check | Result |
+|---|---|
+| `uv sync --locked` | OK |
+| `uv run pytest -q` (Python 3.14.4) | 1476 passed, 427 subtests passed |
+| Separate Python 3.11.16 environment, full suite | 1476 passed, 427 subtests passed, after fixing one 3.11-only test measurement (see below) |
+| `uv run ruff check .`, `uv run ruff format --check .` | Clean |
+| `uv build --no-sources` | `software_factory-0.3.3-py3-none-any.whl` (sha256 `4f1f6a2b…4519`), `software_factory-0.3.3.tar.gz` (sha256 `71400b92…ca50b`) |
+| `uv run python scripts/release_smoke.py <wheel>` | All eight stages pass, including the new crew stage |
+| sdist inspection | Tests, scripts, both locks and AGENTS.md present; no private state, caches or Node |
+| Global install | `/home/reshif/.local/bin/software-factory` reports 0.3.3; a fresh `init --profile claude,codex,copilot --commit` passes `doctor` with pinned version 0.3.3 |
+
+Exact hashes and the file-level source identity are in [verification.json](verification.json).
+
+The new crew stage of the release smoke runs against the installed wheel: constitution 2.1.0 in AGENTS.md and no question cap anywhere in the installed text; `/factory-onboard` and `/factory-retro` exported; `crew propose` storing a proposal without writing `.factory/crew`; `crew apply` refusing without a terminal; the pinned guard denying `crew apply`, `crew forget` and `crew import`; the real installed chat hook saving `approve P-0001 crew` into the ledger; a feature mission refused at scope without graded options; a product brief refused while knowledge changed, then allowed after `crew refresh`; and `.factory/crew` kept by uninstall.
+
+On Python 3.11, `test_context_takes_one_stat_per_watched_path` failed because pathlib's own `exists()`, `is_file()` and `resolve()` call `Path.stat` before 3.12, so the test counted pathlib's calls, not routing's. Neither routing nor the test changed in this release; the test now counts only routing's own calls and passes on 3.11 and 3.14.
+
+### Independent review
+
+A read-only reviewer (Opus) checked the whole 0.3.3 diff for authority bypasses, gate integrity, correctness and user-file safety. It found no authority bypass. Its findings, all fixed with regression tests before the release commit:
+
+- **Blocking:** `approve ID scope` (chat or terminal) failed for a feature mission whose request dictates a single option, because scope approval checked the options without the request texts.
+- **Should-fix:** unapproved knowledge could be frozen into new missions or moved past by `crew refresh`. Now only knowledge matching the ledger is frozen, an unapproved recipe is refused, and refresh requires a verified ledger, matching files and no other change under `.factory/crew`.
+- **Should-fix:** a user override of the graded winner could cite any clarification; it must now name the chosen option.
+- **Minor:** retro defaults need at least 8 characters; a failed refresh restores the frozen files; a pinned hash needs 8+ hex characters; section insertion ignores fenced headings and trailing spaces.
+
+### Not run
+
+Live Claude Code, Codex and Copilot sessions (the chat hook and guard ran offline and through the installed pinned runtime only), paid JEV inference, macOS and Windows, remote CI, and the merge of PR #7, which the user performs.
+
 ## 0.3.2 (local candidate, 2026-09-28)
 
 Version 0.3.2 is built and verified locally on branch `feat/0.3.2-hardening`. It adds the WP1–WP6 hardening work packages, plus fixes for the gaps found by the independent gap assessment of 2026-09-28:

@@ -818,3 +818,48 @@ def validate_verification(root, mission, config, candidate, tasks=None, referenc
     except (FactoryError, OSError, KeyError, TypeError) as exc:
         reasons.append(f"Invalid verification evidence: {exc}")
     return {"reasons": reasons, "evidence": evidence, "reference": reference}
+
+
+def add_check(root, check_id, command):
+    """Write a required product check into factory.json and re-render (the user's setup step).
+
+    Replaces the failing configure-me placeholder. factory.json is a protected path, so this is
+    for the user to run before a mission starts, then commit; the orchestrator guard denies it.
+    """
+    import json
+
+    from .core import assert_id, load_config, read_json, write_bytes
+    from .onboarding import PLACEHOLDER_CHECK
+    from .rendering import render
+
+    assert_id(check_id)
+    if not command or not all(isinstance(part, str) and part for part in command):
+        raise FactoryError(
+            "Give the check command after --, for example: software-factory checks --add tests -- uv run pytest"
+        )
+    config = read_json(root, "factory.json")
+    checks = [c for c in config.get("checks", []) if c.get("id") != PLACEHOLDER_CHECK]
+    if any(c.get("id") == check_id for c in checks):
+        raise FactoryError(f"A check named {check_id} already exists in factory.json; edit it there")
+    timeout = (config.get("limits") or {}).get("check_timeout_seconds", 300)
+    checks.append(
+        {"id": check_id, "command": list(command), "cwd": ".", "required": True, "timeout_seconds": timeout}
+    )
+    previous = safe_path(root, "factory.json").read_bytes()
+    write_bytes(
+        root, "factory.json", (json.dumps({**config, "checks": checks}, indent=2) + "\n").encode(), mode=0o644
+    )
+    try:
+        load_config(root)
+        rendered = render(root)
+    except BaseException:
+        write_bytes(root, "factory.json", previous, mode=0o644)
+        raise
+    return {
+        "added": check_id,
+        "command": list(command),
+        "checks": [c["id"] for c in checks],
+        "rendered": rendered.get("changed", []),
+        "note": "Not run yet. It may fail until the project has tests; verification runs it for every mission.",
+        "commit": f'git add -A && git commit -m "Configure the {check_id} check"',
+    }

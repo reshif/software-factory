@@ -193,8 +193,8 @@ def next_steps(
     edited = False
     if any(c.get("id") == PLACEHOLDER_CHECK for c in checks):
         steps.append(
-            "Edit factory.json: replace the failing configure-me check with your product's test command "
-            '(an argv array, e.g. "command": ["python", "-m", "pytest"])'
+            "Set your product's test command (it replaces the failing configure-me check and re-renders): "
+            "software-factory checks --add tests -- <your test command, e.g. uv run pytest>"
         )
         edited = True
     elif detected:

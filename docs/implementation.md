@@ -44,6 +44,16 @@ Built in seven reviewed steps, each with the full suite, lint, build and an isol
 
 Removed as superseded: the 0.2.x release artifacts, the 0.2.5 architecture set (replaced by [architecture.md](architecture.md)) and the research drafts, at the user's request.
 
+## 0.3.4 setup friction
+
+Found by the user's first real mission on 0.3.3 (a greenfield Nautobot DHCP project): they had enabled orchestrator enforcement in `factory.json` without rendering or committing, so the mission was created, could not be briefed, was blocked, then cancelled and recreated.
+
+- `mission create` refuses while a protected path has uncommitted changes or exports are stale (the gate's own condition: only when `factory.lock.json` exists), and says exactly what the user runs.
+- `mission rebase --mission ID` moves a PROPOSED mission without tasks past commits that change only protected factory paths, keeping the request and clarifications and re-freezing saved knowledge. It is the same result as cancel-and-recreate, so it weakens nothing: it refuses product commits, unfinished setup, a changed constitution and any later state.
+- The orchestrator stops before creating a mission on unfinished setup, asks no questions of its own before the planner's context exists, and names the `configure-me` placeholder up front.
+- `software-factory checks --add ID -- COMMAND` (the user's setup step; the guard denies it) writes a required check, replaces the placeholder, re-renders and prints the commit line, so an empty repository can be given its test command before the first mission.
+- Mission commands print a summary of the record (state, version, request chain, criteria, tasks, decisions, reviews, blockers); `--full` or `mission status` prints everything.
+
 ## 0.3.1 constitution 2.0.0
 
 Constitution 2.0.0 replaces 1.0.0's twenty flat rules with sections ordered by precedence (Never, Authority and intent, Evidence, Roles and review, Craft, Amendment) and a stated conflict rule: the earlier section wins, and within a section the rule that withholds a claim, change or approval wins. It moves into the constitution obligations that 0.3.0 stated only in roles and skills: the verbatim request as the contract, asking ambiguities up front, the orchestrator never producing, specialists spawning no agents and changing no mission records, advice (model recommendations, semantic assistance, self-assessment) never counting as verification, and missing independence being reported rather than simulated. Role, skill and prompt text now cites rules by title and keeps only operational steps. It is MAJOR because obligations were redefined and renumbered (READY_PR's boundary moved from rule 20 to *Honest records*). Each rule's enforcement, and where it is instruction-only, is mapped in `data/docs/runbooks/constitution-enforcement.md`.

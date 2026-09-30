@@ -633,8 +633,12 @@ def mission_summary(mission):
             {"id": r["id"], "kind": r.get("kind"), "status": r["status"]} for r in mission.get("reviews", [])
         ],
         "blockers": [b if isinstance(b, str) else b.get("reason") for b in mission.get("blockers", [])],
-        "note": SUMMARY_NOTE,
+        "about": SUMMARY_NOTE,
     }
+    # Hints a command adds beside the record (resume instructions, handoff packets, warnings).
+    for key in ("note", "next", "warnings", "handoff_packet", "handoff_packet_error", "live_gate"):
+        if key in mission:
+            summary[key] = mission[key]
     crew_record = mission.get("crew")
     if crew_record:
         summary["crew"] = {
@@ -686,8 +690,15 @@ SETUP_FIRST = (
 )
 
 
-def rebase_mission(root, id):
+def rebase_mission(root, id, *, decision=None, in_flight=False, only_commit=None):
     """Move a PROPOSED mission's base past setup commits, keeping its request and clarifications.
+
+    With ``in_flight`` (only after the user approved a setup proposal, named by ``decision``) a
+    mission in any pre-merge state moves too, provided no task is active: its verification and
+    reviews bind the old configuration through the candidate fingerprint, so they are stale and
+    must be run again under the approved setup. It moves only when the approved commit
+    (``only_commit``) is the single non-record change since its base: an earlier commit to a
+    protected path stays in the mission's candidate, where the gate reports it.
 
     Equivalent to cancelling the mission and creating it again on the new commit, without losing
     what the user already answered. Allowed only before any scope is accepted or task exists, when
@@ -704,7 +715,7 @@ def rebase_mission(root, id):
     if problems:
         raise FactoryError(SETUP_FIRST.format(problems="; ".join(problems)))
     files, record, previous = {}, None, {}
-    if "crew" in current:
+    if "crew" in current and current["state"] == "PROPOSED":
         recipe = (current["crew"].get("recipe") or {}).get("name")
         files, record = crew.snapshot(root, id, config, recipe)
         previous = {relative: crew._read(safe_path(root, relative)) for relative in files}
@@ -719,10 +730,15 @@ def rebase_mission(root, id):
                 )
 
     def mutate(mission):
-        if mission["state"] != "PROPOSED" or mission["tasks"]:
+        if in_flight:
+            if effective_state(mission) not in PRE_MERGE_STATES:
+                raise FactoryError(f"Mission {id} is past merge; its base does not move")
+            if any(t["status"] in ACTIVE_TASK_STATES for t in mission["tasks"]):
+                raise FactoryError(f"Stop the active tasks of {id} before its setup changes")
+        elif mission["state"] != "PROPOSED" or mission["tasks"]:
             raise FactoryError(
-                "mission rebase applies only to a PROPOSED mission without tasks; later, a setup change needs a "
-                "new mission from the new commit"
+                "mission rebase applies only to a PROPOSED mission without tasks; later, a setup change goes "
+                "through a setup proposal the user approves (software-factory setup propose)"
             )
         if hash_file(root, CONSTITUTION_PATH) != mission["constitution_hash"]:
             raise FactoryError(
@@ -738,8 +754,40 @@ def rebase_mission(root, id):
             raise FactoryError(
                 f"Mission base {base} is not an ancestor of HEAD; create a new mission"
             ) from exc
-        policy, baseline = _policy(root, mission)
-        protected = _protected_patterns(policy, baseline)
+        try:
+            recorded_branch = git(root, "symbolic-ref", "--short", "HEAD")
+        except FactoryError:
+            recorded_branch = "DETACHED"
+        if mission.get("branch") not in (None, recorded_branch):
+            raise FactoryError(
+                f"Mission {id} was created on branch {mission['branch']}, not {recorded_branch}; move it there"
+            )
+        # The mission's own baseline decides what counts as setup: a later policy edit cannot
+        # turn product paths into protected ones.
+        _, baseline = _policy(root, mission)
+        protected = _protected_patterns({}, baseline)
+        if only_commit is not None:
+            earlier = [
+                p
+                for p in git(
+                    root,
+                    "diff",
+                    "--no-ext-diff",
+                    "--name-only",
+                    "--no-renames",
+                    base,
+                    f"{only_commit}^",
+                    "--",
+                ).split("\n")
+                if p and not is_metadata(p)
+            ]
+            if only_commit != head or earlier:
+                raise FactoryError(
+                    "Other commits since this mission's base changed "
+                    + (", ".join(earlier[:5]) or "the branch")
+                    + "; only the approved setup commit may be moved past, so this mission keeps its base and its "
+                    "gate reports those changes"
+                )
         changed = git(root, "diff", "--no-ext-diff", "--name-only", "--no-renames", base, head, "--").split(
             "\n"
         )
@@ -753,9 +801,12 @@ def rebase_mission(root, id):
                 + "), not only factory setup; create a new mission from the new commit"
             )
         mission.setdefault("base_history", []).append(
-            {"from": base, "to": head, "decision": f"SETUP-{head[:8]}", "at": now()}
+            {"from": base, "to": head, "decision": decision or f"SETUP-{head[:8]}", "at": now()}
         )
         mission["base_commit"] = head
+        if in_flight:
+            # A recorded CI result belongs to the old configuration; merging needs a new one.
+            (mission.get("delivery") or {}).pop("ci_ref", None)
         if record is not None:
             mission["crew"] = record
             crew.write_snapshot(root, files)
@@ -798,7 +849,15 @@ def create_mission(root, input, require_request=False):
             f"A request from a {source} is untrusted input, so it takes the feature lane (--kind feature), "
             "not the patch lane"
         )
-    if require_request and revision is None:
+    at_head = revision is None
+    if revision is not None:
+        try:
+            at_head = git(root, "rev-parse", "--verify", f"{revision}^{{commit}}") == git(
+                root, "rev-parse", "HEAD"
+            )
+        except FactoryError:
+            at_head = False
+    if require_request and at_head:
         problems = setup_problems(root)
         if problems:
             raise FactoryError(SETUP_FIRST.format(problems="; ".join(problems)))

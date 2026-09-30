@@ -62,16 +62,64 @@ def record_crew(project: Path, prompt: str, session: str, at: str) -> list[str]:
                 items=items,
                 reference=f'Approved by the user in Claude Code chat (session {session}, {at}): "{line}"',
                 confirm=lambda *_: None,
+                commit=True,
             )
             notes.append(
                 f"software-factory saved knowledge proposal {proposal} ({saved['target']}, sha256 "
-                f"{saved['sha256'][:8]}) from the user's chat message. Tell the user to commit it: "
-                f"{saved.get('commit', '')}"
+                f"{saved['sha256'][:8]}) from the user's chat message and committed it "
+                f"({saved.get('committed') or 'nothing to commit'}). Refreshed missions: "
+                f"{', '.join(saved.get('refreshed', [])) or 'none'}."
+                + "".join(
+                    f" {m} was NOT refreshed: {why}." for m, why in (saved.get("not_refreshed") or {}).items()
+                )
             )
         except (FactoryError, OSError, ValueError, KeyError) as exc:
             notes.append(
                 f"software-factory could not save knowledge proposal {proposal}: {exc}. "
                 "Tell the user; do not write knowledge yourself."
+            )
+    return notes
+
+
+# `approve S-0001 setup [hash]`: apply and commit setup proposal S-0001 exactly as proposed.
+SETUP_APPROVAL = re.compile(
+    r"(?im)^[^\S\n]*approve[^\S\n]+(S-[0-9]{4,})[^\S\n]+setup\b(?:[^\S\n]+([0-9a-fA-F]{8,64})\b)?[^\n]*"
+)
+
+
+def record_setup(project: Path, prompt: str, session: str, at: str) -> list[str]:
+    """Apply each setup proposal the user approved in their own message."""
+    matches = list(SETUP_APPROVAL.finditer(prompt))
+    if not matches:
+        return []
+    from software_factory.core import FactoryError
+    from software_factory.setup_proposals import apply
+
+    notes = []
+    for match in matches:
+        proposal, pin, line = match.group(1), match.group(2), match.group(0).strip()[:300]
+        try:
+            done = apply(
+                project,
+                proposal,
+                via="chat",
+                pin=pin,
+                reference=f'Claude Code chat (session {session}, {at}): "{line}"',
+                confirm=lambda *_: None,
+            )
+            moved = ", ".join(
+                f"{m['mission']} {'moved' if 'base_commit' in m else 'NOT moved: ' + m['not_moved']}"
+                for m in done["missions"]
+            )
+            notes.append(
+                f"software-factory applied setup proposal {proposal} from the user's chat message: committed "
+                f"{done['commit']} with checks {', '.join(done['checks'])}. Missions: {moved or 'none open'}. "
+                "Continue; do not cancel or recreate a moved mission."
+            )
+        except (FactoryError, OSError, ValueError, KeyError) as exc:
+            notes.append(
+                f"software-factory could not apply setup proposal {proposal}: {exc}. "
+                "Tell the user; do not edit factory.json yourself."
             )
     return notes
 
@@ -83,7 +131,7 @@ def record(project: Path, payload: dict) -> list[str]:
         return []
     session = payload.get("session_id") if isinstance(payload.get("session_id"), str) else "unknown"
     at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    notes = record_crew(project, prompt, session, at)
+    notes = record_setup(project, prompt, session, at) + record_crew(project, prompt, session, at)
     matches = list(APPROVAL.finditer(prompt))
     if not matches:
         return notes

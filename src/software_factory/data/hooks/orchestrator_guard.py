@@ -115,6 +115,10 @@ HUMAN_ONLY = {
     ("mission", "unhalt"): (
         "software-factory mission unhalt lifts the kill switch; only the user runs it, in their terminal"
     ),
+    ("setup", "apply"): (
+        "software-factory setup apply changes the checks the work is judged by; show the user the proposal's "
+        "exact change and ask them to reply `approve S-n setup` in chat or run setup apply in their terminal"
+    ),
     ("crew", "apply"): (
         "software-factory crew apply saves knowledge the user approved; show the user the proposal's exact "
         "text and ask them to reply `approve P-n crew` in chat or run crew apply in their terminal"
@@ -167,6 +171,11 @@ FACTORY_SUBCOMMANDS = {
         "model-plan": INPUT_ONLY,
         "record-delivery": INPUT_ONLY,
         "template": ({"--mission", "--kind"}, set()),
+    },
+    "setup": {
+        "propose": ({"--input"}, set()),
+        "show": ({"--proposal"}, set()),
+        "proposals": (set(), set()),
     },
     "crew": {
         "status": (set(), set()),

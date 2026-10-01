@@ -215,6 +215,9 @@ def crew_checks(command, work, env, shell):
     run([command, "init", str(project), "--profile", "claude,codex,copilot", "--commit"], cwd=work, env=env)
     agents = (project / "AGENTS.md").read_text()
     assert "Version: 2.1.0" in agents and "with no fixed number" in agents
+    assert "is not product code: do not read or search it" in agents
+    deny = json.loads((project / ".claude/settings.json").read_text())["permissions"]["deny"]
+    assert {"Read(./.factory/src/**)", "Read(./.factory/.venv/**)"} <= set(deny), deny
     installed = [p for p in project.rglob("*.md") if ".venv" not in p.parts]
     assert not any("two or three questions" in p.read_text() for p in installed)
     for name in ("factory-onboard", "factory-retro"):

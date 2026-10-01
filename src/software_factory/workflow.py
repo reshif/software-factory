@@ -2124,7 +2124,7 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             "Return the content for context.md with these sections: Codebase map; Conventions; Affected files"
             " and tests; Dependencies; External documentation; Open questions. Each open question names the"
             " evidence behind it, why the answer matters, and a suggested default the user can accept with"
-            " 'ok'; order them by impact and group them into one interview round."
+            " 'ok'; order them by impact (the orchestrator asks at most 5 per round)."
             if kind == "context"
             else "Return research findings for context.md: each question, the answer, its sources and the"
             " remaining uncertainty.",
@@ -2143,8 +2143,14 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
                 "## Interview rules",
                 "",
                 (
-                    "- There is no limit on questions or rounds: ask everything whose answer would change the"
-                    " result, ordered by impact, and nothing whose answer would not."
+                    "- Rounds are unlimited, but each round has at most 5 questions: list everything whose answer"
+                    " would change the result, ranked by impact, and nothing whose answer would not; settle"
+                    " routine choices as assumptions instead of asking."
+                ),
+                (
+                    "- Write each question as one short sentence in plain words a non-expert can answer (no file"
+                    " paths, jargon or stacked sub-questions), then one line on why it matters (put evidence and"
+                    " paths there) and a suggested answer; offer two or three concrete choices where they exist."
                 ),
                 (
                     "- Include at least one question marked '(probably not considered)': the belief, constraint or"

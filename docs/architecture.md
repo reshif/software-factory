@@ -1,6 +1,6 @@
-# Software Factory 0.3.3 architecture
+# Software Factory architecture
 
-This describes the Python/uv package as released in 0.3.3 and supersedes the 0.2.x architecture set. What the factory is: a repository-local workflow kernel that coding agents (Claude Code, Codex, GitHub Copilot) drive through a CLI. It records missions, briefs specialists, runs the project's own checks, and refuses readiness until the evidence holds. What it is not: a server, a scheduler, an agent runtime, an authentication service or a sandbox. Every record is local and unattested (*Honest records*); the coding client's permissions and the user's authorization stay authoritative.
+This describes the Python/uv package as of 0.3.9 (the knowledge, options and retro design arrived in 0.3.3; automatic commits and publishing in 0.3.8; per-role models in 0.3.9) and supersedes the 0.2.x architecture set. What the factory is: a repository-local workflow kernel that coding agents (Claude Code, Codex, GitHub Copilot) drive through a CLI. It records missions, briefs specialists, runs the project's own checks, and refuses readiness until the evidence holds. What it is not: a server, a scheduler, an agent runtime, an authentication service or a sandbox. Every record is local and unattested (*Honest records*); the coding client's permissions and the user's authorization stay authoritative.
 
 ## 1. Components
 
@@ -57,7 +57,8 @@ flowchart TB
 
 ```mermaid
 flowchart TD
-  REQ(["User request"]) --> CREATE["mission create<br/>verbatim request, optional confirmed recipe<br/>freezes crew-context.md"]
+  REQ(["User request"]) --> MODELS["Setup and models confirmed?<br/>else setup propose, approve S-n setup"]
+  MODELS --> CREATE["mission create<br/>verbatim request, optional confirmed recipe<br/>freezes crew-context.md, binds the model map"]
   CREATE --> CTX["F: context brief<br/>codebase map, saved knowledge, profile as evidence"]
   CTX --> INT["R: interview in rounds, no limit<br/>round 0 recipe defaults, an unconsidered question,<br/>contradictions as open ambiguities"]
   INT --> AS["Assessment<br/>blockers, concerns with evidence, risks"]
@@ -71,21 +72,21 @@ flowchart TD
   PLAN2 --> APPROVE{"User: approve ID scope<br/>chat hook or terminal"}
   APPROVE --> ACCEPT["accept-scope binds spec, criteria,<br/>context, assessment, plan, knowledge, options, grading"]
   ACCEPT --> LANES["Tasks in parallel lanes<br/>worktree per task, integrate one at a time"]
-  LANES --> VERIFY["verify: configured checks as evidence"]
+  LANES --> VERIFY["verify: commits the task's files on factory/ID,<br/>then runs the configured checks as evidence"]
   VERIFY --> REVIEW["Independent reviews by lane and risk<br/>code, acceptance, adversarial"]
   REVIEW --> GATE{"Readiness gate"}
-  GATE -- "pass" --> READY(["READY_PR (local evidence)"])
+  GATE -- "pass" --> READY(["READY_PR (local evidence)<br/>mission records committed"])
   GATE -- "reasons" --> LANES
   READY --> RETRO["E: retro offered on signals<br/>records only, typed lessons with evidence"]
   RETRO --> LESSON{"User approves items<br/>approve P-n crew 1,3"}
   LESSON --> KNOW[(".factory/crew<br/>project rules, recipes, ledger")]
   KNOW -. "next mission" .-> CREATE
-  READY --> MERGE["CI result, merge approval, MERGED"]
+  READY --> MERGE["approve ID publish: push + PR<br/>mission sync: CI, approve ID merge, MERGED"]
 ```
 
 Mission states: PROPOSED → PLANNED (accept-scope) → IMPLEMENTING → VERIFYING → REVIEWING → READY_PR → MERGED, with PAUSED and BLOCKED holds, CANCELED, and optional delivery states after MERGED. Transitions come from `workflow.json`; every write of `mission.json` appends a hash-chained event.
 
-What `init` does step by step, what every file under `.factory/` is for and who reads it, and where parallel work happens are in the installed guide, [src/software_factory/data/docs/architecture.md](../src/software_factory/data/docs/architecture.md) (copied to `.factory/docs/architecture.md` in every project).
+Every step of a build under the hood (hooks, commands, transitions, what is written and committed), what `init` does step by step, what every file under `.factory/` is for and who reads it, and where parallel work happens are in the installed guide, [src/software_factory/data/docs/architecture.md](../src/software_factory/data/docs/architecture.md) (copied to `.factory/docs/architecture.md` in every project).
 
 ## 3. Authority: who may record what
 

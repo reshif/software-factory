@@ -288,11 +288,16 @@ def crew_checks(command, work, env, shell):
     runtime = str(project / ".factory/.venv/bin/python")
     guard = str(project / ".factory/hooks/orchestrator_guard.py")
     for line in ("software-factory crew apply --proposal P-0001", "software-factory crew forget --target project",
-                 "software-factory crew import --from ~/crew"):  # fmt: skip
+                 "software-factory crew import --from ~/crew", "software-factory mission publish --mission M-1"):  # fmt: skip
         payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": line}}
         result = subprocess.run([runtime, "-I", "-B", guard], cwd=project, env=env, input=json.dumps(payload),
                                 capture_output=True, text=True, check=False, timeout=60)  # fmt: skip
         assert result.returncode == 2, (line, result.stdout, result.stderr)
+    sync = {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": {"command": ".factory/.venv/bin/software-factory mission sync --mission M-1"}}  # fmt: skip
+    result = subprocess.run([runtime, "-I", "-B", guard], cwd=project, env=env, input=json.dumps(sync),
+                            capture_output=True, text=True, check=False, timeout=60)  # fmt: skip
+    assert result.returncode == 0, (result.stdout, result.stderr)
     settings = json.loads((project / ".claude/settings.json").read_text())
     chat = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
     prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "smoke", "prompt": "approve P-0001 crew"}

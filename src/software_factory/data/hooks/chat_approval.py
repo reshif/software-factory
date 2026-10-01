@@ -11,6 +11,9 @@ denies `mission approve`. The hook tells the model what it recorded, or why it c
 It is a local guardrail, not authentication: any process running as the user can edit the
 mission records. It never blocks or rewrites the prompt: every path exits 0.
 
+A line `approve M-0001 publish` pushes that READY_PR mission's work branch and opens its pull request
+through `software-factory mission publish` (the user's own approval to publish).
+
 A line `approve P-0003 crew` (optionally followed by the proposal's hash prefix) saves that
 project-knowledge proposal exactly as proposed, through `software-factory crew apply`.
 
@@ -124,6 +127,37 @@ def record_setup(project: Path, prompt: str, session: str, at: str) -> list[str]
     return notes
 
 
+# `approve M-0001 publish`: push the reviewed work branch and open its pull request (mission publish).
+PUBLISH_APPROVAL = re.compile(
+    r"(?im)^[^\S\n]*approve[^\S\n]+([A-Za-z][A-Za-z0-9_-]{0,79})[^\S\n]+publish\b[^\n]*"
+)
+
+
+def record_publish(project: Path, prompt: str) -> list[str]:
+    """Publish each mission the user approved publishing in their own message."""
+    matches = list(PUBLISH_APPROVAL.finditer(prompt))
+    if not matches:
+        return []
+    from software_factory.core import FactoryError
+    from software_factory.delivery import publish
+
+    notes = []
+    for match in matches:
+        mission_id = match.group(1)
+        try:
+            done = publish(project, mission_id, via="chat", confirm=lambda *_: None)
+            notes.append(
+                f"software-factory published {mission_id} from the user's chat message: pushed {done['branch']} "
+                f"to {done['remote']} and opened {done['pull_request']}. Run `software-factory mission sync "
+                f"--mission {mission_id}` to record CI once it finishes."
+            )
+        except (FactoryError, OSError, ValueError, KeyError) as exc:
+            notes.append(
+                f"software-factory could not publish {mission_id}: {exc}. Tell the user; do not push yourself."
+            )
+    return notes
+
+
 def record(project: Path, payload: dict) -> list[str]:
     """Record each approval line of the user's prompt; return notes for the model."""
     prompt = payload.get("prompt")
@@ -131,7 +165,11 @@ def record(project: Path, payload: dict) -> list[str]:
         return []
     session = payload.get("session_id") if isinstance(payload.get("session_id"), str) else "unknown"
     at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    notes = record_setup(project, prompt, session, at) + record_crew(project, prompt, session, at)
+    notes = (
+        record_setup(project, prompt, session, at)
+        + record_crew(project, prompt, session, at)
+        + record_publish(project, prompt)
+    )
     matches = list(APPROVAL.finditer(prompt))
     if not matches:
         return notes

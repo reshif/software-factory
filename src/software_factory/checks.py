@@ -572,6 +572,21 @@ def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=Fa
         raise FactoryError(f"Cannot verify {mission['state']} mission; reconcile and resume first")
     if not postmerge and candidate_root != root:
         raise FactoryError("--candidate-root is only supported for recorded postmerge CI candidates")
+    committed = None
+    if not postmerge and candidate_root == root:
+        from .delivery import commit_task_work
+
+        # Evidence binds the candidate's head: commit the work it verifies first (0.3.8).
+        try:
+            committed = commit_task_work(root, mission_id)
+        except FactoryError as exc:
+            committed = {
+                "warning": f"The tasks' work was not committed: {exc}. Evidence from this run binds the "
+                "uncommitted tree; once fixed, verify again with a new --revision before any review"
+            }
+        else:
+            if committed:
+                mission = load_mission(root, mission_id)
     private_dir(root)
     relative = f".factory/missions/{mission_id}/evidence/{revision}"
     run_dir = safe_path(root, relative)
@@ -620,7 +635,9 @@ def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=Fa
             raise FactoryError("Cannot verify unresolved merge conflicts")
         if postmerge:
             ci = mission.get("delivery", {}).get("ci_ref", {})
-            if before["head"] != ci.get("head_sha") or before["fingerprint"] != ci.get("fingerprint"):
+            if before["head"] != ci.get("candidate_head", ci.get("head_sha")) or before[
+                "fingerprint"
+            ] != ci.get("fingerprint"):
                 raise FactoryError(
                     "Postmerge verification requires the exact recorded CI candidate in an isolated checkout"
                 )
@@ -707,7 +724,12 @@ def verify_mission(root, mission_id, revision, candidate_root=None, reconcile=Fa
             and not evidence["monitoring_uncertain"]
             and all(successful_check(next((c for c in results if c["id"] == i), None)) for i in required)
         )
-        return {"pass": passed, "reference": reference, **evidence}
+        return {
+            "pass": passed,
+            "reference": reference,
+            **evidence,
+            **({"committed": committed} if committed else {}),
+        }
     finally:
         if monitor:
             monitor.close()

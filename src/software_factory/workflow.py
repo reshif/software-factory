@@ -636,7 +636,15 @@ def mission_summary(mission):
         "about": SUMMARY_NOTE,
     }
     # Hints a command adds beside the record (resume instructions, handoff packets, warnings).
-    for key in ("note", "next", "warnings", "handoff_packet", "handoff_packet_error", "live_gate"):
+    for key in (
+        "note",
+        "next",
+        "warnings",
+        "handoff_packet",
+        "handoff_packet_error",
+        "live_gate",
+        "committed_records",
+    ):
         if key in mission:
             summary[key] = mission[key]
     crew_record = mission.get("crew")
@@ -3256,6 +3264,23 @@ def transition_mission(root, id, to, reason=None, next=None, decision=None):
         mission["state"] = to
 
     result = update_mission(root, id, mutate, readiness=to == "READY_PR")
+    if to == "READY_PR":
+        from .delivery import commit_records
+
+        # A records-only commit: the reviewed candidate's content head does not move (0.3.8).
+        try:
+            committed = commit_records(root, id, "ready for pull request")
+        except FactoryError as exc:
+            result.setdefault("warnings", []).append(f"Mission records were not committed: {exc}")
+        else:
+            if committed:
+                result["committed_records"] = committed
+        result.setdefault(
+            "next",
+            f"Ask the user to reply `approve {id} publish` (or run `software-factory mission publish --mission {id}` "
+            f"in their terminal); the factory pushes and opens the pull request, then `mission sync --mission {id}` "
+            "records CI",
+        )
     if to == "CANCELED":
         try:
             result["handoff_packet"] = create_packet(root, id, "handoff")["path"]
@@ -4470,7 +4495,7 @@ def record_ci(root, id, url=None, head=None, conclusion=None, reason=None, trunk
             if mission["state"] != "READY_PR":
                 raise FactoryError("A CI result can only be recorded for READY_PR")
             # A failure is recorded against the checked-out candidate, like a success.
-            if head != git(root, "rev-parse", "HEAD"):
+            if head not in (git(root, "rev-parse", "HEAD"), candidate_snapshot(root)["head"]):
                 raise FactoryError(
                     "CI head is not the checked-out candidate commit (HEAD); record the failure from the"
                     " work branch whose HEAD CI tested"
@@ -4496,7 +4521,9 @@ def record_ci(root, id, url=None, head=None, conclusion=None, reason=None, trunk
         raise FactoryError(
             "Commit the reviewed candidate before recording CI: " + ", ".join(snapshot["dirty_paths"])
         )
-    if head != snapshot["head"]:
+    # CI may have tested HEAD or the reviewed content head below records-only commits; both carry
+    # exactly the reviewed product content.
+    if head not in (snapshot["commit"], snapshot["head"]):
         raise FactoryError("CI head is not the reviewed candidate commit")
     from .civerify import verification_mode, verify_with_gh
 
@@ -4510,7 +4537,7 @@ def record_ci(root, id, url=None, head=None, conclusion=None, reason=None, trunk
         branch = current_branch(root)
         if same_branch(branch, selected["name"]) or is_ancestor(root, head, selected["sha"]):
             raise FactoryError("CI must be recorded from a work branch with candidate not yet on trunk")
-        if git(root, "rev-parse", "HEAD") != head:
+        if head not in (git(root, "rev-parse", "HEAD"), candidate_snapshot(root)["head"]):
             raise FactoryError("CI head is not the reviewed candidate commit")
         current = assess_gate(root, id)
         if (
@@ -4523,6 +4550,7 @@ def record_ci(root, id, url=None, head=None, conclusion=None, reason=None, trunk
             "fingerprint_format": "git-mode-v1",
             "url": url,
             "head_sha": head,
+            **({"candidate_head": snapshot["head"]} if snapshot["head"] != head else {}),
             "branch": branch,
             "trunk": selected["name"],
             "trunk_kind": selected["kind"],
@@ -4598,7 +4626,7 @@ def assess_merged(root, id, mission=None):
             candidate = {
                 "fingerprint": ci["fingerprint"],
                 "fingerprint_format": ci.get("fingerprint_format"),
-                "head": ci["head_sha"],
+                "head": ci.get("candidate_head", ci["head_sha"]),
                 "spec_hash": mission["spec_hash"],
             }
             current = validate_verification(root, mission, config, candidate)
@@ -5118,6 +5146,10 @@ def _mission_handler(args):
     catalog = read_json(root, args.model_catalog) if getattr(args, "model_catalog", None) else None
     if command == "rebase":
         return rebase_mission(root, id)
+    if command in {"publish", "sync"}:
+        from .delivery import handle
+
+        return handle(root, command, id)
     if command == "recipe":
         from .crew import set_recipe
 
@@ -5287,6 +5319,8 @@ def add_parser(subparsers):
         "resume": "Resume a blocked mission with a recorded resolution",
         "recipe": "Use a saved recipe the user confirmed (--use NAME) or stop using one (--clear); PROPOSED only",
         "rebase": "Move a PROPOSED mission's base past factory-setup commits, keeping its request and answers",
+        "publish": "Push a READY_PR mission's work branch and open its pull request (the user's own terminal)",
+        "sync": "Record what GitHub reports for a published mission: CI for its commit, then the merge",
         "accept-scope": "Record acceptance of the mission scope",
         "clarify": "Append a verbatim clarification from a --input text file",
         "criteria": "Record acceptance criteria, exclusions and ambiguities from --input JSON",
@@ -5357,6 +5391,8 @@ def add_parser(subparsers):
         "resume",
         "recipe",
         "rebase",
+        "publish",
+        "sync",
         "accept-scope",
         "clarify",
         "criteria",
@@ -5399,6 +5435,8 @@ def add_parser(subparsers):
             "status",
             "history",
             "lanes",
+            "publish",
+            "sync",
         }:
             parser.add_argument(
                 "--full", action="store_true", help="Print the whole mission record instead of the summary"

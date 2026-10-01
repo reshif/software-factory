@@ -43,7 +43,7 @@ Blueprint runs the same flow up to the plan and stops before implementation. A m
 
 *The orchestrator never produces* is an instruction in every client. In Claude Code a project-wide PreToolUse guard (`.claude/settings.json`, on by default) applies to every main-session tool call, so every main session is the orchestrator; specialist calls carry their agent identity and pass. `claude --agent factory-orchestrator` adds the tool allowlist. Each role's agent file pins the model from `model_selection.roles` (on by default: opus for orchestrator, planner and reviewer, sonnet for implementer, haiku for verifier), and Copilot's `factory` agent has no edit or web tool; the orchestrator records everything through CLI commands that read stdin; see [enforcement per client](runbooks/vendor-behavior.md#enforcement-per-client) for what each client actually enforces.
 
-READY_PR is a local, unattested gate result: evidence, reviews, decisions and `ci-result` records are caller-supplied. Remote PR creation, GitHub CI, merge and production delivery require separate actual evidence. Delivery is disabled in the default product configuration. A pipeline node in this diagram is an integration boundary, not a deployed service supplied by this repository.
+READY_PR is a local, unattested gate result: evidence, reviews, decisions and CI records are caller-supplied. The factory commits the work (each task at `verify`, the records at READY_PR); pushing and the pull request need the user's `approve ID publish`, and `mission sync` records CI and the merge as GitHub reports them. Delivery is disabled in the default product configuration. A pipeline node in this diagram is an integration boundary, not a deployed service supplied by this repository.
 
 ## Constitution
 
@@ -58,10 +58,11 @@ The diagram shows GitHub CI between READY_PR and merge. The constitution's *Hone
 | Diagram step | Recorded state and command | Required evidence |
 | --- | --- | --- |
 | Local gate passes | `transition --to READY_PR` | Current checks, task results with criteria evidence, reviews of each required kind, bound request/criteria/scope, authored risks and recovery plan (gate); then generate the local PR packet |
-| PR opened | optional `delivery.pr_ref` via `record-delivery` | External reference only |
+| PR opened | `approve ID publish` (chat) or `mission publish` (terminal) pushes `factory/<ID>` and opens the PR, recording `delivery.pr_ref` | The user's approval; their `gh` |
+| CI reported | `mission sync` records the GitHub Actions result for the pushed commit (as below) | What GitHub reports to the user's account |
 | CI fails | `ci-result --mission ID --url URL --head SHA --conclusion failure --reason TEXT` moves READY_PR → IMPLEMENTING | Reason is kept in `ci_failures` |
-| CI passes | `ci-result --mission ID --url URL --head SHA --conclusion success [--trunk REMOTE/BRANCH]` stores `delivery.ci_ref` with branch, trunk ref and `trunk_kind` | Gate passes, candidate is committed, `SHA` equals HEAD, HEAD is a work branch other than the trunk and `SHA` is not already on the trunk |
-| Merge observed | `record-delivery` with `merge_ref`, then `transition --to MERGED` | Merge decision bound to the CI candidate fingerprint; `merge_ref` is reachable from the recorded trunk, is not an ancestor of `base_commit`, equals the candidate only if the candidate reached the trunk, and contains the candidate's changed files |
+| CI passes | `ci-result --mission ID --url URL --head SHA --conclusion success [--trunk REMOTE/BRANCH]` stores `delivery.ci_ref` with branch, trunk ref and `trunk_kind` | Gate passes, candidate is committed, `SHA` equals HEAD or the reviewed content head below records-only commits, HEAD is a work branch other than the trunk and `SHA` is not already on the trunk |
+| Merge observed | `mission sync` (or `record-delivery` with `merge_ref`, then `transition --to MERGED`) | Merge decision bound to the CI candidate fingerprint; `merge_ref` is reachable from the recorded trunk, is not an ancestor of `base_commit`, equals the candidate only if the candidate reached the trunk, and contains the candidate's changed files |
 | Staging, release | STAGING → AWAITING_RELEASE → DEPLOYING | Artifact digest, staging, release decision and `recovery_ref` before DEPLOYING |
 | Observation | OBSERVING → DELIVERED | `delivery.observation` with `status: healthy` |
 | Unhealthy / failed deploy | DEPLOYING or OBSERVING → RECOVERING → RECOVERED (or BLOCKED) | `incident_ref`, `recovery_ref`, recovery decision; RECOVERED also needs a healthy `recovery_observation` and `follow_up_mission` |

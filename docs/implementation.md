@@ -44,6 +44,15 @@ Built in seven reviewed steps, each with the full suite, lint, build and an isol
 
 Removed as superseded: the 0.2.x release artifacts, the 0.2.5 architecture set (replaced by [architecture.md](architecture.md)) and the research drafts, at the user's request.
 
+## 0.3.8 the factory commits, publishes on one line and syncs CI
+
+The user asked why they had to commit at all. Reading the flow end to end showed it was worse than a chore: nobody in a mission could commit (the orchestrator's shell is read-only and lane work is copied back uncommitted), yet the candidate fingerprint includes HEAD, so the commit the user was told to make after READY_PR made every verify run, task result and review stale before CI could be recorded.
+
+- **Commits where they cannot stale evidence.** `verify` first commits the owned-path changes of the tasks it verifies (only those paths; other dirty files are left alone), onto `factory/<ID>` when the work started on the trunk, and records the branch on the mission. Evidence, results and reviews then bind to that commit. Without a Git identity, or when a pre-commit hook refuses, verify still runs and reports the one fix.
+- **Records-only commits keep the reviewed fingerprint.** `evidence.content_head` walks back over commits that change only files of the mission record layout; the fingerprint, evidence and CI comparisons use that content head, and a new `commit` field keeps the real HEAD. READY_PR commits the mission records this way, and `ci-result` accepts CI on either commit (`candidate_head` is recorded when they differ). Any commit touching another path still makes the evidence stale.
+- **Publishing on one line.** `approve ID publish` (chat hook) or `mission publish` (terminal, typed ID; denied to the orchestrator) checks the gate and a clean product tree, commits any newer records, pushes the work branch and opens or reuses the pull request with the user's `gh`, recording `pr_ref`.
+- **`mission sync`** (agent-allowed; it records only what `gh` reports): no runs, pending, success (records CI) or failure (records it, READY_PR → IMPLEMENTING); after the PR is merged and the user approved the merge, it fetches, records `merge_ref` and transitions to MERGED.
+
 ## 0.3.7 models per role and the orchestrator guard on by default
 
 The user found the model files under `.factory/models` had no effect: in mode `inherit` no agent file named a model, so every specialist ran the session's model. They asked for model selection on and orchestrator enforcement always on.

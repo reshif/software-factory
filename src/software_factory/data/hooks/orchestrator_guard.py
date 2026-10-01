@@ -131,6 +131,10 @@ HUMAN_ONLY = {
         "software-factory crew import reads the user's own Crew folder outside this repository; ask the user "
         "to run it in their terminal"
     ),
+    ("mission", "publish"): (
+        "software-factory mission publish pushes the user's work and opens a pull request; ask the user to reply "
+        "`approve <MISSION> publish` in chat or run mission publish in their terminal"
+    ),
     ("mission", "ci-result"): (
         "software-factory mission ci-result records a remote CI result the user observed; ask the user "
         "to run it in their terminal with the run URL"
@@ -152,6 +156,7 @@ FACTORY_SUBCOMMANDS = {
         "resume": ({"--mission", "--to", "--model-catalog", "--resolution"}, {"--replan-models"}),
         "recipe": ({"--mission", "--use"}, {"--clear"}),
         "rebase": MISSION_ONLY,
+        "sync": MISSION_ONLY,
         "accept-scope": MISSION_ONLY,
         "clarify": INPUT_ONLY,
         "criteria": INPUT_ONLY,

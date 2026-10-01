@@ -1210,14 +1210,16 @@ def test_lines_land_in_the_real_section_not_a_fenced_example(repo):  # noqa: F81
 from software_factory.workflow import rebase_mission
 
 
-def enable_enforcement(root):
+def change_setup(root):
+    """A real factory.json edit whatever the fixture wrote: flips the enforcement flag."""
     config = json.loads((root / "factory.json").read_text())
-    config["enforcement"] = {"claude_orchestrator_agent": True}
+    current = (config.get("enforcement") or {}).get("claude_orchestrator_agent", True) is not False
+    config["enforcement"] = {"claude_orchestrator_agent": not current}
     (root / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
 
 
 def test_a_mission_is_not_created_on_uncommitted_setup(repo):  # noqa: F811
-    enable_enforcement(repo)
+    change_setup(repo)
     with pytest.raises(FactoryError, match="uncommitted changes to factory setup: factory.json") as refused:
         create(repo)
     assert "software-factory render" in str(refused.value) and "git restore" in str(refused.value)
@@ -1232,7 +1234,7 @@ def test_stale_exports_stop_a_mission_before_it_starts(tmp_path):
     install(tmp_path, selected="claude", skip_sync=True, git_init=True, commit=True)
     git(tmp_path, "config", "user.name", "t")
     git(tmp_path, "config", "user.email", "t@example.invalid")
-    enable_enforcement(tmp_path)
+    change_setup(tmp_path)
     commit(tmp_path, "edited without rendering")
     put(tmp_path, ".factory/local/request.md", "Please add a health endpoint.\n")
     with pytest.raises(FactoryError, match="Generated exports are stale"):
@@ -1252,7 +1254,7 @@ def test_a_proposed_mission_rebases_past_a_setup_commit_and_keeps_its_answers(re
         put(repo, ".factory/local/a.md", "Windows DHCP.\n"),
     )
     base = load_mission(repo, id)["base_commit"]
-    enable_enforcement(repo)
+    change_setup(repo)
     with pytest.raises(FactoryError, match="first commits or reverts the uncommitted setup change"):
         brief(repo, id, "context")
     with pytest.raises(FactoryError, match="Finish the factory setup before starting work"):
@@ -1275,7 +1277,7 @@ def test_rebase_refuses_product_commits_and_missions_past_proposed(repo):  # noq
     with pytest.raises(FactoryError, match="change product files"):
         rebase_mission(repo, id)
     planned = plan_mission(repo, id="M-PLAN")
-    enable_enforcement(repo)
+    change_setup(repo)
     commit(repo, "setup")
     with pytest.raises(FactoryError, match="only to a PROPOSED mission"):
         rebase_mission(repo, planned)
@@ -1382,7 +1384,7 @@ def test_setup_proposal_is_inert_and_shows_the_exact_change(project):
 @pytest.mark.parametrize(
     ("value", "message"),
     [
-        ({**SETUP, "enforcement": {"claude_orchestrator_agent": False}}, "has only"),
+        ({**SETUP, "enforcement": {"claude_orchestrator_agent": False}}, "can only turn enforcement on"),
         ({**SETUP, "limits": {"repair_attempts": 99}}, "may change only limits"),
         ({"reason": "Only the ignore rules", "gitignore": ["!.factory/local/"]}, "un-ignores"),
         (
@@ -1452,7 +1454,7 @@ def test_setup_apply_is_human_only_and_refuses_stale_or_mixed_changes(project, m
         setup_proposals.apply(project, "S-0001")
     with pytest.raises(FactoryError, match="is not the one approved"):
         setup_proposals.apply(project, "S-0001", pin="deadbeef", confirm=lambda *_: None)
-    enable_enforcement(project)
+    change_setup(project)
     with pytest.raises(FactoryError, match="factory.json changed since S-0001 was proposed"):
         setup_proposals.apply(project, "S-0001", confirm=lambda *_: None)
     setup_proposals.propose(project, SETUP)  # based on the edited, uncommitted file
@@ -1613,7 +1615,7 @@ def test_the_summary_keeps_hints_a_command_adds(repo):  # noqa: F811
 
 
 def test_an_explicit_base_at_head_gets_the_same_setup_check(repo):  # noqa: F811
-    enable_enforcement(repo)
+    change_setup(repo)
     put(repo, ".factory/local/request.md", "Please change VALUE to 2 in src/app.py.\n")
     with pytest.raises(FactoryError, match="Finish the factory setup before starting work"):
         cli(repo, "mission", "create", "--id", "M-B", "--title", "Value", "--base", "HEAD",
@@ -1626,7 +1628,7 @@ def test_a_mission_from_another_branch_is_not_moved(repo):  # noqa: F811
     id = create(repo)["id"]
     commit(repo, "mission records")
     git(repo, "switch", "-qc", "other")
-    enable_enforcement(repo)
+    change_setup(repo)
     commit(repo, "setup on another branch")
     with pytest.raises(FactoryError, match="was created on branch main, not other"):
         rebase_mission(repo, id)
@@ -1650,3 +1652,84 @@ def test_every_installed_instruction_caps_questions_per_round():
 def test_agents_md_tells_every_client_to_leave_the_runtime_alone(tmp_path):
     install(tmp_path, selected="codex", skip_sync=True)
     assert "is not product code: do not read or search it" in (tmp_path / "AGENTS.md").read_text()
+
+
+# 0.3.7: models per role, enforced by each client; orchestrator enforcement always on
+
+
+def guard_payload(payload):
+    spec = importlib.util.spec_from_file_location("guard", asset_root() / "hooks/orchestrator_guard.py")
+    guard = importlib.util.module_from_spec(spec)
+    saved, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(guard)
+    finally:
+        sys.dont_write_bytecode = saved
+    out, err = io.StringIO(), io.StringIO()
+    return guard.main([], io.StringIO(json.dumps(payload)), out, err)
+
+
+def test_role_models_reach_every_clients_agent_files(tmp_path):
+    import tomllib
+
+    from software_factory.rendering import render
+
+    install(tmp_path, selected="claude,codex,copilot", skip_sync=True)
+    config = json.loads((tmp_path / "factory.json").read_text())
+    config["model_selection"]["roles"]["codex"] = {"implementer": "gpt-5.5-codex", "planner": "inherit"}
+    config["model_selection"]["roles"]["copilot"] = {"reviewer": "claude-opus-5-5"}
+    (tmp_path / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
+    render(tmp_path)
+    assert "model: sonnet" in (tmp_path / ".claude/agents/factory-implementer.md").read_text()
+    assert "model: haiku" in (tmp_path / ".claude/agents/factory-verifier.md").read_text()
+    codex = tomllib.loads((tmp_path / ".codex/agents/factory-implementer.toml").read_text())
+    assert codex["model"] == "gpt-5.5-codex"
+    assert "model" not in tomllib.loads((tmp_path / ".codex/agents/factory-planner.toml").read_text())
+    assert (
+        "model: claude-opus-5-5"
+        in (tmp_path / ".github/agents/factory-copilot-reviewer.agent.md").read_text()
+    )
+    from software_factory.cli import doctor
+
+    models = doctor(tmp_path)["models"]
+    assert models["mode"] == "roles" and models["claude"]["reviewer"] == "opus"
+    assert (
+        models["codex"]["planner"] == "inherit (session model)"
+        and models["codex"]["implementer"] == "gpt-5.5-codex"
+    )
+
+
+def test_inherit_mode_pins_no_model(tmp_path):
+    from software_factory.rendering import render
+
+    install(tmp_path, selected="claude", skip_sync=True)
+    config = json.loads((tmp_path / "factory.json").read_text())
+    config["model_selection"] = {"mode": "inherit"}
+    (tmp_path / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
+    render(tmp_path)
+    assert "model:" not in (tmp_path / ".claude/agents/factory-implementer.md").read_text()
+
+
+def test_the_orchestrator_guard_holds_every_main_session_without_agent_flag(tmp_path):
+    install(tmp_path, selected="claude", skip_sync=True)
+    settings = json.loads((tmp_path / ".claude/settings.json").read_text())
+    [entry] = settings["hooks"]["PreToolUse"]
+    assert entry["matcher"] == "*" and "orchestrator_guard.py" in entry["hooks"][0]["command"]
+    edit = {"hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": {"file_path": "src/app.py"}}
+    assert guard_payload(edit) == 2  # the main session: no agent_id
+    specialist = {**edit, "agent_id": "a1", "agent_type": "factory-implementer"}
+    assert guard_payload(specialist) == 0  # a delegated specialist's own call passes through
+
+
+def test_a_setup_proposal_can_turn_models_and_enforcement_on_but_not_off(project):
+    value = {
+        "reason": "Pin models per role",
+        "model_selection": {"mode": "roles", "roles": {"claude": {"implementer": "fable"}}},
+    }
+    setup_proposals.propose(project, value)
+    setup_proposals.apply(project, "S-0001", confirm=lambda *_: None)
+    assert "model: fable" in (project / ".claude/agents/factory-implementer.md").read_text()
+    with pytest.raises(FactoryError, match="can only turn enforcement on"):
+        setup_proposals.propose(
+            project, {"reason": "Switch the guard off", "enforcement": {"claude_orchestrator_agent": False}}
+        )

@@ -147,11 +147,12 @@ def enforcement_checks(command, project, work, env, shell):
     factory_json = project / "factory.json"
     saved = factory_json.read_bytes()
     config = json.loads(saved)
-    config["enforcement"] = {"claude_orchestrator_agent": True}
-    factory_json.write_text(json.dumps(config, indent=2) + "\n")
-    changed = json.loads(run([command, "render", "--root", str(project)], cwd=work, env=env))["changed"]
     agent = ".claude/agents/factory-orchestrator.md"
-    assert agent in changed and not (project / ".github/hooks").exists(), changed
+    # 0.3.7: on by default, with the guard on every main-session call through project settings.
+    assert config["enforcement"] == {"claude_orchestrator_agent": True}, config
+    assert (project / agent).is_file() and not (project / ".github/hooks").exists()
+    settings = json.loads((project / ".claude/settings.json").read_text())
+    assert "orchestrator_guard.py" in settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"], settings
     header = (project / agent).read_text().split("---\n")[1]
     assert "Agent(factory-planner, factory-implementer, factory-verifier, factory-reviewer)" in header
     import yaml
@@ -201,10 +202,16 @@ def enforcement_checks(command, project, work, env, shell):
     assert report["enforcement"]["codex"]["layer"] == "instructions"
     copilot_agent = (project / ".github/agents/factory.agent.md").read_text().split("---\n")[1]
     assert "edit" not in yaml.safe_load(copilot_agent)["tools"]
-    factory_json.write_bytes(saved)
+    config["enforcement"] = {"claude_orchestrator_agent": False}
+    factory_json.write_text(json.dumps(config, indent=2) + "\n")
     run([command, "render", "--root", str(project)], cwd=work, env=env)
     assert not (project / agent).exists()
-    assert json.loads(run([command, "doctor", "--root", str(project)], cwd=work, env=env))["ok"]
+    assert "PreToolUse" not in json.loads((project / ".claude/settings.json").read_text()).get("hooks", {})
+    factory_json.write_bytes(saved)
+    run([command, "render", "--root", str(project)], cwd=work, env=env)
+    assert (project / agent).is_file()
+    report = json.loads(run([command, "doctor", "--root", str(project)], cwd=work, env=env))
+    assert report["ok"] and report["models"]["claude"]["implementer"] == "sonnet", report.get("models")
 
 
 def crew_checks(command, work, env, shell):

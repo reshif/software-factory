@@ -81,8 +81,28 @@ def _entry_sha(entry) -> str:
 
 
 def enforcement_settings(config: dict) -> dict[str, bool]:
+    """Enforcement is on unless factory.json turns a flag off explicitly."""
     settings = config.get("enforcement") or {}
-    return {flag: settings.get(flag) is True for flag in ENFORCEMENT_FLAGS.values()}
+    return {flag: settings.get(flag, True) is not False for flag in ENFORCEMENT_FLAGS.values()}
+
+
+def role_model(config: dict, profile: str, role: str) -> str | None:
+    """The model a role's agent file pins for a client, or None to inherit the session's model."""
+    selection = config.get("model_selection") or {}
+    if selection.get("mode") != "roles":
+        return None
+    value = ((selection.get("roles") or {}).get(profile) or {}).get(role)
+    return value if isinstance(value, str) and value and value != "inherit" else None
+
+
+def settings_wanted(config: dict, selected_profiles) -> bool:
+    return chat_approvals_enabled(config, selected_profiles) or (
+        "claude" in selected_profiles and enforcement_settings(config)["claude_orchestrator_agent"]
+    )
+
+
+def guard_entry() -> dict:
+    return {"matcher": "*", "hooks": [{"type": "command", "command": guard_command("${CLAUDE_PROJECT_DIR}")}]}
 
 
 def _exported(root: Path, name: str) -> bool:
@@ -176,7 +196,14 @@ RECORD_FIELDS = {
     "file": {"kind": str, "sha256": str},
     "block": {"kind": str, "sha256": str, "separator": str, "existed": bool},
     "toml": {"kind": str, "values": dict, "created_table": bool, "existed": bool, "appended": str},
-    "json": {"kind": str, "entry_sha256": str, "created": list, "existed": bool, "deny": list},
+    "json": {
+        "kind": str,
+        "entry_sha256": str,
+        "created": list,
+        "existed": bool,
+        "deny": list,
+        "guard_sha256": str,
+    },
 }
 RECORD_REQUIRED = {
     "file": {"kind", "sha256"},
@@ -184,7 +211,7 @@ RECORD_REQUIRED = {
     "toml": {"kind", "values"},
     "json": {"kind", "entry_sha256", "created", "existed"},
 }
-JSON_CONTAINERS = ("hooks", "hooks.UserPromptSubmit", "permissions", "permissions.deny")
+JSON_CONTAINERS = ("hooks", "hooks.UserPromptSubmit", "hooks.PreToolUse", "permissions", "permissions.deny")
 # The factory's own runtime is not product code: agents have no reason to read or search it, and
 # reading it only spends their context. Claude applies Read rules to Grep and Glob as well.
 RUNTIME_DENY = ("Read(./.factory/src/**)", "Read(./.factory/.venv/**)")
@@ -288,6 +315,8 @@ def _settings_doc(text: str, name: str) -> dict:
         raise FactoryError(f"Invalid Claude settings: `hooks` in {name} must be an object")
     if isinstance(hooks, dict) and not isinstance(hooks.get("UserPromptSubmit", []), list):
         raise FactoryError(f"Invalid Claude settings: `hooks.UserPromptSubmit` in {name} must be a list")
+    if isinstance(hooks, dict) and not isinstance(hooks.get("PreToolUse", []), list):
+        raise FactoryError(f"Invalid Claude settings: `hooks.PreToolUse` in {name} must be a list")
     permissions = doc.get("permissions")
     if permissions is not None and not isinstance(permissions, dict):
         raise FactoryError(f"Invalid Claude settings: `permissions` in {name} must be an object")
@@ -349,6 +378,12 @@ def strip_owned(root: Path, name: str, record: dict) -> bytes | None:
             hooks["UserPromptSubmit"] = kept
         if "hooks.UserPromptSubmit" in record["created"] and "UserPromptSubmit" in hooks and not kept:
             del hooks["UserPromptSubmit"]
+        guards = hooks.get("PreToolUse", [])
+        guards_kept = [e for e in guards if _entry_sha(e) != record.get("guard_sha256")]
+        if len(guards_kept) != len(guards):
+            hooks["PreToolUse"] = guards_kept
+        if "hooks.PreToolUse" in record["created"] and "PreToolUse" in hooks and not guards_kept:
+            del hooks["PreToolUse"]
         if "hooks" in record["created"] and "hooks" in doc and not doc["hooks"]:
             del doc["hooks"]
         owned_deny = set(record.get("deny", []))
@@ -361,7 +396,7 @@ def strip_owned(root: Path, name: str, record: dict) -> bytes | None:
                 del doc["permissions"]
         if not doc and not record["existed"]:
             return None
-        if len(kept) == len(entries) and doc == _settings_doc(text, name):
+        if len(kept) == len(entries) and len(guards_kept) == len(guards) and doc == _settings_doc(text, name):
             return current  # Nothing owned was present: keep the user's bytes exactly.
         return _settings_bytes(doc)
     appended = record.get("appended")
@@ -543,9 +578,10 @@ def plan_render(
         for mark, clients in groups.items()
     )
     layers = {
-        "claude": "PreToolUse guard via `claude --agent factory-orchestrator`"
+        "claude": "PreToolUse guard on every main-session tool call (.claude/settings.json); "
+        "`claude --agent factory-orchestrator` also applies its tool allowlist"
         if orchestrator_agent
-        else "instructions (opt-in: enforcement.claude_orchestrator_agent)",
+        else "instructions only (enforcement.claude_orchestrator_agent is false)",
         "codex": "instructions only",
         "copilot": "factory agent without edit tools; shell writes are instruction-only",
     }
@@ -578,7 +614,8 @@ def plan_render(
         outputs["CLAUDE.md"] = (
             b"@AGENTS.md\n\nUse /factory-build, /factory-blueprint, /factory-resume or /factory-status; /factory-onboard records project knowledge and /factory-retro turns a finished mission into lessons. The constitution in AGENTS.md applies; read .factory/CONSTITUTION.md only if it is not in your context. Follow the assigned canonical skill.\n"
             + (
-                b"For hook-enforced orchestration start `claude --agent factory-orchestrator`.\n"
+                b"Every main session in this project is the factory orchestrator: a guard hook refuses file edits "
+                b"and other non-orchestrator actions and names the specialist to brief instead.\n"
                 if orchestrator_agent
                 else b""
             )
@@ -608,12 +645,14 @@ def plan_render(
                 if role["capability"] == "verify"
                 else "Read, Glob, Grep, Bash, Edit, Write, WebFetch, WebSearch, Skill"
             )
+            model = role_model(config, "claude", name)
             outputs[f".claude/agents/factory-{name}.md"] = markdown(
                 {
                     "name": f"factory-{name}",
                     "description": role["description"],
                     "tools": tools,
                     "skills": [role["skill"]],
+                    **({"model": model} if model else {}),
                 },
                 body,
             )
@@ -623,6 +662,9 @@ def plan_render(
             doc["description"] = role["description"]
             if role["capability"] == "read":
                 doc["sandbox_mode"] = "read-only"
+            model = role_model(config, "codex", name)
+            if model:
+                doc["model"] = model
             doc["developer_instructions"] = body
             outputs[f".codex/agents/factory-{name}.toml"] = tomlkit.dumps(doc).encode()
         if "copilot" in selected_profiles:
@@ -641,6 +683,11 @@ def plan_render(
                     "agents": [],
                     "user-invocable": False,
                     "include-custom-instructions": True,
+                    **(
+                        {"model": role_model(config, "copilot", name)}
+                        if role_model(config, "copilot", name)
+                        else {}
+                    ),
                 },
                 body,
             )
@@ -650,6 +697,11 @@ def plan_render(
                 "name": "factory",
                 "description": "Coordinate factory missions, bounded specialists and evidence.",
                 "tools": ["read", "search", "execute", "agent"],
+                **(
+                    {"model": role_model(config, "copilot", "orchestrator")}
+                    if role_model(config, "copilot", "orchestrator")
+                    else {}
+                ),
                 "agents": [copilot_prefix + r["name"] for r in registry["roles"]],
             },
             preamble + "\n\n" + roles["orchestrator"],
@@ -661,6 +713,11 @@ def plan_render(
                 "description": "Coordinate factory missions: brief, delegate to factory specialists, record "
                 "state, verify and decide. Never edits files.",
                 "tools": f"Agent({', '.join(SPECIALISTS)}), Read, Glob, Grep, Bash, AskUserQuestion, TodoWrite",
+                **(
+                    {"model": role_model(config, "claude", "orchestrator")}
+                    if role_model(config, "claude", "orchestrator")
+                    else {}
+                ),
                 "hooks": {
                     "PreToolUse": [
                         {
@@ -808,7 +865,7 @@ def plan_render(
         old.keys()
         - outputs.keys()
         - ({".codex/config.toml"} if "codex" in selected_profiles else set())
-        - ({CLAUDE_SETTINGS} if chat_approvals_enabled(config, selected_profiles) else set())
+        - ({CLAUDE_SETTINGS} if settings_wanted(config, selected_profiles) else set())
     ):
         changes[name] = bases[name]
     for name, content in outputs.items():
@@ -844,18 +901,28 @@ def plan_render(
                 )
             changes[name] = content
             generated[name] = {"kind": "file", "sha256": sha256(content)}
-    if chat_approvals_enabled(config, selected_profiles):
+    if settings_wanted(config, selected_profiles):
         name = CLAUDE_SETTINGS
         base = bases[name] if name in bases else optional(root, name)
         doc = _settings_doc(_text(base or b"", name), name)
         entry, created = chat_approval_entry(), []
         if "hooks" not in doc:
             doc["hooks"], created = {}, ["hooks"]
-        if "UserPromptSubmit" not in doc["hooks"]:
-            doc["hooks"]["UserPromptSubmit"] = []
-            created.append("hooks.UserPromptSubmit")
-        if entry not in doc["hooks"]["UserPromptSubmit"]:
-            doc["hooks"]["UserPromptSubmit"].append(entry)
+        if chat_approvals_enabled(config, selected_profiles):
+            if "UserPromptSubmit" not in doc["hooks"]:
+                doc["hooks"]["UserPromptSubmit"] = []
+                created.append("hooks.UserPromptSubmit")
+            if entry not in doc["hooks"]["UserPromptSubmit"]:
+                doc["hooks"]["UserPromptSubmit"].append(entry)
+        guard = guard_entry() if orchestrator_agent else None
+        if guard is not None:
+            # Every main-session tool call in this project is checked; specialists' calls carry an
+            # agent_id and pass through, so the orchestrator role holds without `claude --agent`.
+            if "PreToolUse" not in doc["hooks"]:
+                doc["hooks"]["PreToolUse"] = []
+                created.append("hooks.PreToolUse")
+            if guard not in doc["hooks"]["PreToolUse"]:
+                doc["hooks"]["PreToolUse"].append(guard)
         if "permissions" not in doc:
             doc["permissions"] = {}
             created.append("permissions")
@@ -877,6 +944,7 @@ def plan_render(
             else created,
             "existed": old[name]["existed"] if name in old else base is not None,
             "deny": sorted(set(owned)),
+            **({"guard_sha256": _entry_sha(guard)} if guard is not None else {}),
         }
     if "codex" in selected_profiles:
         name = ".codex/config.toml"

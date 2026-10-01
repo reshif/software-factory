@@ -8,8 +8,9 @@ apply`` with the ID typed back. The factory then writes factory.json and the ign
 re-renders the exports, commits exactly those files and moves open missions onto that commit.
 
 What a proposal may change: ``checks``, ``setup``, the two check limits
-(``check_timeout_seconds``, ``check_output_bytes``) and added ``.gitignore`` lines. Owners,
-enforcement, approvals, delivery, JEV and everything else stay the user's own edits. Missions
+(``check_timeout_seconds``, ``check_output_bytes``), added ``.gitignore`` lines,
+``model_selection`` (which model each role uses) and turning orchestrator enforcement on. Owners,
+switching enforcement off, approvals, delivery, JEV and everything else stay the user's own edits. Missions
 past PROPOSED keep their scope, but their verification and reviews bind the old configuration
 through the candidate fingerprint, so they are stale and run again under the approved setup.
 """
@@ -26,7 +27,7 @@ from .core import FactoryError, git, load_config, now, read_json, safe_path, val
 
 DIRECTORY = ".factory/local/setup"
 PROPOSAL_ID = re.compile(r"S-[0-9]{4,}")
-FIELDS = {"reason", "checks", "setup", "limits", "gitignore"}
+FIELDS = {"reason", "checks", "setup", "limits", "gitignore", "model_selection", "enforcement"}
 LIMITS = ("check_timeout_seconds", "check_output_bytes")
 IGNORE_MARKER = "# Added by software-factory setup proposals"
 MAX_IGNORE_LINES = 400
@@ -159,6 +160,15 @@ def _merged(root, value: dict) -> dict:
             if not isinstance(value[key], list):
                 raise FactoryError(f"{key} is a list")
             merged[key] = value[key]
+    if "model_selection" in value:
+        merged["model_selection"] = value["model_selection"]
+    if "enforcement" in value:
+        # A proposal can turn enforcement on, never off: switching it off stays the user's own edit.
+        if value["enforcement"] != {"claude_orchestrator_agent": True}:
+            raise FactoryError(
+                'A setup proposal can only turn enforcement on: {"claude_orchestrator_agent": true}'
+            )
+        merged["enforcement"] = {**(config.get("enforcement") or {}), "claude_orchestrator_agent": True}
     if "limits" in value:
         if not isinstance(value["limits"], dict) or set(value["limits"]) - set(LIMITS):
             raise FactoryError("A setup proposal may change only limits " + " and ".join(LIMITS))
@@ -187,8 +197,10 @@ def propose(root, value: dict) -> dict:
     reason = value.get("reason")
     if not isinstance(reason, str) or not 8 <= len(reason.strip()) <= 300 or "\n" in reason:
         raise FactoryError("reason is one line (8 to 300 characters) saying why the setup changes")
-    if not set(value) & {"checks", "setup", "limits", "gitignore"}:
-        raise FactoryError("A setup proposal changes at least one of checks, setup, limits or gitignore")
+    if not set(value) & {"checks", "setup", "limits", "gitignore", "model_selection", "enforcement"}:
+        raise FactoryError(
+            "A setup proposal changes at least one of checks, setup, limits, gitignore, model_selection or enforcement"
+        )
     current = safe_path(root, "factory.json").read_bytes()
     new_text = _text(_merged(root, value))
     existing = set(_current_ignores(root))

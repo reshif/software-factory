@@ -44,6 +44,14 @@ Built in seven reviewed steps, each with the full suite, lint, build and an isol
 
 Removed as superseded: the 0.2.x release artifacts, the 0.2.5 architecture set (replaced by [architecture.md](architecture.md)) and the research drafts, at the user's request.
 
+## 0.3.7 models per role and the orchestrator guard on by default
+
+The user found the model files under `.factory/models` had no effect: in mode `inherit` no agent file named a model, so every specialist ran the session's model. They asked for model selection on and orchestrator enforcement always on.
+
+- **Models per role:** new installations write `model_selection: {"mode": "roles", "roles": {"claude": {...}}}` with orchestrator, planner and reviewer on `opus`, implementer on `sonnet` and verifier on `haiku`. Rendering writes the entry as `model:` in each Claude agent's frontmatter, `model` in each Codex agent TOML and `model` in each Copilot `.agent.md` (when a `codex` or `copilot` map is present). A missing role or `"inherit"` keeps the session's model. `doctor` reports the mode and each client's role map, and the factory-start checkpoint records that map. The Claude main session still runs the model the user started it with; Claude Code has no setting for a default main-thread agent.
+- **Enforcement on by default:** `enforcement.claude_orchestrator_agent` now defaults to true. Besides exporting the orchestrator agent, it adds the guard as a project-wide `PreToolUse` hook in `.claude/settings.json`, so every main session in the project is the orchestrator. Hook input from a subagent carries `agent_id`, which the guard passes, so specialists keep their tools. Turning it off is a user edit of `factory.json`; a setup proposal may set `model_selection` and may set enforcement only to true.
+- Upgrade never rewrites `factory.json`: a project without an enforcement flag gets the guard, and one with `"mode": "inherit"` keeps inheriting until the user approves a setup proposal that switches it to `roles`.
+
 ## 0.3.6 shorter interviews, runtime kept out of agents' reach, current architecture guide
 
 From the user's review after their first missions:

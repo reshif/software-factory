@@ -78,8 +78,8 @@ def starter(name: str, selected, *, checks=None, maintainer=None) -> dict:
             "recovery_command": None,
         },
         "evidence_exclude": [".factory/missions/", ".factory/local/", "factory.lock.json"],
-        "model_selection": {"mode": "inherit"},
-        "enforcement": {"claude_orchestrator_agent": False},
+        "model_selection": {"mode": "roles", "roles": {"claude": dict(DEFAULT_CLAUDE_ROLES)}},
+        "enforcement": {"claude_orchestrator_agent": True},
         "jev": {
             "enabled": False,
             "provider": "typesafe",
@@ -87,6 +87,16 @@ def starter(name: str, selected, *, checks=None, maintainer=None) -> dict:
             "claim_mode": "shadow",
         },
     }
+
+
+# Each specialist runs on a model suited to its job; the client enforces it from the agent file.
+DEFAULT_CLAUDE_ROLES = {
+    "orchestrator": "opus",
+    "planner": "opus",
+    "reviewer": "opus",
+    "implementer": "sonnet",
+    "verifier": "haiku",
+}
 
 
 def kernel_payload() -> dict[str, bytes]:

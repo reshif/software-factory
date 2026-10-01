@@ -55,7 +55,7 @@ Every factory session follows `.factory/CONSTITUTION.md` (2.0.0), copied into th
 
 ## Enforcement per client
 
-Factory roles are instructions first. Optional Claude Code enforcement is off by default and is enabled in `factory.json`, followed by `software-factory render`:
+Factory roles are instructions first. Claude Code enforcement is on by default; `factory.json` holds the flag (setting it to false and running `software-factory render` turns it off):
 
 ```json
 "enforcement": {"claude_orchestrator_agent": true}
@@ -63,7 +63,7 @@ Factory roles are instructions first. Optional Claude Code enforcement is off by
 
 | Client | What applies |
 | --- | --- |
-| Claude Code | Opt-in `claude_orchestrator_agent` exports `.claude/agents/factory-orchestrator.md`. Start it with `claude --agent factory-orchestrator` in a trusted workspace: it may only spawn the four factory specialists (the `Agent(...)` allowlist applies only to `--agent` sessions) and has Read, Glob, Grep and Bash. Its PreToolUse hook runs `.factory/hooks/orchestrator_guard.py` with the project runtime (falling back to `python3`, 3.11+), which denies Edit/Write/MultiEdit/NotebookEdit, spawning anything other than the four factory specialists, unknown tools and any shell command outside a read-only allowlist (software-factory CLI with stdin from `< file` or a heredoc, read-only git, ls/cat/head/tail/wc/grep/rg/find). Setup and admin commands (`init`, `upgrade`, `uninstall`, `recover`, `render`, `auth`) and `--root` are denied too: a human runs setup. Launch or guard errors deny; a hook timeout does not block. Frontmatter hooks are skipped in untrusted folders and `-p` sessions. |
+| Claude Code | `claude_orchestrator_agent` (default true) adds a PreToolUse guard to `.claude/settings.json` for every main-session tool call (subagent calls pass) and exports `.claude/agents/factory-orchestrator.md`. Start that agent with `claude --agent factory-orchestrator` in a trusted workspace: it may only spawn the four factory specialists (the `Agent(...)` allowlist applies only to `--agent` sessions) and has Read, Glob, Grep and Bash. The guard runs `.factory/hooks/orchestrator_guard.py` with the project runtime (falling back to `python3`, 3.11+), which denies Edit/Write/MultiEdit/NotebookEdit, spawning anything other than the four factory specialists, unknown tools and any shell command outside a read-only allowlist (software-factory CLI with stdin from `< file` or a heredoc, read-only git, ls/cat/head/tail/wc/grep/rg/find). Setup and admin commands (`init`, `upgrade`, `uninstall`, `recover`, `render`, `auth`) and `--root` are denied too: a human runs setup. Launch or guard errors deny; a hook timeout does not block. Project hooks are skipped in untrusted folders and `-p` sessions. |
 | Copilot | The `factory` orchestrator agent has no `edit` tool set; it keeps `execute`, so avoiding shell writes relies on instructions. No hooks are generated: Copilot's `preToolUse` input carries no agent identity and repository hooks (which VS Code also loads) apply to every agent, so an orchestrator guard would also block implementers. |
 | Codex | Instructions only; the factory generates no Codex hooks. |
 

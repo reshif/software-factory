@@ -43,7 +43,7 @@ The renderer writes four entry skills alongside the registered workflow skills. 
 | Turn a finished mission into lessons | `/factory-retro` | `$factory-retro` | Actual mission ID |
 | Recommend models only | `/factory-models` | `$factory-models` | Objective, task needs and selection constraints |
 
-`factory-build` and direct `factory-start` record the model checkpoint first. With the default `model_selection.mode: "inherit"` and JEV off, that is one inherited line. Only when JEV is enabled or the mode is `recommend`/`required` do they run the [model-selection checkpoint](model-selection.md#startup-checkpoint) through factory-models or JEV. Resume revalidates it; blueprint keeps planning-only boundaries; status never refreshes it.
+`factory-build` and direct `factory-start` record the model checkpoint first. With the default `model_selection.mode: "roles"` and JEV off, that is one line naming the model each role's agent file pins. With `inherit` it is one inherited line. Only when JEV is enabled or the mode is `recommend`/`required` do they run the [model-selection checkpoint](model-selection.md#startup-checkpoint) through factory-models or JEV. Resume revalidates it; blueprint keeps planning-only boundaries; status never refreshes it.
 
 Every build follows one flow. The verbatim request is stored with `mission create --request-file`, then a context phase and all clarifying questions come before the spec. Criteria (AC-n, each quoting your words) and a plan with a `## Architecture` mermaid diagram follow. Implementation works from generated briefs; the orchestrator runs verification and requests reviews by kind. `--kind patch` missions use the small lane: shorter context and a single code review at low risk.
 

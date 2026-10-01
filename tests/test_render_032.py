@@ -371,6 +371,9 @@ def test_registry_rules(tmp_path, change, fragment):
 def test_enforcement_enabled_reflects_the_exported_agent(tmp_path):
     install(tmp_path, selected="claude,copilot", skip_sync=True)
     config = json.loads((tmp_path / "factory.json").read_text())
+    config["enforcement"] = {"claude_orchestrator_agent": False}
+    (tmp_path / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
+    render(tmp_path)
     config["enforcement"] = {"claude_orchestrator_agent": True}
     (tmp_path / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
     summary = enforcement_summary(tmp_path, config)

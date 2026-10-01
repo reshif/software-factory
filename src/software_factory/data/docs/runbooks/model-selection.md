@@ -37,6 +37,7 @@ This checkpoint is an orchestrator instruction backed by existing validation/dis
 
 | Mode | Behavior |
 | --- | --- |
+| `roles` (new installations) | Each role's agent file pins a model from `model_selection.roles.<client>.<role>` (`claude`, `codex`, `copilot`; roles `orchestrator`, `planner`, `implementer`, `verifier`, `reviewer`). Claude accepts aliases (`opus`, `sonnet`, `haiku`) or full IDs as `model:` frontmatter; Codex writes `model` to the agent TOML; Copilot writes `model` to `.agent.md`. A role with no entry, or `"inherit"`, keeps the session's model. The Claude main session runs whichever model the user started it with; only `claude --agent factory-orchestrator` uses the orchestrator entry. |
 | `inherit` or omitted | Keep host inheritance unless the user explicitly requests model planning or a task is explicitly bound. |
 | `recommend` | Factory preflight prepares recommendations; uncertain tasks may retain inherited execution when their requirements permit it. Every bound task still validates its assignment and observation. |
 | `required` | Tasks must have valid model assignments before execution and completion. Missing inventory is unresolved, never silently downgraded to inheritance. |

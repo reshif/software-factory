@@ -131,6 +131,10 @@ HUMAN_ONLY = {
         "software-factory crew import reads the user's own Crew folder outside this repository; ask the user "
         "to run it in their terminal"
     ),
+    ("mission", "publish"): (
+        "software-factory mission publish pushes the user's work and opens a pull request; ask the user to reply "
+        "`approve <MISSION> publish` in chat or run mission publish in their terminal"
+    ),
     ("mission", "ci-result"): (
         "software-factory mission ci-result records a remote CI result the user observed; ask the user "
         "to run it in their terminal with the run URL"
@@ -152,6 +156,7 @@ FACTORY_SUBCOMMANDS = {
         "resume": ({"--mission", "--to", "--model-catalog", "--resolution"}, {"--replan-models"}),
         "recipe": ({"--mission", "--use"}, {"--clear"}),
         "rebase": MISSION_ONLY,
+        "sync": MISSION_ONLY,
         "accept-scope": MISSION_ONLY,
         "clarify": INPUT_ONLY,
         "criteria": INPUT_ONLY,
@@ -194,7 +199,7 @@ FACTORY_SUBCOMMANDS = {
 }  # fmt: skip
 # models takes its subcommand as a positional word (default: sources).
 MODEL_SUBCOMMANDS = {
-    "sources", "template", "validate", "plan", "dispatch", "outcome-template", "outcome-record", "calibration",
+    "sources", "roles", "template", "validate", "plan", "dispatch", "outcome-template", "outcome-record", "calibration",
 }  # fmt: skip
 # Options naming a file; they take a project-relative path, or - for standard input.
 FACTORY_PATH_OPTIONS = {"--input", "--catalog", "--plan", "--output", "--request-file", "--model-catalog"}
@@ -566,6 +571,11 @@ def decide(payload) -> None:
         if subagent not in SPECIALISTS:
             shown = subagent if isinstance(subagent, str) else "a missing or malformed subagent_type"
             raise Denied(f"{tool} may only start {', '.join(SPECIALISTS)}, not {shown}. {DELEGATE}")
+        if isinstance(args, dict) and args.get("model") not in (None, ""):
+            raise Denied(
+                f"{tool} may not choose a model: each factory agent file pins the model the user approved for "
+                "its role (factory.json model_selection.roles). Call it again without `model`"
+            )
         return
     if tool in CLAUDE_EDIT:
         raise Denied(f"{tool} edits files. {DELEGATE}")

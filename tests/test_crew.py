@@ -1360,7 +1360,23 @@ def project(tmp_path):
     install(root, selected="claude", skip_sync=True, git_init=True, commit=True)
     git(root, "config", "user.name", "Test User")
     git(root, "config", "user.email", "test@example.invalid")
+    confirm_models(root)
     return root
+
+
+def confirm_models(root):
+    """The user's confirmed model map (0.3.9), committed as approving a proposal would."""
+    from test_workflow import git
+
+    from software_factory.model_roles import stamped
+    from software_factory.rendering import render
+
+    config = json.loads((root / "factory.json").read_text())
+    config["model_selection"] = stamped(config["model_selection"])
+    (root / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
+    render(root)
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "Confirm models")
 
 
 def new_mission(root, id="M-1", kind="patch"):

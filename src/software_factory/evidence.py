@@ -408,6 +408,29 @@ def capture_local_governance(root):
     return result
 
 
+RECORD_COMMIT_LIMIT = 64
+
+
+def content_head(root, head):
+    """The newest commit at or below ``head`` that changed anything but mission records.
+
+    A commit that only adds or changes files of the factory's own mission record layout
+    (``MISSION_RECORD``, excluded from every candidate) does not change what was verified and
+    reviewed, so the factory can commit a mission's records after its review without making the
+    evidence stale. Merge commits, root commits and any other path end the walk.
+    """
+    current = head
+    for _ in range(RECORD_COMMIT_LIMIT):
+        raw = _git_bytes(root, "log", "-1", "--format=%P%x00", "--name-only", "-z", "--no-renames", current)
+        parents, _, names = raw.partition(b"\0\0")
+        parents = parents.decode().split()
+        files = [n for n in names.lstrip(b"\n").decode("utf-8", "surrogateescape").split("\0") if n]
+        if len(parents) != 1 or not files or not all(MISSION_RECORD.fullmatch(f) for f in files):
+            return current
+        current = parents[0]
+    return current
+
+
 def _snapshot(root, base=None, extra=()):
     """The candidate snapshot plus the internals fingerprint() builds on."""
     config = read_json(root, "factory.json")
@@ -415,10 +438,12 @@ def _snapshot(root, base=None, extra=()):
         raise FactoryError(
             "Source exclusions cannot hide candidate files; only built-in metadata exclusions are supported"
         )
-    head = git(root, "rev-parse", "HEAD")
+    commit = git(root, "rev-parse", "HEAD")
+    # The candidate's head is its content head: records-only commits on top do not change it.
+    head = content_head(root, commit)
     if base is not None:
         git(root, "cat-file", "-e", f"{base}^{{commit}}")
-    trees = {head: _tree(root, head)}
+    trees = {commit: _tree(root, commit)}
     if base is not None:
         trees[base] = trees.get(base) or _tree(root, base)
     visible, governed, cached = _collect_sources(root, set().union(*trees.values()))
@@ -429,7 +454,7 @@ def _snapshot(root, base=None, extra=()):
     entries, blobs = _read_files(root, visible | governed, algorithm)
     # A path committed in HEAD but dropped from the index is a change even when
     # its content is untouched; the index no longer tracks it.
-    dropped = sorted(set(trees[head]) - cached)
+    dropped = sorted(set(trees[commit]) - cached)
     view = git_view(root)
     candidate = {
         "fingerprint": digest(
@@ -442,10 +467,11 @@ def _snapshot(root, base=None, extra=()):
             }
         ),
         "head": head,
+        "commit": commit,
         "git_view": view,
         "source_paths": sorted(visible | governed),
-        "dirty_paths": sorted(_content_changes(trees[head], blobs) | set(dropped)),
-        "changed_paths": sorted(_content_changes(trees[base or head], blobs) | set(dropped)),
+        "dirty_paths": sorted(_content_changes(trees[commit], blobs) | set(dropped)),
+        "changed_paths": sorted(_content_changes(trees[base or commit], blobs) | set(dropped)),
         "entry_hashes": {entry[0]: digest(entry) for entry in entries},
         "unmerged_paths": sorted(_git_paths(root, "diff", "--name-only", "--diff-filter=U", "-z")),
     }
@@ -455,7 +481,7 @@ def _snapshot(root, base=None, extra=()):
         "entries": entries,
         "blobs": blobs,
         "dropped": dropped,
-        "baseline": trees[base or head],
+        "baseline": trees[base or commit],
     }
 
 

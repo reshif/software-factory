@@ -224,6 +224,18 @@ def test_commit_in_plain_folder_creates_repository_and_one_commit(tmp_path, iden
     from software_factory.workflow import create_mission
 
     (tmp_path / "req.md").write_text("Add a subtract function\n")
+    # 0.3.9: the first mission waits for the user's confirmed models.
+    with pytest.raises(FactoryError, match="Choose the models before starting work"):
+        create_mission(
+            tmp_path,
+            {"id": "M-1", "title": "t", "kind": "patch", "request_file": "req.md"},
+            require_request=True,
+        )
+    from test_crew import confirm_models
+
+    git(tmp_path, "config", "user.name", "Ada Lovelace")
+    git(tmp_path, "config", "user.email", "ada@example.invalid")
+    confirm_models(tmp_path)
     mission = create_mission(
         tmp_path, {"id": "M-1", "title": "t", "kind": "patch", "request_file": "req.md"}, require_request=True
     )

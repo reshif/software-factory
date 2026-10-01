@@ -323,35 +323,40 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 120,
-                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._:/()-]*$"
                 },
                 "planner": {
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 120,
-                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._:/()-]*$"
                 },
                 "implementer": {
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 120,
-                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._:/()-]*$"
                 },
                 "verifier": {
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 120,
-                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._:/()-]*$"
                 },
                 "reviewer": {
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 120,
-                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._:/()-]*$"
                 }
               }
             }
           }
+        },
+        "confirmed_sha256": {
+          "description": "Hash of the role map the user approved through a setup proposal; a map that differs from it is unconfirmed.",
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
         }
       },
       "description": "How specialists get their models. `roles` (the default for new projects) pins a model per role in each client's agent files, so the client enforces it; `inherit` uses the session's model; `recommend`/`required` plan models per task with `software-factory models plan`."

@@ -21,4 +21,4 @@ Follow the orchestrator flow in order:
 
 Map criteria to real product checks. There is no default one: new installs carry a failing `configure-me` placeholder until a human replaces it with real checks and runs `software-factory render`. Continue within the user's authorization without repeated confirmation.
 
-Finish with a passing READY_PR gate and handoff, or a precise blocker and next action. Publishing, merge and delivery need their own authorization and evidence.
+Finish with a passing READY_PR gate and handoff, or a precise blocker and next action. The factory commits the work itself (never ask the user to commit); publishing needs the user's one line `approve ID publish`, after which `mission sync` records CI and the merge. Delivery needs its own authorization and evidence.

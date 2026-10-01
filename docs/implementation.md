@@ -44,6 +44,23 @@ Built in seven reviewed steps, each with the full suite, lint, build and an isol
 
 Removed as superseded: the 0.2.x release artifacts, the 0.2.5 architecture set (replaced by [architecture.md](architecture.md)) and the research drafts, at the user's request.
 
+## 0.3.9 the user chooses the model for each role, and the factory holds missions to it
+
+The user found that nothing at `/factory-build` asked which model does what, Codex and Copilot agents were never pinned, and no mission recorded its models.
+
+- **Suggested map for every client.** New projects get a role map for each installed client from the reviewed guidance (`model_roles.py`): deep work (orchestrator, planner, reviewer) on the strongest model, implementation on the coding model, verification on the fast one. Claude takes aliases (`opus`, `sonnet`, `haiku`), Codex model IDs, Copilot the picker's names (the schema now allows their spaces and parentheses).
+- **Confirmed by the user, before the first mission.** `software-factory models roles` (agent-allowed, no network) shows the map, the choices with what each is good for, and whether it is confirmed. A setup proposal carrying `model_selection` stamps `confirmed_sha256` (the hash of exactly that map), so approving it with `approve S-n setup` is the confirmation; an edited map is unconfirmed again. In a rendered project `mission create` refuses until the map is confirmed, including for `inherit` projects. `doctor` reports it.
+- **Held to it.** Each mission records `models` (map, hash, confirmed); the summary shows it and the gate refuses a mission whose map changed after it started. The Claude guard denies an `Agent` call that passes `model`. Codex and Copilot follow their pinned agent files without a hook (instruction-level for overrides). No client lets the factory prove which model actually ran.
+
+## 0.3.8 the factory commits, publishes on one line and syncs CI
+
+The user asked why they had to commit at all. Reading the flow end to end showed it was worse than a chore: nobody in a mission could commit (the orchestrator's shell is read-only and lane work is copied back uncommitted), yet the candidate fingerprint includes HEAD, so the commit the user was told to make after READY_PR made every verify run, task result and review stale before CI could be recorded.
+
+- **Commits where they cannot stale evidence.** `verify` first commits the owned-path changes of the tasks it verifies (only those paths; other dirty files are left alone), onto `factory/<ID>` when the work started on the trunk, and records the branch on the mission. Evidence, results and reviews then bind to that commit. Without a Git identity, or when a pre-commit hook refuses, verify still runs and reports the one fix.
+- **Records-only commits keep the reviewed fingerprint.** `evidence.content_head` walks back over commits that change only files of the mission record layout; the fingerprint, evidence and CI comparisons use that content head, and a new `commit` field keeps the real HEAD. READY_PR commits the mission records this way, and `ci-result` accepts CI on either commit (`candidate_head` is recorded when they differ). Any commit touching another path still makes the evidence stale.
+- **Publishing on one line.** `approve ID publish` (chat hook) or `mission publish` (terminal, typed ID; denied to the orchestrator) checks the gate and a clean product tree, commits any newer records, pushes the work branch and opens or reuses the pull request with the user's `gh`, recording `pr_ref`.
+- **`mission sync`** (agent-allowed; it records only what `gh` reports): no runs, pending, success (records CI) or failure (records it, READY_PR → IMPLEMENTING); after the PR is merged and the user approved the merge, it fetches, records `merge_ref` and transitions to MERGED.
+
 ## 0.3.7 models per role and the orchestrator guard on by default
 
 The user found the model files under `.factory/models` had no effect: in mode `inherit` no agent file named a model, so every specialist ran the session's model. They asked for model selection on and orchestrator enforcement always on.

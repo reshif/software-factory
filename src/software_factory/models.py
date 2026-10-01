@@ -1264,6 +1264,10 @@ def handler(args):
         return read_json(root, path)
 
     extra = {}
+    if command == "roles":
+        from .model_roles import status
+
+        return status(root, load_config(root))
     if command == "sources":
         result = {
             **controls,
@@ -1376,6 +1380,7 @@ def handler(args):
 
 MODEL_COMMANDS = {
     "sources": "List reviewed model guidance and policy (default)",
+    "roles": "Show the model each role uses per client, the choices, and whether the user confirmed them",
     "template": "Print a catalog or request template (--kind catalog|request)",
     "discover": "Build a catalog: Codex app-server, Claude /model picker or guidance, Copilot template",
     "validate": "Validate a catalog, request, plan or observation JSON file (- reads stdin)",

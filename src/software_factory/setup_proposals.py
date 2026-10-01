@@ -161,7 +161,12 @@ def _merged(root, value: dict) -> dict:
                 raise FactoryError(f"{key} is a list")
             merged[key] = value[key]
     if "model_selection" in value:
-        merged["model_selection"] = value["model_selection"]
+        from .model_roles import stamped
+
+        if not isinstance(value["model_selection"], dict):
+            raise FactoryError("model_selection is an object")
+        # Approving the proposal is the user's confirmation of exactly this map.
+        merged["model_selection"] = stamped(value["model_selection"])
     if "enforcement" in value:
         # A proposal can turn enforcement on, never off: switching it off stays the user's own edit.
         if value["enforcement"] != {"claude_orchestrator_agent": True}:

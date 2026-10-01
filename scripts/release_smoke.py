@@ -248,6 +248,28 @@ def crew_checks(command, work, env, shell):
     commit = ["git", "-c", "user.name=Smoke", "-c", "user.email=smoke@example.invalid", "commit", "-qm"]
     run(["git", "add", "-A"], cwd=project, env=env)
     run([*commit, "Configure the tests check"], cwd=project, env=env)
+    # 0.3.9: the first mission waits for the user's models; one approval line confirms the map.
+    waiting = subprocess.run(
+        create, cwd=project, env=env, capture_output=True, text=True, check=False, timeout=180
+    )
+    assert waiting.returncode == 1 and "Choose the models before starting work" in waiting.stderr, (
+        waiting.stderr
+    )
+    roles = json.loads(run([command, "models", "roles", *root], cwd=project, env=env))
+    assert roles["confirmed"] is False and set(roles["clients"]) == {"claude", "codex", "copilot"}, roles
+    proposal = roles["proposal"]
+    proposal["model_selection"]["roles"]["claude"]["verifier"] = "sonnet"
+    (project / ".factory/local/models.json").write_text(json.dumps(proposal))
+    run([command, "setup", "propose", "--input", ".factory/local/models.json", *root], cwd=project, env=env)
+    hook = json.loads((project / ".claude/settings.json").read_text())["hooks"]["UserPromptSubmit"][0]
+    approved = subprocess.run(
+        [shell, "-c", hook["hooks"][0]["command"]], cwd=project, env={**env, "CLAUDE_PROJECT_DIR": str(project)},
+        input=json.dumps({"hook_event_name": "UserPromptSubmit", "session_id": "smoke", "prompt": "approve S-0001 setup"}),
+        capture_output=True, text=True, check=False, timeout=180,
+    )  # fmt: skip
+    assert "applied setup proposal S-0001" in approved.stdout, (approved.stdout, approved.stderr)
+    assert "\nmodel: sonnet\n" in (project / ".claude/agents/factory-verifier.md").read_text()
+    assert 'model = "gpt-6-sol"' in (project / ".codex/agents/factory-implementer.toml").read_text()
     created = json.loads(run(create, cwd=project, env=env))
     assert created["state"] == "PROPOSED" and created["about"].startswith("Summary"), created
 
@@ -335,21 +357,21 @@ def crew_checks(command, work, env, shell):
             [command, "setup", "propose", "--input", ".factory/local/setup.json", *root], cwd=project, env=env
         )
     )
-    assert shown["proposal"] == "S-0001" and [
+    assert shown["proposal"] == "S-0002" and [
         c["id"] for c in json.loads((project / "factory.json").read_text())["checks"]
     ] == ["tests"]
-    refused = fails([command, "setup", "apply", "--proposal", "S-0001", *root])
+    refused = fails([command, "setup", "apply", "--proposal", "S-0002", *root])
     assert "interactive terminal" in refused, refused
     payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash",
-               "tool_input": {"command": "software-factory setup apply --proposal S-0001"}}  # fmt: skip
+               "tool_input": {"command": "software-factory setup apply --proposal S-0002"}}  # fmt: skip
     blocked = subprocess.run([runtime, "-I", "-B", guard], cwd=project, env=env, input=json.dumps(payload),
                              capture_output=True, text=True, check=False, timeout=60)  # fmt: skip
     assert blocked.returncode == 2, blocked.stdout
     before = json.loads(run([command, "mission", "status", "--mission", "M-1", *root], cwd=project, env=env))
-    prompt["prompt"] = "approve S-0001 setup"
+    prompt["prompt"] = "approve S-0002 setup"
     applied = subprocess.run([shell, "-c", chat], cwd=project, env={**env, "CLAUDE_PROJECT_DIR": str(project)},
                              input=json.dumps(prompt), capture_output=True, text=True, check=False, timeout=180)  # fmt: skip
-    assert applied.returncode == 0 and "applied setup proposal S-0001" in applied.stdout, (
+    assert applied.returncode == 0 and "applied setup proposal S-0002" in applied.stdout, (
         applied.stdout,
         applied.stderr,
     )

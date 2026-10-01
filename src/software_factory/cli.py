@@ -162,11 +162,15 @@ def doctor(root: Path) -> dict:
             "network": "not_checked",
         }
         report["enforcement"] = enforcement_summary(root, config)
+        from .model_roles import problems as model_problems
         from .rendering import role_model
 
         selection = config.get("model_selection") or {}
+        unsettled = model_problems(config)
         report["models"] = {
             "mode": selection.get("mode", "inherit"),
+            "confirmed": not unsettled,
+            **({"problems": unsettled} if unsettled else {}),
             **{
                 profile: {
                     role: role_model(config, profile, role) or "inherit (session model)"

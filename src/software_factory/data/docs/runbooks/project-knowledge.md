@@ -31,7 +31,7 @@ Your profile never reaches a brief the gate re-renders, so gate results do not d
 
 `software-factory crew match --text "<request>"` lists recipes whose triggers appear in a request; the orchestrator suggests one and uses it only if you confirm (`mission create --recipe NAME`, or `mission recipe --mission ID --use NAME|--clear` while PROPOSED). The recipe is frozen into `crew-context.md`. Round 0 of the interview shows its defaults and asks whether each is still true; your reply is recorded as a clarification next to the defaults you were shown, and only that makes a default quotable by the criteria. Its known pitfalls reach implementer and code-review briefs. Requests from a contributor or an anonymous author never get a recipe.
 
-Every round also carries a question you probably had not considered, and each contradiction between your request, your answers, the saved knowledge and the repository is asked as its own question; it stays an open ambiguity (origin `contradiction`) that blocks scope until you settle it. There is no limit on questions or rounds.
+Every round also carries a question you probably had not considered, and each contradiction between your request, your answers, the saved knowledge and the repository is asked as its own question; it stays an open ambiguity (origin `contradiction`) that blocks scope until you settle it. Rounds are unlimited, with at most 5 plain, short questions each.
 
 ## Options graded before building
 
@@ -63,7 +63,7 @@ If you used a Crew folder, run `software-factory crew import --from ~/crew` in y
 
 1. An agent proposes the full new text: `software-factory crew propose --target project|recipe:<name>|personal --input -`. It is stored as an inert proposal `P-0001`, and the agent shows you the exact text. Proposals are refused when they hold a secret, invisible or control characters, HTML comments, a line that reads as an approval, or (for recipes) front-matter keys other than `name, lane, trigger, created, updated, source_missions`.
 2. You approve it. In Claude Code reply with a line `approve P-0001 crew` (add the first 8 hex of its sha256 to pin exactly what you read). Anywhere, run `software-factory crew apply --proposal P-0001` in your terminal and type the ID back. Personal knowledge is saved only from your terminal.
-3. Commit what it wrote: apply prints `git add .factory/crew && git commit …`.
+3. Nothing else: on your approval the factory commits exactly the knowledge files (the commit message carries your approval) and re-freezes any PROPOSED mission so it uses them.
 
 Apply refuses a proposal whose target changed since it was proposed, an edited proposal, and any open product mission past PROPOSED in this working tree (its candidate would then contain a protected path): apply from the main worktree while missions run in their own worktrees, or after they merge. A PROPOSED mission picks the new knowledge up with `crew refresh`.
 

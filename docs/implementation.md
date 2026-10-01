@@ -44,6 +44,63 @@ Built in seven reviewed steps, each with the full suite, lint, build and an isol
 
 Removed as superseded: the 0.2.x release artifacts, the 0.2.5 architecture set (replaced by [architecture.md](architecture.md)) and the research drafts, at the user's request.
 
+## 0.3.9 the user chooses the model for each role, and the factory holds missions to it
+
+The user found that nothing at `/factory-build` asked which model does what, Codex and Copilot agents were never pinned, and no mission recorded its models.
+
+- **Suggested map for every client.** New projects get a role map for each installed client from the reviewed guidance (`model_roles.py`): deep work (orchestrator, planner, reviewer) on the strongest model, implementation on the coding model, verification on the fast one. Claude takes aliases (`opus`, `sonnet`, `haiku`), Codex model IDs, Copilot the picker's names (the schema now allows their spaces and parentheses).
+- **Confirmed by the user, before the first mission.** `software-factory models roles` (agent-allowed, no network) shows the map, the choices with what each is good for, and whether it is confirmed. A setup proposal carrying `model_selection` stamps `confirmed_sha256` (the hash of exactly that map), so approving it with `approve S-n setup` is the confirmation; an edited map is unconfirmed again. In a rendered project `mission create` refuses until the map is confirmed, including for `inherit` projects. `doctor` reports it.
+- **Held to it.** Each mission records `models` (map, hash, confirmed); the summary shows it and the gate refuses a mission whose map changed after it started. The Claude guard denies an `Agent` call that passes `model`. Codex and Copilot follow their pinned agent files without a hook (instruction-level for overrides). No client lets the factory prove which model actually ran.
+
+## 0.3.8 the factory commits, publishes on one line and syncs CI
+
+The user asked why they had to commit at all. Reading the flow end to end showed it was worse than a chore: nobody in a mission could commit (the orchestrator's shell is read-only and lane work is copied back uncommitted), yet the candidate fingerprint includes HEAD, so the commit the user was told to make after READY_PR made every verify run, task result and review stale before CI could be recorded.
+
+- **Commits where they cannot stale evidence.** `verify` first commits the owned-path changes of the tasks it verifies (only those paths; other dirty files are left alone), onto `factory/<ID>` when the work started on the trunk, and records the branch on the mission. Evidence, results and reviews then bind to that commit. Without a Git identity, or when a pre-commit hook refuses, verify still runs and reports the one fix.
+- **Records-only commits keep the reviewed fingerprint.** `evidence.content_head` walks back over commits that change only files of the mission record layout; the fingerprint, evidence and CI comparisons use that content head, and a new `commit` field keeps the real HEAD. READY_PR commits the mission records this way, and `ci-result` accepts CI on either commit (`candidate_head` is recorded when they differ). Any commit touching another path still makes the evidence stale.
+- **Publishing on one line.** `approve ID publish` (chat hook) or `mission publish` (terminal, typed ID; denied to the orchestrator) checks the gate and a clean product tree, commits any newer records, pushes the work branch and opens or reuses the pull request with the user's `gh`, recording `pr_ref`.
+- **`mission sync`** (agent-allowed; it records only what `gh` reports): no runs, pending, success (records CI) or failure (records it, READY_PR → IMPLEMENTING); after the PR is merged and the user approved the merge, it fetches, records `merge_ref` and transitions to MERGED.
+
+## 0.3.7 models per role and the orchestrator guard on by default
+
+The user found the model files under `.factory/models` had no effect: in mode `inherit` no agent file named a model, so every specialist ran the session's model. They asked for model selection on and orchestrator enforcement always on.
+
+- **Models per role:** new installations write `model_selection: {"mode": "roles", "roles": {"claude": {...}}}` with orchestrator, planner and reviewer on `opus`, implementer on `sonnet` and verifier on `haiku`. Rendering writes the entry as `model:` in each Claude agent's frontmatter, `model` in each Codex agent TOML and `model` in each Copilot `.agent.md` (when a `codex` or `copilot` map is present). A missing role or `"inherit"` keeps the session's model. `doctor` reports the mode and each client's role map, and the factory-start checkpoint records that map. The Claude main session still runs the model the user started it with; Claude Code has no setting for a default main-thread agent.
+- **Enforcement on by default:** `enforcement.claude_orchestrator_agent` now defaults to true. Besides exporting the orchestrator agent, it adds the guard as a project-wide `PreToolUse` hook in `.claude/settings.json`, so every main session in the project is the orchestrator. Hook input from a subagent carries `agent_id`, which the guard passes, so specialists keep their tools. Turning it off is a user edit of `factory.json`; a setup proposal may set `model_selection` and may set enforcement only to true.
+- Upgrade never rewrites `factory.json`: a project without an enforcement flag gets the guard, and one with `"mode": "inherit"` keeps inheriting until the user approves a setup proposal that switches it to `roles`.
+
+## 0.3.6 shorter interviews, runtime kept out of agents' reach, current architecture guide
+
+From the user's review after their first missions:
+
+- **Interviews:** rounds stay unlimited, but each round asks at most 5 questions, most important first. Each question is one short sentence in plain words a non-expert can answer; evidence, why it matters and a suggested answer go on separate lines, and routine choices become stated assumptions instead of questions. Orchestrator, planner, specify skill, build/blueprint/onboard prompts and the context brief say so.
+- **The pinned runtime is not product code:** `.factory/src` (114 Python files) and `.factory/.venv` exist so each repository runs the exact CLI and gate it was set up with, the evidence binds that runtime, and a clone works without a registry. Agents have no reason to read them. Claude now gets owned `permissions.deny` rules `Read(./.factory/src/**)` and `Read(./.factory/.venv/**)` in `.claude/settings.json` (removed again by uninstall, leaving the user's own rules), every client's AGENTS.md section says not to read or search them, and the orchestrator guard refuses shell reads of them.
+- **Architecture guide:** the installed `.factory/docs/architecture.md` now has the current mission flow (options, setup proposals, retro), the full `init` flow, what every file under `.factory/` is for and who uses it, why the runtime is copied into the repository, and where parallel work happens.
+
+## 0.3.5 setup proposals
+
+The same first real mission then produced a nine-step terminal list for the user: install tools, paste a whole `factory.json`, append ignore rules, render, check, commit, restart, and wait for the mission to be cancelled and recreated. The cause was the design, not the agent: "setup belongs to the user" (*Authority*) and "never change check definitions to obtain a pass" had been implemented as "the user types the change by hand". What those rules protect is the user's decision over the exact change, which a proposal and approval keep.
+
+- `software-factory setup propose` (agents): an inert, hash-named proposal that may change only `checks`, `setup`, the limits `check_timeout_seconds` and `check_output_bytes`, and added `.gitignore` lines. It must keep a required check, cannot un-ignore files or hide factory files, and cannot touch owners, enforcement, approvals, delivery or JEV.
+- The user applies it with their own chat line `approve S-0001 setup` (chat hook) or `setup apply` in a terminal with the ID typed back; the guard denies `setup apply` to the orchestrator. Apply refuses a changed `factory.json`, other unfinished setup and active tasks.
+- Applying writes the files, re-renders, commits exactly those files (the approval is in the commit message) and moves every open pre-merge mission in the working tree onto that commit (`base_history` decision `SETUP-S-n`). Missions past PROPOSED keep their scope; their verification and reviews bind the old configuration through the fingerprint and must run again.
+- Knowledge saves follow the same pattern: on `approve P-n crew` (or `crew apply`) the factory commits exactly the knowledge files and re-freezes PROPOSED missions.
+- Roles: the orchestrator and planner never hand the user setup chores; they prefer tools run without installing (`uvx`, `pipx run`, `npx`) and ask one yes-or-no question for machine-level installs.
+
+An independent review (Fable) of the 0.3.4 and 0.3.5 changes found no fault in the guard tables, the chat hook or the commit mechanics, and these defects, all fixed with regression tests: a mission moved on approval could be carried past an earlier commit that weakened `factory.json` (blocking: a mission now moves only when the approved commit is the single non-record change since its base, and the proposal warns about it); a moved READY_PR mission kept its CI result; ignore rules were matched as text (`.factory*`, `*.jso[n]` and `*/` slipped through) and are now probed with Git; a failed commit left files changed; a knowledge approval committed the whole knowledge directory; the summary dropped hints commands add; and four minor points (a created `.gitignore` left behind, `--base HEAD`, missions from another branch, policy-defined protected paths in rebase).
+
+This is not weaker than before: previously an agent in an unguarded session could commit a `factory.json` change and recreate the mission with no approval at all; now the supported path needs the user's approval of the exact text.
+
+## 0.3.4 setup friction
+
+Found by the user's first real mission on 0.3.3 (a greenfield Nautobot DHCP project): they had enabled orchestrator enforcement in `factory.json` without rendering or committing, so the mission was created, could not be briefed, was blocked, then cancelled and recreated.
+
+- `mission create` refuses while a protected path has uncommitted changes or exports are stale (the gate's own condition: only when `factory.lock.json` exists), and says exactly what the user runs.
+- `mission rebase --mission ID` moves a PROPOSED mission without tasks past commits that change only protected factory paths, keeping the request and clarifications and re-freezing saved knowledge. It is the same result as cancel-and-recreate, so it weakens nothing: it refuses product commits, unfinished setup, a changed constitution and any later state.
+- The orchestrator stops before creating a mission on unfinished setup, asks no questions of its own before the planner's context exists, and names the `configure-me` placeholder up front.
+- `software-factory checks --add ID -- COMMAND` (the user's setup step; the guard denies it) writes a required check, replaces the placeholder, re-renders and prints the commit line, so an empty repository can be given its test command before the first mission.
+- Mission commands print a summary of the record (state, version, request chain, criteria, tasks, decisions, reviews, blockers); `--full` or `mission status` prints everything.
+
 ## 0.3.1 constitution 2.0.0
 
 Constitution 2.0.0 replaces 1.0.0's twenty flat rules with sections ordered by precedence (Never, Authority and intent, Evidence, Roles and review, Craft, Amendment) and a stated conflict rule: the earlier section wins, and within a section the rule that withholds a claim, change or approval wins. It moves into the constitution obligations that 0.3.0 stated only in roles and skills: the verbatim request as the contract, asking ambiguities up front, the orchestrator never producing, specialists spawning no agents and changing no mission records, advice (model recommendations, semantic assistance, self-assessment) never counting as verification, and missing independence being reported rather than simulated. Role, skill and prompt text now cites rules by title and keeps only operational steps. It is MAJOR because obligations were redefined and renumbered (READY_PR's boundary moved from rule 20 to *Honest records*). Each rule's enforcement, and where it is instruction-only, is mapped in `data/docs/runbooks/constitution-enforcement.md`.

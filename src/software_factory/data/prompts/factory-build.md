@@ -15,10 +15,10 @@ Follow the orchestrator flow in order:
 
 1. Store the verbatim request first: `mission create --request-file -` (quoted heredoc) (`--kind patch` for the small lane).
 2. Context phase before any spec (factory-specify).
-3. Ask every material ambiguity before the spec, in as many rounds as the answers require (no limit), and record answers with `mission clarify`.
+3. Ask every material ambiguity before the spec, in as many rounds as the answers require, at most 5 plain, short questions per round, and record answers with `mission clarify`.
 4. Spec with AC-n criteria (`mission criteria`) and a plan whose `## Architecture` has a mermaid diagram (factory-plan); interview the user in rounds with suggested defaults, record the planner's assessment (`mission brief --kind assess`, `record-doc --doc assessment`) and show its blockers, concerns and risks, then have the user record their actual spec acceptance (in Claude Code by replying `approve ID scope` in chat; otherwise `software-factory mission approve --mission ID --kind scope --reference TEXT` in their terminal), then `accept-scope` and tasks mapped to criteria.
 5. Implement from generated task briefs, run `software-factory verify` yourself, record results with criteria evidence, and obtain the review kinds the lane and `mission risk` require. Move mission and task states in the order the orchestrator role's `## Mission states` lists; `software-factory mission template --kind …` prints valid JSON skeletons.
 
 Map criteria to real product checks. There is no default one: new installs carry a failing `configure-me` placeholder until a human replaces it with real checks and runs `software-factory render`. Continue within the user's authorization without repeated confirmation.
 
-Finish with a passing READY_PR gate and handoff, or a precise blocker and next action. Publishing, merge and delivery need their own authorization and evidence.
+Finish with a passing READY_PR gate and handoff, or a precise blocker and next action. The factory commits the work itself (never ask the user to commit); publishing needs the user's one line `approve ID publish`, after which `mission sync` records CI and the merge. Delivery needs its own authorization and evidence.

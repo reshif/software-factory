@@ -115,6 +115,10 @@ HUMAN_ONLY = {
     ("mission", "unhalt"): (
         "software-factory mission unhalt lifts the kill switch; only the user runs it, in their terminal"
     ),
+    ("setup", "apply"): (
+        "software-factory setup apply changes the checks the work is judged by; show the user the proposal's "
+        "exact change and ask them to reply `approve S-n setup` in chat or run setup apply in their terminal"
+    ),
     ("crew", "apply"): (
         "software-factory crew apply saves knowledge the user approved; show the user the proposal's exact "
         "text and ask them to reply `approve P-n crew` in chat or run crew apply in their terminal"
@@ -126,6 +130,10 @@ HUMAN_ONLY = {
     ("crew", "import"): (
         "software-factory crew import reads the user's own Crew folder outside this repository; ask the user "
         "to run it in their terminal"
+    ),
+    ("mission", "publish"): (
+        "software-factory mission publish pushes the user's work and opens a pull request; ask the user to reply "
+        "`approve <MISSION> publish` in chat or run mission publish in their terminal"
     ),
     ("mission", "ci-result"): (
         "software-factory mission ci-result records a remote CI result the user observed; ask the user "
@@ -147,6 +155,8 @@ FACTORY_SUBCOMMANDS = {
         "block": ({"--mission", "--reason", "--next"}, set()),
         "resume": ({"--mission", "--to", "--model-catalog", "--resolution"}, {"--replan-models"}),
         "recipe": ({"--mission", "--use"}, {"--clear"}),
+        "rebase": MISSION_ONLY,
+        "sync": MISSION_ONLY,
         "accept-scope": MISSION_ONLY,
         "clarify": INPUT_ONLY,
         "criteria": INPUT_ONLY,
@@ -167,6 +177,11 @@ FACTORY_SUBCOMMANDS = {
         "record-delivery": INPUT_ONLY,
         "template": ({"--mission", "--kind"}, set()),
     },
+    "setup": {
+        "propose": ({"--input"}, set()),
+        "show": ({"--proposal"}, set()),
+        "proposals": (set(), set()),
+    },
     "crew": {
         "status": (set(), set()),
         "library": (set(), set()),
@@ -184,7 +199,7 @@ FACTORY_SUBCOMMANDS = {
 }  # fmt: skip
 # models takes its subcommand as a positional word (default: sources).
 MODEL_SUBCOMMANDS = {
-    "sources", "template", "validate", "plan", "dispatch", "outcome-template", "outcome-record", "calibration",
+    "sources", "roles", "template", "validate", "plan", "dispatch", "outcome-template", "outcome-record", "calibration",
 }  # fmt: skip
 # Options naming a file; they take a project-relative path, or - for standard input.
 FACTORY_PATH_OPTIONS = {"--input", "--catalog", "--plan", "--output", "--request-file", "--model-catalog"}
@@ -355,7 +370,15 @@ def outside_project(value: str) -> bool:
     )
 
 
+RUNTIME_PATHS = (".factory/src", ".factory/.venv")
+
+
 def check_path(value: str, label: str) -> None:
+    normalized = value.removeprefix("./")
+    if any(normalized == p or normalized.startswith(p + "/") for p in RUNTIME_PATHS):
+        raise Denied(
+            f"{label} {value!r} is the factory's own runtime, not product code; use the software-factory CLI"
+        )
     if outside_project(value):
         raise Denied(
             f"{label} {value!r} could read outside the project; use a project-relative path "
@@ -436,7 +459,9 @@ def check_factory(args: list[str]) -> None:
             raise Denied(HUMAN_ONLY[(command, rest[0])])
         if rest[0] not in table:
             raise Denied(f"software-factory `{command} {rest[0]}` is not an allowed orchestrator command")
-        check_options(f"{command} {rest[0]}", rest[1:], *table[rest[0]])
+        # --full only widens what a mission command prints.
+        options = [a for a in rest[1:] if not (command == "mission" and a == "--full")]
+        check_options(f"{command} {rest[0]}", options, *table[rest[0]])
         return
     if command not in FACTORY_COMMANDS:
         raise Denied(f"software-factory `{command}` is not an allowed orchestrator command")
@@ -546,6 +571,11 @@ def decide(payload) -> None:
         if subagent not in SPECIALISTS:
             shown = subagent if isinstance(subagent, str) else "a missing or malformed subagent_type"
             raise Denied(f"{tool} may only start {', '.join(SPECIALISTS)}, not {shown}. {DELEGATE}")
+        if isinstance(args, dict) and args.get("model") not in (None, ""):
+            raise Denied(
+                f"{tool} may not choose a model: each factory agent file pins the model the user approved for "
+                "its role (factory.json model_selection.roles). Call it again without `model`"
+            )
         return
     if tool in CLAUDE_EDIT:
         raise Denied(f"{tool} edits files. {DELEGATE}")

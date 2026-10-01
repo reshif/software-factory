@@ -18,4 +18,4 @@ Copy or refine the authored Risks section from the plan or specification: each m
 
 ## Delivery and recovery
 
-State the completion boundary, actual remote CI/PR status if available, rollout needs and recovery implications. A prepared packet is not a created PR, merge or deployment. The user records remote CI with `software-factory mission ci-result` in their own terminal; MERGED needs a successful CI result for the candidate commit and the actual merge commit.
+State the completion boundary, actual remote CI/PR status if available, rollout needs and recovery implications. A prepared packet is not a created PR, merge or deployment. After the user's `approve ID publish`, `software-factory mission sync` records remote CI as GitHub reports it (`mission ci-result` is the terminal fallback); MERGED needs a successful CI result for the candidate commit and the actual merge commit.

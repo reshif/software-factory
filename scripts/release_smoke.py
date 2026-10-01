@@ -147,11 +147,12 @@ def enforcement_checks(command, project, work, env, shell):
     factory_json = project / "factory.json"
     saved = factory_json.read_bytes()
     config = json.loads(saved)
-    config["enforcement"] = {"claude_orchestrator_agent": True}
-    factory_json.write_text(json.dumps(config, indent=2) + "\n")
-    changed = json.loads(run([command, "render", "--root", str(project)], cwd=work, env=env))["changed"]
     agent = ".claude/agents/factory-orchestrator.md"
-    assert agent in changed and not (project / ".github/hooks").exists(), changed
+    # 0.3.7: on by default, with the guard on every main-session call through project settings.
+    assert config["enforcement"] == {"claude_orchestrator_agent": True}, config
+    assert (project / agent).is_file() and not (project / ".github/hooks").exists()
+    settings = json.loads((project / ".claude/settings.json").read_text())
+    assert "orchestrator_guard.py" in settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"], settings
     header = (project / agent).read_text().split("---\n")[1]
     assert "Agent(factory-planner, factory-implementer, factory-verifier, factory-reviewer)" in header
     import yaml
@@ -201,10 +202,16 @@ def enforcement_checks(command, project, work, env, shell):
     assert report["enforcement"]["codex"]["layer"] == "instructions"
     copilot_agent = (project / ".github/agents/factory.agent.md").read_text().split("---\n")[1]
     assert "edit" not in yaml.safe_load(copilot_agent)["tools"]
-    factory_json.write_bytes(saved)
+    config["enforcement"] = {"claude_orchestrator_agent": False}
+    factory_json.write_text(json.dumps(config, indent=2) + "\n")
     run([command, "render", "--root", str(project)], cwd=work, env=env)
     assert not (project / agent).exists()
-    assert json.loads(run([command, "doctor", "--root", str(project)], cwd=work, env=env))["ok"]
+    assert "PreToolUse" not in json.loads((project / ".claude/settings.json").read_text()).get("hooks", {})
+    factory_json.write_bytes(saved)
+    run([command, "render", "--root", str(project)], cwd=work, env=env)
+    assert (project / agent).is_file()
+    report = json.loads(run([command, "doctor", "--root", str(project)], cwd=work, env=env))
+    assert report["ok"] and report["models"]["claude"]["implementer"] == "sonnet", report.get("models")
 
 
 def crew_checks(command, work, env, shell):
@@ -215,16 +222,56 @@ def crew_checks(command, work, env, shell):
     run([command, "init", str(project), "--profile", "claude,codex,copilot", "--commit"], cwd=work, env=env)
     agents = (project / "AGENTS.md").read_text()
     assert "Version: 2.1.0" in agents and "with no fixed number" in agents
+    assert "is not product code: do not read or search it" in agents
+    deny = json.loads((project / ".claude/settings.json").read_text())["permissions"]["deny"]
+    assert {"Read(./.factory/src/**)", "Read(./.factory/.venv/**)"} <= set(deny), deny
     installed = [p for p in project.rglob("*.md") if ".venv" not in p.parts]
     assert not any("two or three questions" in p.read_text() for p in installed)
     for name in ("factory-onboard", "factory-retro"):
         exported = [p for p in project.rglob(f"{name}/SKILL.md") if ".factory" not in p.parts]
         assert {p.relative_to(project).parts[0] for p in exported} >= {".claude", ".agents"}, exported
     root = ["--root", str(project)]
+    # 0.3.4: the user sets the test command; a mission is not created on uncommitted setup.
+    added = json.loads(
+        run([command, "checks", "--add", "tests", *root, "--", "python", "-c", "pass"], cwd=project, env=env)
+    )
+    assert added["checks"] == ["tests"], added
     request = project / ".factory/local/request.md"
+    create = [command, "mission", "create", "--id", "M-1", "--title", "Health", "--kind", "feature",
+              "--request-file", ".factory/local/request.md", *root]  # fmt: skip
+    request.parent.mkdir(parents=True, exist_ok=True)
     request.write_text("Please add a health endpoint.\n")
-    run([command, "mission", "create", "--id", "M-1", "--title", "Health", "--kind", "feature",
-         "--request-file", ".factory/local/request.md", *root], cwd=project, env=env)  # fmt: skip
+    unfinished = subprocess.run(
+        create, cwd=project, env=env, capture_output=True, text=True, check=False, timeout=180
+    )
+    assert unfinished.returncode == 1 and "Finish the factory setup" in unfinished.stderr, unfinished.stderr
+    commit = ["git", "-c", "user.name=Smoke", "-c", "user.email=smoke@example.invalid", "commit", "-qm"]
+    run(["git", "add", "-A"], cwd=project, env=env)
+    run([*commit, "Configure the tests check"], cwd=project, env=env)
+    # 0.3.9: the first mission waits for the user's models; one approval line confirms the map.
+    waiting = subprocess.run(
+        create, cwd=project, env=env, capture_output=True, text=True, check=False, timeout=180
+    )
+    assert waiting.returncode == 1 and "Choose the models before starting work" in waiting.stderr, (
+        waiting.stderr
+    )
+    roles = json.loads(run([command, "models", "roles", *root], cwd=project, env=env))
+    assert roles["confirmed"] is False and set(roles["clients"]) == {"claude", "codex", "copilot"}, roles
+    proposal = roles["proposal"]
+    proposal["model_selection"]["roles"]["claude"]["verifier"] = "sonnet"
+    (project / ".factory/local/models.json").write_text(json.dumps(proposal))
+    run([command, "setup", "propose", "--input", ".factory/local/models.json", *root], cwd=project, env=env)
+    hook = json.loads((project / ".claude/settings.json").read_text())["hooks"]["UserPromptSubmit"][0]
+    approved = subprocess.run(
+        [shell, "-c", hook["hooks"][0]["command"]], cwd=project, env={**env, "CLAUDE_PROJECT_DIR": str(project)},
+        input=json.dumps({"hook_event_name": "UserPromptSubmit", "session_id": "smoke", "prompt": "approve S-0001 setup"}),
+        capture_output=True, text=True, check=False, timeout=180,
+    )  # fmt: skip
+    assert "applied setup proposal S-0001" in approved.stdout, (approved.stdout, approved.stderr)
+    assert "\nmodel: sonnet\n" in (project / ".claude/agents/factory-verifier.md").read_text()
+    assert 'model = "gpt-6-sol"' in (project / ".codex/agents/factory-implementer.toml").read_text()
+    created = json.loads(run(create, cwd=project, env=env))
+    assert created["state"] == "PROPOSED" and created["about"].startswith("Summary"), created
 
     def fails(argv):
         result = subprocess.run(argv, cwd=project, env=env, capture_output=True, text=True,
@@ -263,11 +310,16 @@ def crew_checks(command, work, env, shell):
     runtime = str(project / ".factory/.venv/bin/python")
     guard = str(project / ".factory/hooks/orchestrator_guard.py")
     for line in ("software-factory crew apply --proposal P-0001", "software-factory crew forget --target project",
-                 "software-factory crew import --from ~/crew"):  # fmt: skip
+                 "software-factory crew import --from ~/crew", "software-factory mission publish --mission M-1"):  # fmt: skip
         payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": line}}
         result = subprocess.run([runtime, "-I", "-B", guard], cwd=project, env=env, input=json.dumps(payload),
                                 capture_output=True, text=True, check=False, timeout=60)  # fmt: skip
         assert result.returncode == 2, (line, result.stdout, result.stderr)
+    sync = {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": {"command": ".factory/.venv/bin/software-factory mission sync --mission M-1"}}  # fmt: skip
+    result = subprocess.run([runtime, "-I", "-B", guard], cwd=project, env=env, input=json.dumps(sync),
+                            capture_output=True, text=True, check=False, timeout=60)  # fmt: skip
+    assert result.returncode == 0, (result.stdout, result.stderr)
     settings = json.loads((project / ".claude/settings.json").read_text())
     chat = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
     prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "smoke", "prompt": "approve P-0001 crew"}
@@ -280,12 +332,69 @@ def crew_checks(command, work, env, shell):
     assert (project / ".factory/crew/project.md").read_text() == knowledge.read_text()
     status = json.loads(run([command, "crew", "status", *root], cwd=project, env=env))
     assert status["project"]["ledgered"] and status["ledger"] == {"count": 1, "problems": []}
-    brief = fails([command, "mission", "brief", "--mission", "M-1", "--kind", "context", *root])
-    assert "crew refresh --mission M-1" in brief, brief
-    run(["git", "add", "-A"], cwd=project, env=env)
-    run(["git", "-c", "user.name=Smoke", "-c", "user.email=smoke@example.invalid", "commit", "-qm", "crew"],
-        cwd=project, env=env)  # fmt: skip
-    run([command, "crew", "refresh", "--mission", "M-1", *root], cwd=project, env=env)
+    # 0.3.5: the approval itself commits the knowledge and refreshes the waiting mission.
+    assert "committed it" in saved.stdout and "Refreshed missions: M-1" in saved.stdout, saved.stdout
+    assert run(["git", "status", "--short", "--", ".factory/crew"], cwd=project, env=env) == ""
+    run([command, "mission", "brief", "--mission", "M-1", "--kind", "context", *root], cwd=project, env=env)
+    # 0.3.5: the agent proposes setup; one approval line applies, commits and moves the mission.
+    setup_input = project / ".factory/local/setup.json"
+    setup_input.write_text(
+        json.dumps(
+            {
+                "reason": "Add a lint check for the scaffold",
+                "checks": [
+                    {"id": "tests", "command": ["python", "-c", "pass"], "cwd": ".", "required": True,
+                     "timeout_seconds": 300},
+                    {"id": "lint", "command": ["python", "-c", "pass"], "cwd": ".", "required": True,
+                     "timeout_seconds": 300},
+                ],
+                "gitignore": ["node_modules/"],
+            }
+        )
+    )  # fmt: skip
+    shown = json.loads(
+        run(
+            [command, "setup", "propose", "--input", ".factory/local/setup.json", *root], cwd=project, env=env
+        )
+    )
+    assert shown["proposal"] == "S-0002" and [
+        c["id"] for c in json.loads((project / "factory.json").read_text())["checks"]
+    ] == ["tests"]
+    refused = fails([command, "setup", "apply", "--proposal", "S-0002", *root])
+    assert "interactive terminal" in refused, refused
+    payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+               "tool_input": {"command": "software-factory setup apply --proposal S-0002"}}  # fmt: skip
+    blocked = subprocess.run([runtime, "-I", "-B", guard], cwd=project, env=env, input=json.dumps(payload),
+                             capture_output=True, text=True, check=False, timeout=60)  # fmt: skip
+    assert blocked.returncode == 2, blocked.stdout
+    before = json.loads(run([command, "mission", "status", "--mission", "M-1", *root], cwd=project, env=env))
+    prompt["prompt"] = "approve S-0002 setup"
+    applied = subprocess.run([shell, "-c", chat], cwd=project, env={**env, "CLAUDE_PROJECT_DIR": str(project)},
+                             input=json.dumps(prompt), capture_output=True, text=True, check=False, timeout=180)  # fmt: skip
+    assert applied.returncode == 0 and "applied setup proposal S-0002" in applied.stdout, (
+        applied.stdout,
+        applied.stderr,
+    )
+    assert "M-1 moved" in applied.stdout, applied.stdout
+    after = json.loads(run([command, "mission", "status", "--mission", "M-1", *root], cwd=project, env=env))
+    head = run(["git", "rev-parse", "HEAD"], cwd=project, env=env).strip()
+    assert after["base_commit"] == head != before["base_commit"], (
+        before["base_commit"],
+        after["base_commit"],
+    )
+    assert [c["id"] for c in json.loads((project / "factory.json").read_text())["checks"]] == [
+        "tests",
+        "lint",
+    ]
+    assert (
+        run(
+            ["git", "status", "--short", "--", "factory.json", ".gitignore", "factory.lock.json"],
+            cwd=project,
+            env=env,
+        )
+        == ""
+    )
+    assert json.loads(run([command, "render", "--check", *root], cwd=project, env=env))["ok"]
     run([command, "mission", "brief", "--mission", "M-1", "--kind", "context", *root], cwd=project, env=env)
     removed = json.loads(run([command, "uninstall", *root], cwd=project, env=env))
     assert ".factory/crew" in removed["retained"] and (project / ".factory/crew/ledger.jsonl").is_file()
@@ -599,6 +708,7 @@ def main():
                     "persistent_auth_pinned_lookup_preservation_and_logout": "pass",
                     "orchestrator_agent_export_and_pinned_guard": "pass (live client behaviour not_run)",
                     "crew_knowledge_chat_hook_guard_options_protection_uninstall": "pass (live client not_run)",
+                    "setup_proposal_one_line_approval_commit_and_mission_move": "pass (live client not_run)",
                     "live_provider": "not_run",
                 },
                 indent=2,

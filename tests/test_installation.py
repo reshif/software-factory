@@ -961,9 +961,8 @@ def frontmatter(path):
 @pytest.mark.parametrize("enforced", [False, True])
 def test_specialists_cannot_dispatch_and_orchestrators_cannot_edit(tmp_path, profile, enforced):
     install(tmp_path, selected=profile, skip_sync=True)
-    if enforced:
-        set_enforcement(tmp_path, claude_orchestrator_agent=True)
-        render(tmp_path)
+    set_enforcement(tmp_path, claude_orchestrator_agent=enforced)
+    render(tmp_path)
     assert render(tmp_path, check=True)["ok"]
     selected = profile.split(",")
     for path in (tmp_path / ".claude/agents").glob("*.md"):
@@ -993,12 +992,17 @@ def test_specialists_cannot_dispatch_and_orchestrators_cannot_edit(tmp_path, pro
 
 def test_orchestrator_agent_export(tmp_path):
     install(tmp_path, selected="claude", skip_sync=True)
-    assert not (tmp_path / ORCHESTRATOR).exists()
-    assert json.loads((tmp_path / "factory.json").read_text())["model_selection"] == {"mode": "inherit"}
-    set_enforcement(tmp_path, claude_orchestrator_agent=True)
-    assert ORCHESTRATOR in render(tmp_path)["changed"]
+    assert (tmp_path / ORCHESTRATOR).is_file()  # On by default since 0.3.7.
+    from software_factory.installation import DEFAULT_CLAUDE_ROLES
+
+    config = json.loads((tmp_path / "factory.json").read_text())
+    assert config["model_selection"] == {"mode": "roles", "roles": {"claude": DEFAULT_CLAUDE_ROLES}}
+    assert config["enforcement"] == {"claude_orchestrator_agent": True}
     header = frontmatter(tmp_path / ORCHESTRATOR)
-    assert header["name"] == "factory-orchestrator"
+    assert header["name"] == "factory-orchestrator" and header["model"] == "opus"
+    for role, model in DEFAULT_CLAUDE_ROLES.items():
+        if role != "orchestrator":
+            assert frontmatter(tmp_path / f".claude/agents/factory-{role}.md")["model"] == model, role
     assert header["tools"] == (
         "Agent(factory-planner, factory-implementer, factory-verifier, factory-reviewer), Read, Glob, Grep, Bash, "
         "AskUserQuestion, TodoWrite"
@@ -1019,8 +1023,11 @@ def test_orchestrator_agent_export(tmp_path):
     assert "Skill" not in header["tools"]
     role = (tmp_path / ".factory/roles/orchestrator.md").read_text().strip()
     assert role in text and "claude --agent factory-orchestrator" in text
-    assert "claude --agent factory-orchestrator" in (tmp_path / "CLAUDE.md").read_text()
-    assert "PreToolUse guard via" in (tmp_path / "AGENTS.md").read_text()
+    assert (
+        "Every main session in this project is the factory orchestrator"
+        in (tmp_path / "CLAUDE.md").read_text()
+    )
+    assert "PreToolUse guard on every main-session tool call" in (tmp_path / "AGENTS.md").read_text()
     lock_data = lock(tmp_path)
     assert lock_data["generated"][ORCHESTRATOR]["kind"] == "file"
     assert ".factory/hooks/orchestrator_guard.py" in lock_data["sources"]
@@ -1126,6 +1133,8 @@ def test_orchestrator_hook_command_runs_guard(tmp_path):
 
 def test_enforcement_toggle_removes_and_relinquishes_exports(tmp_path):
     install(tmp_path, selected="claude,copilot", skip_sync=True)
+    set_enforcement(tmp_path)
+    render(tmp_path)
     before = files(tmp_path)
     set_enforcement(tmp_path, claude_orchestrator_agent=True)
     render(tmp_path)
@@ -1159,6 +1168,8 @@ def test_enforcement_toggle_removes_and_relinquishes_exports(tmp_path):
 
 def test_user_owned_orchestrator_agent_collides(tmp_path):
     install(tmp_path, selected="claude", skip_sync=True)
+    set_enforcement(tmp_path)
+    render(tmp_path)
     (tmp_path / ORCHESTRATOR).write_text("user-owned agent\n")
     set_enforcement(tmp_path, claude_orchestrator_agent=True)
     with pytest.raises(FactoryError, match="Unowned file collision"):

@@ -1,26 +1,26 @@
 {
   "schema_version": 1,
-  "created_at": "2026-09-30T13:32:40.357601+00:00",
-  "version": "0.3.3",
-  "boundary": "Validated and globally installed private local Python/uv package; pushed to the feat/0.3.3-crew branch (PR #7, not merged); no publication, remote CI, merge or deployment claim",
+  "created_at": "2026-09-30T17:07:03.223057+00:00",
+  "version": "0.3.5",
+  "boundary": "Validated and globally installed private local Python/uv package; pushed to feat/0.3.5-setup-proposals (stacked on PRs #7 and #8, not merged); no publication, remote CI, merge or deployment claim",
   "source_identity": {
     "format": "sha256-of-sorted-compact-json-file-sha256-map",
-    "commit": "781e6512add2b09d56dfbc5dc0cb416155319d22",
-    "sha256": "1fa2a4c738ed23dedaa65d000fcecefe9c8c563756d00d09d9a7eab90c8b5529",
+    "commit": "b8afd7344c45c016e90233d0f7f03f1d32cf612d",
+    "sha256": "e80da5d506369ad017098d433d1452a1cd8506d3ce179df8a6dad9e2f472b528",
     "files": {
       "AGENTS.md": "64e6ac184fde94e7c72fc6b146e40912529c5b2e7588562e61f90c1a3bd0cc10",
-      "README.md": "5f7e32ab89e096b56fa65a6f8e73a5a2982c692e7303158c0789dd141edd0abf",
-      "pyproject.toml": "5d6b1b0c6e52bc49a60c47ee988d1c15dc1ab47fc6eb66ae0f991fbb64203f9d",
-      "scripts/release_smoke.py": "4fbd642cb60f0279d447484fcdd97b10fd4577496be65d2a58db166924b2bcd0",
-      "src/software_factory/__init__.py": "f0a7026135c7f7d0b6fa008bb8f20b26fb53f587ed45626c6abb48c7a4d0d996",
+      "README.md": "d75e6855b9a7f26d903b0b9db596496be5aed0f9a56f101ffdc0afdb95eb45c3",
+      "pyproject.toml": "dd308e37b9d37e457b1add4487fcb832b27c627161e3b28ec32a49e9a0db51ee",
+      "scripts/release_smoke.py": "a08d4db93df802cfd73fa0043752e0d6a97ce7cfe3a0b96f8430421d0bede56e",
+      "src/software_factory/__init__.py": "4e19c2b85dd7eebb1049de4f01e6bf8df600ef466684bbe415c2c1c413f06676",
       "src/software_factory/__main__.py": "3129adff95e0f38b87ab34cddfc27082c7892bcaec267ff5d40f160fdf55b44a",
       "src/software_factory/auth.py": "c096446560cc314f5de239e11cbc859f01ef92ce73f5fa9d79184c9e7e1c41af",
       "src/software_factory/calibration.py": "6cdc484c82104363156fd573ae4336c7c6a8662705a09607ebd27dcdf01df04e",
-      "src/software_factory/checks.py": "4eafc0d20c7c0d01e78f31f56cf7b2b3275d22164d739928b5aa7a57ea0791b1",
+      "src/software_factory/checks.py": "8ffaa233c4c43a11957e056870928513fcdb44cfddc7ac9a438e184afe26b0e3",
       "src/software_factory/civerify.py": "fa2472cfdd2893c8a32f6c06271ff1b36cc308f5e0cd2458c650d23b78c50a9c",
-      "src/software_factory/cli.py": "5a1743f8b1e1d74bf9dbe94ed0e5daa7c4c949afb47052d3d143540142c20ba8",
+      "src/software_factory/cli.py": "64823c6b2507dd70205c93bc022ece0ec0844d571e06ee3a8c7bc763835079d3",
       "src/software_factory/core.py": "2063f3146cf561bbda171708ee2ca4566c6bd8dd041ba8c9801ce1802ca24d61",
-      "src/software_factory/crew.py": "723afdc66a001778bbdae1b10699f72ad7d06772e7bb2c33ea2a3d4dc16b5d04",
+      "src/software_factory/crew.py": "249e8954a861bf3959712de9b1d2c4eae43f3c911f44f2652ae99084632c7c42",
       "src/software_factory/data/CONSTITUTION.md": "801de6d37fd340451b26b0bb72f206f93929a48717524246a7ec2aa3bd538bfc",
       "src/software_factory/data/deck/index.html": "a422923187a41dad05a9e2ad6386c4d88195422569bff6f812f0c7d7747d2c61",
       "src/software_factory/data/docs/architecture.md": "3c67e609a9ad895518a92394b6d003c8e65d8adc39d03714e75fa5a0587257d1",
@@ -29,13 +29,13 @@
       "src/software_factory/data/docs/runbooks/adopt-existing-repo.md": "1ef923d64f0489082a58c4ed4d071e5309398e47a387bc6ed4685ec6d786ea00",
       "src/software_factory/data/docs/runbooks/authentication.md": "422c088296621c4f8b83225187c7728de02cfc9530fe7b282c956887e800bdb6",
       "src/software_factory/data/docs/runbooks/check-triage.md": "8e1de7ecca95c65c9db2bc22105e27a95a83a073129390425667f89aebd7c9bb",
-      "src/software_factory/data/docs/runbooks/constitution-enforcement.md": "a5585ca9e4219d5ada1eda86414e31d4a6e42d932f681dcc872593c2160c4255",
+      "src/software_factory/data/docs/runbooks/constitution-enforcement.md": "999b8a2cfb3762f0f4d3fdaa4d49b346deb8f8c43e32af6ff1b9c6295a2c7897",
       "src/software_factory/data/docs/runbooks/delivery-and-recovery.md": "8e6c9db4a9d4b8fe79c0f11d82a8d1d0920116c5f56a4dfeb215af63ad1f9f5c",
       "src/software_factory/data/docs/runbooks/factory-maintenance.md": "cffe80af072bc762aad0586ded9188356c77a34a27e73614801df1cbfc6e18e0",
-      "src/software_factory/data/docs/runbooks/factory-setup.md": "800f00eff6b5cffa63eb1663c330a5ea57cf9c0b170515245971c75fc7ac9fe1",
+      "src/software_factory/data/docs/runbooks/factory-setup.md": "25571fc454406576efe2b4aeb8280266868a8e41e32c632c1c1b577e00dd0dd7",
       "src/software_factory/data/docs/runbooks/github-setup.md": "d8d76c3a9f083a2e77d90660a11d1147c539c7771c031a1a4020fec176acf8ab",
       "src/software_factory/data/docs/runbooks/model-selection.md": "01806dd846f5524c455bf93f1dbec86b4f6165ad0397ccafe6ea7d7faca40755",
-      "src/software_factory/data/docs/runbooks/project-knowledge.md": "165957b2ccb01ac11e690d178257331fcf6ad04b471883c1709fbe78969a57ec",
+      "src/software_factory/data/docs/runbooks/project-knowledge.md": "544bcf80759f5f4fb4126f2eb4ad067882b87b5749af89382786521fd2ac5c9e",
       "src/software_factory/data/docs/runbooks/prompts.md": "11daf848f0a53b434e44cf893660e1f2371b3e708d6075f1e4213851cb468dc4",
       "src/software_factory/data/docs/runbooks/resume-and-switch.md": "9a636fa6da2f9b2866b7cc013e8319a612b06a303d66c7de5b316272093e6d6a",
       "src/software_factory/data/docs/runbooks/runtime-contract.md": "d96abf441a42f61224d5f84cf023a2e9379ecda02a10ab830785e2fd4b86f142",
@@ -44,26 +44,26 @@
       "src/software_factory/data/docs/runbooks/upgrading.md": "3d24aae73c425e5e5c6c3c10e7f0cc7f5c0b28af335f2ca83200dd895be639b3",
       "src/software_factory/data/docs/runbooks/vendor-behavior.md": "6a71607a60fd6b6a829c5e71cfb25b251bcf487ea684235304562892f8b986e4",
       "src/software_factory/data/docs/vendor-smoke-tests.md": "b5346a556de3f67431f8c8549510ef5c2c3a92eab03ae063d26adc04590af42e",
-      "src/software_factory/data/hooks/chat_approval.py": "cfe689f561349ff9d4ffc718bd6231c6fe4e11ca03ac6582b39d341d092cf8d8",
-      "src/software_factory/data/hooks/orchestrator_guard.py": "72d6e901476d350127e8ea5198afa9f686d20b4a03e1d41c3de7733b55d94642",
+      "src/software_factory/data/hooks/chat_approval.py": "4f392a0987c0b07c2fd868d788b51bbe5bdf8876d2f04e8a44f3784ac4e3df25",
+      "src/software_factory/data/hooks/orchestrator_guard.py": "a47bf843eb2f245c5b4109f5ec02e7257dd5d605d02db303a9bbd6e83cdb075f",
       "src/software_factory/data/models/policy.json": "b7590c06af74350c7b725f07fdbcf6a68aeb1aed8017629cfbd89d17847309b0",
       "src/software_factory/data/models/recommendations.json": "ac86ecff264d000499b169997b6f3dfdc6f1bd144da22b754fc1f13e701c7205",
       "src/software_factory/data/models/selection-rubric.json": "cf46523b9298c2daf461768930df001105c080f3959c72ba2f482395c80cdb6c",
       "src/software_factory/data/policy.json": "4b790f107ebecb51568e98743d3f4987a9713b894cc77e3cacdf8f6b45220a7a",
       "src/software_factory/data/prompts/factory-blueprint.md": "ce903245a74f0b769d357e22e9b8aa982a7025304ffea967a281d3e5d3239829",
       "src/software_factory/data/prompts/factory-build.md": "233466f08b419a568e4f0550d265fb204d44f779b51fb1dfc1ecb253d1eaf494",
-      "src/software_factory/data/prompts/factory-onboard.md": "91a9942f1f2b18fcf7cef40233ed483a7d55d9c7e32da36aa07bdccb2c8d38cb",
+      "src/software_factory/data/prompts/factory-onboard.md": "445220827a08f8d9da4ad166a25e376f0906bbe60c6ec7afbdb257dd36a1f7ec",
       "src/software_factory/data/prompts/factory-resume.md": "1c66126da14f9afb0aea93932fa5f0da3c39bb18c59a618ee1e7410ecb5ad669",
-      "src/software_factory/data/prompts/factory-retro.md": "6deebba1159757974a4962e0083479ca04ece3f2c4fa9e9ba3ed338d4cd6ee35",
+      "src/software_factory/data/prompts/factory-retro.md": "0e7f22b7f157153716bd8d5a966c68708cad6225b55915c62769447d72612ab2",
       "src/software_factory/data/prompts/factory-status.md": "ca694af325859a570ce3b90f0734690b4c4278529f9d47e236c0d8a226ee7a19",
       "src/software_factory/data/registry.json": "31026fd0725d937da0b2b39869c076c3fa32be9e92e3ebdfc12c09c37b52ca92",
       "src/software_factory/data/roles/implementer.md": "20aaa09691c93a57e787c79976dbe049e1fe25b713ed332ea4e9a5c35f13ac69",
-      "src/software_factory/data/roles/orchestrator.md": "88e7625a417ab01da87864f55e6b0d787639cd6b1efcfb7012c9fd0143fc0c05",
-      "src/software_factory/data/roles/planner.md": "bad1621e87dcb03899b6289754ab7787cc86ed8dcd9eb80c4ed13778d92946e0",
+      "src/software_factory/data/roles/orchestrator.md": "204d27afe48daaaf4c642c148cbe2bec8bc6c9f1bacf32a2c7a3452fb10e62d9",
+      "src/software_factory/data/roles/planner.md": "6d6c983c80a751e6cdf7d686cf58b225402f8b5147bff6077d66505b36074276",
       "src/software_factory/data/roles/reviewer.md": "b9c0597e375bdce9d8eb2d7f9cdc7fe72aa79d48dc3a4055e1155cae6a214d05",
       "src/software_factory/data/roles/verifier.md": "a49db785bd19d432a84b6f1f6c729184bae4b59b044f6d0d7cdbb32c5fdcd714",
-      "src/software_factory/data/runtime/pyproject.toml": "c6a20370115eacede1af3ed98fce4044a0cf37fc835f04cd9ffeed847482755c",
-      "src/software_factory/data/runtime/uv.lock": "24d95fe47b32eadf04c67cbb5842590be9ba2396b5f7ca7426fd8b9645bb7e3b",
+      "src/software_factory/data/runtime/pyproject.toml": "6cf2013514a08ef6e891768ce201430b2c93a584437cec3e81e26dcb8ce2e562",
+      "src/software_factory/data/runtime/uv.lock": "4d4a31f59d0f7c6cb7d3ac4b295b814af345b41947983b03c7f8d4428e7050ad",
       "src/software_factory/data/schemas/claims-verify.schema.json": "570b737ea19c40e60f5825e9623f43ab73ca8a736bfbb0dccc3a0a6e53fe17f8",
       "src/software_factory/data/schemas/evidence.schema.json": "7509cd6b9c66d9e7155bcc25482c4b7881a7d0e1fe6119bd73c205e931469235",
       "src/software_factory/data/schemas/factory.schema.json": "fe6ee7deccd3c375fb2507b240d4da4909b57c37ba5ba794e2bc388d38d4048f",
@@ -87,7 +87,7 @@
       "src/software_factory/data/skills/factory-semantic/references/typesafe.md": "a5fdda4682c6bdd4df8a7ee5461d359e0800216603aad24a0798b07b5d7277f3",
       "src/software_factory/data/skills/factory-semantic/resources/claim-support.json": "f925ce4b4355c981703038d5fd7a0cc11b935306af105b36aeb7aa70f1655916",
       "src/software_factory/data/skills/factory-specify/SKILL.md": "330b0dba474084556f0a52c7c088d77bcc91a9b995aa9bf69f90b8f5d31ba16d",
-      "src/software_factory/data/skills/factory-start/SKILL.md": "1ad8f3dc7f6d53f8fb7abe00d036015112eaaa468a1f0e42b47758b2f637377a",
+      "src/software_factory/data/skills/factory-start/SKILL.md": "b890b1e6296ddfaa73ce0639051d149a0bda235f0e2afbb2ade323d1fd553da1",
       "src/software_factory/data/skills/factory-verify/SKILL.md": "c71125bf590a8ddeb34b0b873c1fda13b5d450c514310873cf38bab4e687b3ef",
       "src/software_factory/data/templates/assessment.md": "6189646665d2dbe910be914473dcc97540bff33306d4457507951eafdadc71b7",
       "src/software_factory/data/templates/ci-python.yml.in": "3493ebe2db03efd55c177ff6297d57e5a139e462f8e4a52622195d032b5b0896",
@@ -113,7 +113,7 @@
       "src/software_factory/jev.py": "d0c4ac375d13820f8f723919f1c22b14f31defef3fae16292a439739b1f05148",
       "src/software_factory/lanes.py": "390886c72ef5e993a23b92a1a9f8370114e5246116cc41b03ed91a3b3e47cbb1",
       "src/software_factory/models.py": "0302ebac01e789bca6d827105c87730fbf3bb07a331620e28d6043c7d3b74d62",
-      "src/software_factory/onboarding.py": "8979bcc00ba2cbdca4830d4c14a4d2f59c1f6a4ae26d869429cc36111b5f3fe4",
+      "src/software_factory/onboarding.py": "3c7978d80bde8a8a7bf37d05c4033e96700d7c10b4517b783e61b5a8333674cf",
       "src/software_factory/options.py": "3a4b3595925d7587da5e19f3c904b751e7ec1fdf3b3281f48bfb3c73cf8235a6",
       "src/software_factory/redaction.py": "83d49fdae09f46426b10ac06e6b4be6c548b512c22a0e383d454600abad2c626",
       "src/software_factory/rendering.py": "3b24f6f2af3cc5c6db675c6d932bbb9925b0d66f25f99de44e3cc931a347fd54",
@@ -121,10 +121,11 @@
       "src/software_factory/routing.py": "fcfe5eaef4118e6e2e88b8976c7eddcb361598c60ae2798a2280c4f56d735c0c",
       "src/software_factory/semantic.py": "293c0c16c88b212aca3f90cc73c254c988b9cf5f9f3a6913a800c9ea4fa89389",
       "src/software_factory/serve.py": "1b1b2d1bbeb35c3de4b6e0d975122a845703d946573ed0e63aed6d84c86f7057",
+      "src/software_factory/setup_proposals.py": "416fca978a8fd2555ec4b6a70817c64ecb08c4c7fbab47b165ae8ef582e102e5",
       "src/software_factory/transactions.py": "74d7be8ff6dc944c76b0d25fbefd3c72f848d4ee860298257c222257382d205a",
       "src/software_factory/triage.py": "6c740985febaa4243d42faea8bf46192c87c0d6444ddf56eb6b6812650534574",
       "src/software_factory/watch.py": "cc7efd4d0618483ccf6fc15072819972b59583b9ae2caf3e2ee688f77333f69c",
-      "src/software_factory/workflow.py": "c5445894e5c79ec37dbf08f3ab4d6a33a9d65fa17aeb7e00dd89165a052d3f14",
+      "src/software_factory/workflow.py": "0bae114d72befa345aab62b7b73a83631c32d7d88303d5a766b447e1af6d82eb",
       "src/software_factory/workspaces.py": "1cff5ed4a603adeda19442a831e454bacb888cbeae8112d523ee6d6c33056da8",
       "tests/conftest.py": "41a0b28caf0f80e8e9936bf797d4243008ab4dc5f00dcb92b7570ff8d3cf203d",
       "tests/test_auth.py": "d155ad8757d4b12d8b8000aae3784644150978b0087fc1ec2c4400ca86fc67a3",
@@ -132,9 +133,9 @@
       "tests/test_check_env.py": "8f46a8a189b8e656d463909842f5d3abfe459941653c80c12c2760f2cefb6dff",
       "tests/test_checks.py": "865c430eb05ce35977c136667e8e1a63bd963150f1645fb4881d7d64ce02f13c",
       "tests/test_ci_and_trust.py": "505452007b01aa1eb20a474648b8922e5a81a4b6b85c3080902067df7dc3a604",
-      "tests/test_cli.py": "13544681e4b93b7b903a3257fee689127f1eb84e267e3830e694a5b0c095b867",
+      "tests/test_cli.py": "87f673a127126734b7c6cd2312c06fa46335da98de1c88bcb666c0bdf67efa0a",
       "tests/test_constitution_030.py": "67f79791366550300043283b41b32e5a5270441bb9857f77266c395f68f6a3fd",
-      "tests/test_crew.py": "4e91ff1213045b4cd09a605c2ce2204798812d743d3682cd68fb005ebfa6ddd7",
+      "tests/test_crew.py": "530178fe7fd56824a564eb66fc258ae57e7b2d81e8e3b97a583a23eb6cc0eef8",
       "tests/test_discovery.py": "23971428e2d13f0e2fe8c902472ad6adf9c07f29e7a4dbe56af9e7fa868e395a",
       "tests/test_events.py": "453e782055607b9995ad7b0ab1d97f61fa96158bdef2410ab0538ef2080281de",
       "tests/test_evidence_032.py": "f901b003d3ce0b955c5a5633f113dd95c520acb5209bb6ee685af2dc6d02b1e7",
@@ -148,7 +149,7 @@
       "tests/test_models.py": "a546fada94bf8f6ba5fb683add05061716aa0cc06c01405c2fef48fe76bee71e",
       "tests/test_native_package.py": "71198b96ff7cfba4741a517bee6995628aea1a9294b517c09ac1507b87dadaaf",
       "tests/test_onboarding.py": "66d868535201a35b0b94cf4a743d272e477f18787804606457a4511e3f3a3e82",
-      "tests/test_orchestrator_guard.py": "9a24a337cee9287445d6600f4595e247aa52b0747cc80bbdeda13603cf60dc15",
+      "tests/test_orchestrator_guard.py": "33faafb14ccba2fd44c40118a962e80c3234aceaa59bf8dfe890f28542295005",
       "tests/test_parallel_missions.py": "c9ffbf0531843499bd75e0694ee8d6df0ae501f59c0a39f9dbd377dafde1d8f2",
       "tests/test_render_032.py": "fe8c97708d4e225cb71e4e5736d7c4b18c648bd0105e340d65811a735fa12f56",
       "tests/test_routing.py": "396c32df86f6b483570ac4d0c18b67b7555325a866ad2644e7971e93a5ee63b8",
@@ -157,20 +158,20 @@
       "tests/test_task_split.py": "cb012625e43fa5b0bd855d7c521f9923da6cff6e9c273adda9c7d3b7d4fda67f",
       "tests/test_triage.py": "858c8b57c8c2e7c9db626742b772214b5cfcf637c2baaa18236647a5022c3a6d",
       "tests/test_verify_claims.py": "97eda4b4f59bf84374301d457ebb82aa914ffcc70f8671cfbcfde46cf6b90ec5",
-      "tests/test_watch.py": "d77a2967190bd7000df56960f814bb2fe4a8ec6806737bf98bcee54fec8fbb38",
+      "tests/test_watch.py": "a57b231fb61972b4e88fb0b57f803ec1b5f6f0f89a71d9a026cf5c3678805f9b",
       "tests/test_workflow.py": "10fe88fcac171a4cf4054631e7c4c13490bf718adcb7dec6da3361dd1903e1d5",
       "tests/test_workflow_032.py": "96f05a7073804c05e23495d6ddadc4827cfb1c5bb9dcc7cade92532dfd6a8e00",
-      "uv.lock": "c60439900e1207806eed2d2b893ea0c2472f756f2fd9218ad4aabdef4380db20"
+      "uv.lock": "fc786420f661b3faa025c4e425361bd32ec5ad9f36681dc03a11ac2e2f7bd765"
     }
   },
   "artifacts": {
-    "software_factory-0.3.3-py3-none-any.whl": {
-      "sha256": "4f1f6a2bd668beb05e32b101808838779a013a549756fe37a6eddaf5f4304519",
-      "bytes": 500899
+    "software_factory-0.3.5-py3-none-any.whl": {
+      "sha256": "9f88a306521592d5e26228617d981d7cdfdc30a6be32164485483ee9937308d4",
+      "bytes": 515077
     },
-    "software_factory-0.3.3.tar.gz": {
-      "sha256": "71400b92cc7d8c1d2535089c45d0da50d88586b7d66f2eda2fafc077d9cca50b",
-      "bytes": 630237
+    "software_factory-0.3.5.tar.gz": {
+      "sha256": "26506eae7bed906e24b8065b55284748af197e4c5078dde286b62bfb94a6a16f",
+      "bytes": 649829
     }
   },
   "checks": [
@@ -182,16 +183,15 @@
       "command": "uv run pytest -q",
       "python": "3.14.4",
       "outcome": "pass",
-      "tests": 1476,
+      "tests": 1515,
       "subtests": 427
     },
     {
       "command": "UV_PROJECT_ENVIRONMENT=<scratch>/sf-py311 uv run --locked --python 3.11 pytest -q",
       "python": "3.11.16",
-      "outcome": "pass after fixing a 3.11-only test measurement",
-      "tests": 1476,
-      "subtests": 427,
-      "note": "test_context_takes_one_stat_per_watched_path counted pathlib's internal Path.stat calls on 3.11; it now counts only routing's own calls (82 routing tests pass on 3.11 and 3.14)"
+      "outcome": "pass",
+      "tests": 1515,
+      "subtests": 427
     },
     {
       "command": "uv run ruff check . && uv run ruff format --check .",
@@ -202,7 +202,7 @@
       "outcome": "pass"
     },
     {
-      "command": "uv run python scripts/release_smoke.py dist/software_factory-0.3.3-py3-none-any.whl",
+      "command": "uv run python scripts/release_smoke.py dist/software_factory-0.3.5-py3-none-any.whl",
       "outcome": "pass",
       "stages": [
         "hydration, dispatch, profiles, preservation, links, reinstall",
@@ -210,7 +210,8 @@
         "JEV toggle and offline plan validation (mocked provider)",
         "persistent auth, pinned lookup, preservation, logout",
         "orchestrator agent export and pinned guard (live client not run)",
-        "crew: constitution 2.1.0 and no question cap installed, onboard/retro exports, propose, terminal refusal, pinned guard denials, real chat hook save, options gate, protected-path brief refusal and refresh, .factory/crew kept by uninstall (live client not run)"
+        "crew: constitution 2.1.0 and no question cap installed, onboard/retro exports, propose, terminal refusal, pinned guard denials, real chat hook save, options gate, protected-path brief refusal and refresh, .factory/crew kept by uninstall (live client not run); 0.3.4: checks --add, mission create refused on uncommitted setup, summary output",
+        "setup proposal: propose, terminal refusal, pinned guard denial, real chat hook applying `approve S-0001 setup`, commit of exactly the setup files, mission moved, exports current (live client not run)"
       ]
     },
     {
@@ -231,6 +232,14 @@
     {
       "scope": "read-only code review of the whole 0.3.3 diff (Opus): authority bypasses, gate integrity, correctness, user-file safety",
       "outcome": "no authority bypass; 1 blocking (scope approval with a single dictated option), 2 should-fix (unapproved knowledge could be frozen or refreshed past; weak user-override check), 4 minor; all fixed with regression tests in the release commit"
+    },
+    {
+      "scope": "0.3.4: friction observed in the user's first mission transcript",
+      "outcome": "five fixes with regression tests"
+    },
+    {
+      "scope": "read-only code review of the 0.3.4 and 0.3.5 changes (Fable; an Opus run failed twice on a server overload): authority bypasses, gate integrity, correctness, user-file safety",
+      "outcome": "guard tables, chat hook and commit mechanics sound; 1 blocking (a mission moved on approval could be carried past an earlier commit weakening factory.json), 5 should-fix, 4 minor; all fixed with regression tests before the release commit"
     }
   ],
   "defaults": {
@@ -258,14 +267,38 @@
   "constitution_sha256": "801de6d37fd340451b26b0bb72f206f93929a48717524246a7ec2aa3bd538bfc",
   "installed_cli": {
     "path": "/home/reshif/.local/bin/software-factory",
-    "version": "0.3.3",
-    "command": "uv tool install --reinstall dist/software_factory-0.3.3-py3-none-any.whl",
+    "version": "0.3.5",
+    "command": "uv tool install --reinstall dist/software_factory-0.3.5-py3-none-any.whl",
     "post_install_check": "fresh repo: init --profile claude,codex,copilot --commit; doctor ok with pinned_version 0.3.3; AGENTS.md carries constitution 2.1.0; factory-onboard and factory-retro exported"
   },
   "deferred": [
     "factory.json keys completion_target, parallel_writers and evidence_exclude are documented as informational (kept to avoid a data-format migration)"
   ],
   "previous_releases": [
+    {
+      "version": "0.3.4",
+      "created_at": "2026-09-30T15:34:11.241419+00:00",
+      "source_identity": "a4fd79f65b5ea0d850ec3d46c2b5bda36bc2763972efc67201062ad3904c758e",
+      "commit": "0ad8f5294625f4a3e858511c2d1836bea55ca74c",
+      "artifacts": {
+        "software_factory-0.3.4-py3-none-any.whl": "14451cb35c1884b21e5297ac1f4f66b5037f29a7a835b5a05afb4b82fff13af5",
+        "software_factory-0.3.4.tar.gz": "76bcd97bb9c2d319e10530dd4ff5e0962dbcd96741f0fe5222299a67ba448ada"
+      },
+      "constitution_version": "2.1.0",
+      "constitution_sha256": "801de6d37fd340451b26b0bb72f206f93929a48717524246a7ec2aa3bd538bfc"
+    },
+    {
+      "version": "0.3.3",
+      "created_at": "2026-09-30T13:32:40.357601+00:00",
+      "source_identity": "1fa2a4c738ed23dedaa65d000fcecefe9c8c563756d00d09d9a7eab90c8b5529",
+      "commit": "781e6512add2b09d56dfbc5dc0cb416155319d22",
+      "artifacts": {
+        "software_factory-0.3.3-py3-none-any.whl": "4f1f6a2bd668beb05e32b101808838779a013a549756fe37a6eddaf5f4304519",
+        "software_factory-0.3.3.tar.gz": "71400b92cc7d8c1d2535089c45d0da50d88586b7d66f2eda2fafc077d9cca50b"
+      },
+      "constitution_version": "2.1.0",
+      "constitution_sha256": "801de6d37fd340451b26b0bb72f206f93929a48717524246a7ec2aa3bd538bfc"
+    },
     {
       "version": "0.2.6",
       "created_at": "2026-09-27T12:33:21.745017+00:00",

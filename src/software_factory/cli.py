@@ -109,7 +109,7 @@ def inspect_project(root: Path) -> dict:
 
 def doctor(root: Path) -> dict:
     from .installation import jev_summary, load_installation
-    from .rendering import ENFORCEMENT_FLAGS, enforcement_settings, enforcement_summary, render
+    from .rendering import ENFORCEMENT_FLAGS, enforcement_summary, render
     from .transactions import JOURNAL
 
     report = inspect_project(root)
@@ -162,8 +162,25 @@ def doctor(root: Path) -> dict:
             "network": "not_checked",
         }
         report["enforcement"] = enforcement_summary(root, config)
+        from .model_roles import problems as model_problems
+        from .rendering import role_model
+
+        selection = config.get("model_selection") or {}
+        unsettled = model_problems(config)
+        report["models"] = {
+            "mode": selection.get("mode", "inherit"),
+            "confirmed": not unsettled,
+            **({"problems": unsettled} if unsettled else {}),
+            **{
+                profile: {
+                    role: role_model(config, profile, role) or "inherit (session model)"
+                    for role in ("orchestrator", "planner", "implementer", "verifier", "reviewer")
+                }
+                for profile in profiles(config)
+            },
+        }
         for profile, flag in ENFORCEMENT_FLAGS.items():
-            if enforcement_settings(config)[flag] and profile not in report["enforcement"]:
+            if (config.get("enforcement") or {}).get(flag) is True and profile not in report["enforcement"]:
                 issues.append(
                     {
                         "severity": "warning",
@@ -476,9 +493,10 @@ def build_parser() -> argparse.ArgumentParser:
     semantic.add_parser(assistance)
     triage.add_parser(assistance)
     workflow.add_parser(missions)
-    from . import crew
+    from . import crew, setup_proposals
 
     crew.add_parser(missions)
+    setup_proposals.add_parser(missions)
     order = ("init", "upgrade", "uninstall", "recover", "render", "doctor", "inspect", "version", "auth")
     setup.entries.sort(key=lambda entry: order.index(entry.dest))
     formatter = argparse.HelpFormatter(parser.prog)
@@ -606,6 +624,20 @@ def _dispatch(root: Path, command: str, raw: list[str]) -> int | None:
     return None  # pragma: no cover - execv does not return
 
 
+def presented(args, result):
+    """What a command prints: mission commands show a summary of the record unless --full is given."""
+    if (
+        getattr(args, "command", None) == "mission"
+        and getattr(args, "mission_command", None) != "status"
+        and not getattr(args, "full", False)
+    ):
+        from .workflow import is_mission_record, mission_summary
+
+        if is_mission_record(result):
+            return mission_summary(result)
+    return result
+
+
 def main(argv=None):
     raw = list(sys.argv[1:] if argv is None else argv)
     try:
@@ -643,6 +675,7 @@ def main(argv=None):
         COMMAND.set(command_label(cleaned))
         result = args.handler(args)
         code = result.pop("_exit_code", 0) if isinstance(result, dict) else 0
+        result = presented(args, result)
         if result is not None:
             print(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False))
         if code:

@@ -11,6 +11,9 @@ denies `mission approve`. The hook tells the model what it recorded, or why it c
 It is a local guardrail, not authentication: any process running as the user can edit the
 mission records. It never blocks or rewrites the prompt: every path exits 0.
 
+A line `approve M-0001 publish` pushes that READY_PR mission's work branch and opens its pull request
+through `software-factory mission publish` (the user's own approval to publish).
+
 A line `approve P-0003 crew` (optionally followed by the proposal's hash prefix) saves that
 project-knowledge proposal exactly as proposed, through `software-factory crew apply`.
 
@@ -62,16 +65,95 @@ def record_crew(project: Path, prompt: str, session: str, at: str) -> list[str]:
                 items=items,
                 reference=f'Approved by the user in Claude Code chat (session {session}, {at}): "{line}"',
                 confirm=lambda *_: None,
+                commit=True,
             )
             notes.append(
                 f"software-factory saved knowledge proposal {proposal} ({saved['target']}, sha256 "
-                f"{saved['sha256'][:8]}) from the user's chat message. Tell the user to commit it: "
-                f"{saved.get('commit', '')}"
+                f"{saved['sha256'][:8]}) from the user's chat message and committed it "
+                f"({saved.get('committed') or 'nothing to commit'}). Refreshed missions: "
+                f"{', '.join(saved.get('refreshed', [])) or 'none'}."
+                + "".join(
+                    f" {m} was NOT refreshed: {why}." for m, why in (saved.get("not_refreshed") or {}).items()
+                )
             )
         except (FactoryError, OSError, ValueError, KeyError) as exc:
             notes.append(
                 f"software-factory could not save knowledge proposal {proposal}: {exc}. "
                 "Tell the user; do not write knowledge yourself."
+            )
+    return notes
+
+
+# `approve S-0001 setup [hash]`: apply and commit setup proposal S-0001 exactly as proposed.
+SETUP_APPROVAL = re.compile(
+    r"(?im)^[^\S\n]*approve[^\S\n]+(S-[0-9]{4,})[^\S\n]+setup\b(?:[^\S\n]+([0-9a-fA-F]{8,64})\b)?[^\n]*"
+)
+
+
+def record_setup(project: Path, prompt: str, session: str, at: str) -> list[str]:
+    """Apply each setup proposal the user approved in their own message."""
+    matches = list(SETUP_APPROVAL.finditer(prompt))
+    if not matches:
+        return []
+    from software_factory.core import FactoryError
+    from software_factory.setup_proposals import apply
+
+    notes = []
+    for match in matches:
+        proposal, pin, line = match.group(1), match.group(2), match.group(0).strip()[:300]
+        try:
+            done = apply(
+                project,
+                proposal,
+                via="chat",
+                pin=pin,
+                reference=f'Claude Code chat (session {session}, {at}): "{line}"',
+                confirm=lambda *_: None,
+            )
+            moved = ", ".join(
+                f"{m['mission']} {'moved' if 'base_commit' in m else 'NOT moved: ' + m['not_moved']}"
+                for m in done["missions"]
+            )
+            notes.append(
+                f"software-factory applied setup proposal {proposal} from the user's chat message: committed "
+                f"{done['commit']} with checks {', '.join(done['checks'])}. Missions: {moved or 'none open'}. "
+                "Continue; do not cancel or recreate a moved mission."
+            )
+        except (FactoryError, OSError, ValueError, KeyError) as exc:
+            notes.append(
+                f"software-factory could not apply setup proposal {proposal}: {exc}. "
+                "Tell the user; do not edit factory.json yourself."
+            )
+    return notes
+
+
+# `approve M-0001 publish`: push the reviewed work branch and open its pull request (mission publish).
+PUBLISH_APPROVAL = re.compile(
+    r"(?im)^[^\S\n]*approve[^\S\n]+([A-Za-z][A-Za-z0-9_-]{0,79})[^\S\n]+publish\b[^\n]*"
+)
+
+
+def record_publish(project: Path, prompt: str) -> list[str]:
+    """Publish each mission the user approved publishing in their own message."""
+    matches = list(PUBLISH_APPROVAL.finditer(prompt))
+    if not matches:
+        return []
+    from software_factory.core import FactoryError
+    from software_factory.delivery import publish
+
+    notes = []
+    for match in matches:
+        mission_id = match.group(1)
+        try:
+            done = publish(project, mission_id, via="chat", confirm=lambda *_: None)
+            notes.append(
+                f"software-factory published {mission_id} from the user's chat message: pushed {done['branch']} "
+                f"to {done['remote']} and opened {done['pull_request']}. Run `software-factory mission sync "
+                f"--mission {mission_id}` to record CI once it finishes."
+            )
+        except (FactoryError, OSError, ValueError, KeyError) as exc:
+            notes.append(
+                f"software-factory could not publish {mission_id}: {exc}. Tell the user; do not push yourself."
             )
     return notes
 
@@ -83,7 +165,11 @@ def record(project: Path, payload: dict) -> list[str]:
         return []
     session = payload.get("session_id") if isinstance(payload.get("session_id"), str) else "unknown"
     at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    notes = record_crew(project, prompt, session, at)
+    notes = (
+        record_setup(project, prompt, session, at)
+        + record_crew(project, prompt, session, at)
+        + record_publish(project, prompt)
+    )
     matches = list(APPROVAL.finditer(prompt))
     if not matches:
         return notes

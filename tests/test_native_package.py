@@ -100,8 +100,11 @@ def test_payload_ships_the_orchestrator_guard_and_starter_defaults():
     assert ".factory/hooks/orchestrator_guard.py" in paths
     assert not any("__pycache__" in p or p.endswith(".pyc") for p in paths)
     config = starter("product", "claude")
-    assert config["model_selection"] == {"mode": "inherit"}
-    assert config["enforcement"] == {"claude_orchestrator_agent": False}
+    assert (
+        config["model_selection"]["mode"] == "roles"
+        and config["model_selection"]["roles"]["claude"]["reviewer"] == "opus"
+    )
+    assert config["enforcement"] == {"claude_orchestrator_agent": True}
     assert config["limits"]["high_risk_lines"] == 400
     policy = json.loads(paths[".factory/policy.json"])
     assert "tests/**" in policy["test_paths"] and ".factory/hooks/**" in policy["protected_paths"]

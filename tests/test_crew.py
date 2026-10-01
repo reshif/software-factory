@@ -299,7 +299,11 @@ def test_chat_approval_saves_exactly_the_proposed_text(repo):  # noqa: F811
     sha = propose(repo)["sha256"]
     assert "could not save knowledge proposal P-0001" in chat(repo, "approve P-0001 crew deadbeef")
     note = chat(repo, f"looks right\napprove P-0001 crew {sha[:8]}")
-    assert "saved knowledge proposal P-0001 (project" in note and "git add .factory/crew" in note
+    assert "saved knowledge proposal P-0001 (project" in note and "committed it (" in note
+    from test_workflow import git
+
+    assert git(repo, "log", "-1", "--format=%s") == "crew: project knowledge (P-0001)"
+    assert git(repo, "status", "--short", "--", ".factory/crew") == ""
     entry = crew.read_ledger(repo)[0]
     assert entry["via"] == "chat" and "approve P-0001 crew" in entry["reference"]
 
@@ -587,7 +591,8 @@ def test_an_open_contradiction_blocks_scope_and_is_labelled(repo):  # noqa: F811
 def test_every_context_brief_carries_the_interview_rules(repo):  # noqa: F811
     id = create(repo)["id"]
     text = brief_text(repo, id, "context")
-    assert "There is no limit on questions or rounds" in text
+    assert "Rounds are unlimited, but each round has at most 5 questions" in text
+    assert "one short sentence in plain words a non-expert can answer" in text
     assert "'(probably not considered)'" in text and "'(contradiction)'" in text
 
 
@@ -1092,9 +1097,7 @@ def test_entry_prompts_for_onboarding_and_retros_are_installed(tmp_path):
     install(tmp_path, selected="claude", skip_sync=True)
     onboard = (tmp_path / ".claude/skills/factory-onboard/SKILL.md").read_text()
     retro = (tmp_path / ".claude/skills/factory-retro/SKILL.md").read_text()
-    assert (
-        "crew propose --target project|personal" in onboard and "no limit on questions or rounds" in onboard
-    )
+    assert "crew propose --target project|personal" in onboard and "at most 5 questions per round" in onboard
     assert "crew propose --mission ID" in retro and "no approve-all" in retro
     assert "/factory-onboard records project knowledge" in (tmp_path / "CLAUDE.md").read_text()
 
@@ -1200,3 +1203,549 @@ def test_lines_land_in_the_real_section_not_a_fenced_example(repo):  # noqa: F81
         crew.insert_line(text, "Rules", "- two")
         == "# P\n\n```\n## Rules\n```\n\n## Rules   \n- one\n- two\n\n## Users\nx\n"
     )
+
+
+# 0.3.4: setup friction (a mission is never created on unfinished setup; PROPOSED missions rebase)
+
+from software_factory.workflow import rebase_mission
+
+
+def change_setup(root):
+    """A real factory.json edit whatever the fixture wrote: flips the enforcement flag."""
+    config = json.loads((root / "factory.json").read_text())
+    current = (config.get("enforcement") or {}).get("claude_orchestrator_agent", True) is not False
+    config["enforcement"] = {"claude_orchestrator_agent": not current}
+    (root / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
+
+
+def test_a_mission_is_not_created_on_uncommitted_setup(repo):  # noqa: F811
+    change_setup(repo)
+    with pytest.raises(FactoryError, match="uncommitted changes to factory setup: factory.json") as refused:
+        create(repo)
+    assert "software-factory render" in str(refused.value) and "git restore" in str(refused.value)
+    assert not (repo / ".factory/missions/M-REQ").exists()
+    commit(repo, "Enable orchestrator enforcement")
+    assert create(repo)["state"] == "PROPOSED"
+
+
+def test_stale_exports_stop_a_mission_before_it_starts(tmp_path):
+    from test_workflow import git
+
+    install(tmp_path, selected="claude", skip_sync=True, git_init=True, commit=True)
+    git(tmp_path, "config", "user.name", "t")
+    git(tmp_path, "config", "user.email", "t@example.invalid")
+    change_setup(tmp_path)
+    commit(tmp_path, "edited without rendering")
+    put(tmp_path, ".factory/local/request.md", "Please add a health endpoint.\n")
+    with pytest.raises(FactoryError, match="Generated exports are stale"):
+        cli(tmp_path, "mission", "create", "--id", "M-1", "--title", "Health",
+            "--request-file", ".factory/local/request.md")  # fmt: skip
+
+
+def test_a_proposed_mission_rebases_past_a_setup_commit_and_keeps_its_answers(repo):  # noqa: F811
+    id = create(repo)["id"]
+    cli(
+        repo,
+        "mission",
+        "clarify",
+        "--mission",
+        id,
+        "--input",
+        put(repo, ".factory/local/a.md", "Windows DHCP.\n"),
+    )
+    base = load_mission(repo, id)["base_commit"]
+    change_setup(repo)
+    with pytest.raises(FactoryError, match="first commits or reverts the uncommitted setup change"):
+        brief(repo, id, "context")
+    with pytest.raises(FactoryError, match="Finish the factory setup before starting work"):
+        rebase_mission(repo, id)
+    commit(repo, "Enable orchestrator enforcement")
+    with pytest.raises(FactoryError, match=f"mission rebase --mission {id}"):
+        brief(repo, id, "context")
+    moved = cli(repo, "mission", "rebase", "--mission", id)
+    mission = load_mission(repo, id)
+    assert moved["base_commit"] == mission["base_commit"] != base
+    assert mission["base_history"][-1]["decision"].startswith("SETUP-")
+    assert len(mission["request"]["clarifications"]) == 1
+    assert "Windows DHCP." in brief_text(repo, id, "context")
+
+
+def test_rebase_refuses_product_commits_and_missions_past_proposed(repo):  # noqa: F811
+    id = create(repo)["id"]
+    put(repo, "src/other.py", "X = 1\n")
+    commit(repo, "product change")
+    with pytest.raises(FactoryError, match="change product files"):
+        rebase_mission(repo, id)
+    planned = plan_mission(repo, id="M-PLAN")
+    change_setup(repo)
+    commit(repo, "setup")
+    with pytest.raises(FactoryError, match="only to a PROPOSED mission"):
+        rebase_mission(repo, planned)
+
+
+def test_guard_allows_rebase():
+    assert guard_decision("software-factory mission rebase --mission M-1") == (0, "")
+
+
+def test_checks_add_replaces_the_placeholder_and_renders(tmp_path):
+    from test_workflow import git
+
+    from software_factory.checks import add_check
+
+    install(tmp_path, selected="claude", skip_sync=True, git_init=True, commit=True)
+    git(tmp_path, "config", "user.name", "t")
+    git(tmp_path, "config", "user.email", "t@example.invalid")
+    assert [c["id"] for c in json.loads((tmp_path / "factory.json").read_text())["checks"]] == [
+        "configure-me"
+    ]
+    added = add_check(tmp_path, "tests", ["uv", "run", "pytest"])
+    checks = json.loads((tmp_path / "factory.json").read_text())["checks"]
+    assert [c["id"] for c in checks] == ["tests"] and checks[0]["command"] == ["uv", "run", "pytest"]
+    assert checks[0]["required"] is True and "git add -A && git commit" in added["commit"]
+    from software_factory.rendering import render
+
+    assert render(tmp_path, check=True)["ok"]
+    with pytest.raises(FactoryError, match="already exists"):
+        add_check(tmp_path, "tests", ["pytest"])
+    with pytest.raises(FactoryError, match="Give the check command after --"):
+        add_check(tmp_path, "lint", [])
+
+
+def test_mission_commands_print_a_summary_unless_full(repo):  # noqa: F811
+    from software_factory.cli import build_parser, presented
+
+    def run(*argv):
+        args = build_parser().parse_args(list(argv))
+        args.root = repo
+        return presented(args, args.handler(args))
+
+    put(repo, ".factory/local/request.md", "Please change VALUE to 2 in src/app.py.\n")
+    printed = run("mission", "create", "--id", "M-OUT", "--title", "Value", "--kind", "patch",
+                  "--request-file", ".factory/local/request.md")  # fmt: skip
+    assert printed["id"] == "M-OUT" and printed["state"] == "PROPOSED" and printed["tasks"] == []
+    assert "governance_snapshot" not in printed and printed["request"]["clarifications"] == 0
+    assert printed["about"].startswith("Summary of the mission record")
+    assert "governance_snapshot" in run("mission", "status", "--mission", "M-OUT")
+    full = run("mission", "block", "--mission", "M-OUT", "--reason", "Wait", "--next", "Ask", "--full")
+    assert "governance_snapshot" in full and full["state"] == "BLOCKED"
+    assert run("mission", "list")["missions"][0]["id"] == "M-OUT"  # other outputs are untouched
+
+
+def test_guard_allows_full_output_and_denies_adding_checks():
+    assert guard_decision("software-factory mission block --mission M-1 --reason x --next y --full") == (
+        0,
+        "",
+    )
+    assert guard_decision("software-factory checks --add tests -- uv run pytest")[0] == 2
+
+
+# 0.3.5: setup the agent proposes and the user approves
+
+from software_factory import setup_proposals
+
+CHECKS = [
+    {"id": "tests", "command": ["python", "-c", "pass"], "cwd": ".", "required": True, "timeout_seconds": 60},
+    {"id": "lint", "command": ["python", "-c", "pass"], "cwd": ".", "required": False, "timeout_seconds": 60},
+]
+SETUP = {"reason": "Set the project's real checks", "checks": CHECKS, "limits": {"check_timeout_seconds": 900},
+         "gitignore": ["node_modules/", "*.log", "# a comment"]}  # fmt: skip
+
+
+@pytest.fixture
+def project(tmp_path):
+    from test_workflow import git
+
+    root = tmp_path / "product"
+    root.mkdir()
+    install(root, selected="claude", skip_sync=True, git_init=True, commit=True)
+    git(root, "config", "user.name", "Test User")
+    git(root, "config", "user.email", "test@example.invalid")
+    confirm_models(root)
+    return root
+
+
+def confirm_models(root):
+    """The user's confirmed model map (0.3.9), committed as approving a proposal would."""
+    from test_workflow import git
+
+    from software_factory.model_roles import stamped
+    from software_factory.rendering import render
+
+    config = json.loads((root / "factory.json").read_text())
+    config["model_selection"] = stamped(config["model_selection"])
+    (root / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
+    render(root)
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "Confirm models")
+
+
+def new_mission(root, id="M-1", kind="patch"):
+    put(root, ".factory/local/request.md", "Please add a health endpoint.\n")
+    return cli(root, "mission", "create", "--id", id, "--title", "Health", "--kind", kind,
+               "--request-file", ".factory/local/request.md")["id"]  # fmt: skip
+
+
+def test_setup_proposal_is_inert_and_shows_the_exact_change(project):
+    before = (project / "factory.json").read_bytes()
+    shown = setup_proposals.propose(project, SETUP)
+    assert shown["proposal"] == "S-0001" and "approve S-0001 setup" in shown["approve"]
+    assert [c["id"] for c in shown["checks"]] == ["tests", "lint"]
+    assert '-      "id": "configure-me"' in shown["factory_json_diff"] and shown["gitignore_added"] == [
+        "node_modules/",
+        "*.log",
+    ]
+    assert (project / "factory.json").read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ({**SETUP, "enforcement": {"claude_orchestrator_agent": False}}, "can only turn enforcement on"),
+        ({**SETUP, "limits": {"repair_attempts": 99}}, "may change only limits"),
+        ({"reason": "Only the ignore rules", "gitignore": ["!.factory/local/"]}, "un-ignores"),
+        (
+            {"reason": "Only the ignore rules", "gitignore": [".factory/missions/"]},
+            "would hide files Git must keep",
+        ),
+        ({"reason": "Only the ignore rules", "gitignore": ["*"]}, "would hide files Git must keep"),
+        ({"reason": "Only the ignore rules", "gitignore": [".factory*"]}, "would hide files Git must keep"),
+        ({"reason": "Only the ignore rules", "gitignore": ["[.]factory"]}, "would hide files Git must keep"),
+        ({"reason": "Only the ignore rules", "gitignore": ["*.jso[n]"]}, "factory.json"),
+        ({"reason": "Only the ignore rules", "gitignore": ["**/*"]}, "would hide files Git must keep"),
+        ({"reason": "Only the ignore rules", "gitignore": ["*/"]}, "would hide files Git must keep"),
+        ({"reason": "Only the ignore rules", "gitignore": [".claude/"]}, "would hide files Git must keep"),
+        ({"reason": "Only the ignore rules", "gitignore": ["conftest.py"]}, "conftest.py"),
+        ({"reason": "Only the ignore rules", "gitignore": ["src/"]}, "src/main.py"),
+        ({**SETUP, "checks": [{**CHECKS[0], "required": False}]}, "At least one check must be required"),
+        ({**SETUP, "reason": "short"}, "reason is one line"),
+        ({"reason": "Nothing at all here"}, "changes at least one"),
+        ({**SETUP, "checks": [{"id": "tests"}]}, "Invalid factory"),
+    ],
+)
+def test_setup_proposals_cannot_reach_beyond_checks_and_ignores(project, value, message):
+    with pytest.raises(FactoryError, match=message):
+        setup_proposals.propose(project, value)
+
+
+def test_one_approval_line_applies_commits_and_moves_the_mission(project):
+    from test_workflow import git
+
+    from software_factory.rendering import render
+
+    id = new_mission(project)
+    cli(
+        project,
+        "mission",
+        "clarify",
+        "--mission",
+        id,
+        "--input",
+        put(project, ".factory/local/a.md", "Windows DHCP.\n"),
+    )
+    base = load_mission(project, id)["base_commit"]
+    sha = setup_proposals.propose(project, SETUP)["sha256"]
+    note = chat(project, f"looks right\napprove S-0001 setup {sha[:8]}")
+    assert "applied setup proposal S-0001" in note and f"{id} moved" in note
+    config = json.loads((project / "factory.json").read_text())
+    assert [c["id"] for c in config["checks"]] == ["tests", "lint"] and config["limits"][
+        "check_timeout_seconds"
+    ] == 900
+    assert "node_modules/" in (project / ".gitignore").read_text().splitlines()
+    assert git(project, "log", "-1", "--format=%s") == "Factory setup: Set the project's real checks (S-0001)"
+    assert "approve S-0001 setup" in git(project, "log", "-1", "--format=%b")
+    assert git(project, "status", "--short", "--", "factory.json", ".gitignore", "factory.lock.json") == ""
+    assert render(project, check=True)["ok"]
+    mission = load_mission(project, id)
+    assert mission["base_commit"] == git(project, "rev-parse", "HEAD") != base
+    assert mission["base_history"][-1]["decision"] == "SETUP-S-0001"
+    assert len(mission["request"]["clarifications"]) == 1
+    assert brief(project, id, "context")["path"]  # no refusal: nothing protected differs from the new base
+    assert setup_proposals.proposals(project)[0]["status"] == "applied"
+
+
+def test_setup_apply_is_human_only_and_refuses_stale_or_mixed_changes(project, monkeypatch):
+    setup_proposals.propose(project, SETUP)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("S-0001\n"))
+    with pytest.raises(FactoryError, match="only the user runs it, in an interactive terminal"):
+        setup_proposals.apply(project, "S-0001")
+    with pytest.raises(FactoryError, match="is not the one approved"):
+        setup_proposals.apply(project, "S-0001", pin="deadbeef", confirm=lambda *_: None)
+    change_setup(project)
+    with pytest.raises(FactoryError, match="factory.json changed since S-0001 was proposed"):
+        setup_proposals.apply(project, "S-0001", confirm=lambda *_: None)
+    setup_proposals.propose(project, SETUP)  # based on the edited, uncommitted file
+    with pytest.raises(FactoryError, match="Other factory setup is unfinished"):
+        setup_proposals.apply(project, "S-0002", confirm=lambda *_: None)
+
+
+def test_an_in_flight_mission_moves_and_must_verify_again(repo):  # noqa: F811
+    from test_workflow import git
+
+    id = plan_mission(repo)
+    commit(repo, "mission records")
+    checks = json.loads((repo / "factory.json").read_text())["checks"]
+    value = {
+        "reason": "Give the unit check more time",
+        "checks": [{**c, "timeout_seconds": 120} for c in checks],
+    }
+    setup_proposals.propose(repo, value)
+    done = setup_proposals.apply(repo, "S-0001", confirm=lambda *_: None)
+    assert done["missions"] == [
+        {"mission": id, "state": "PLANNED", "base_commit": git(repo, "rev-parse", "HEAD")}
+    ]
+    assert load_mission(repo, id)["base_history"][-1]["decision"] == "SETUP-S-0001"
+    assert not any("Protected factory path" in r for r in assess_gate(repo, id)["reasons"])
+
+
+def test_setup_waits_for_active_tasks(repo):  # noqa: F811
+    id = plan_mission(repo)
+    commit(repo, "mission records")
+    transition_mission(repo, id, "IMPLEMENTING")
+    from software_factory.workflow import transition_task
+
+    transition_task(repo, id, "T-ONE", "RUNNING")
+    checks = json.loads((repo / "factory.json").read_text())["checks"]
+    setup_proposals.propose(repo, {"reason": "Give the unit check more time",
+                                   "checks": [{**c, "timeout_seconds": 120} for c in checks]})  # fmt: skip
+    with pytest.raises(FactoryError, match=f"Stop the active tasks of {id}"):
+        setup_proposals.apply(repo, "S-0001", confirm=lambda *_: None)
+
+
+def test_guard_lets_agents_propose_setup_but_never_apply_it():
+    assert guard_decision("software-factory setup propose --input -") == (0, "")
+    assert guard_decision("software-factory setup show --proposal S-0001") == (0, "")
+    code, reason = guard_decision("software-factory setup apply --proposal S-0001")
+    assert code == 2 and "approve S-n setup" in reason
+
+
+def test_approved_knowledge_commits_itself_and_refreshes_waiting_missions(repo):  # noqa: F811
+    from test_workflow import git
+
+    id = create(repo)["id"]
+    commit(repo, "mission records")
+    propose(repo)
+    saved = crew.apply(repo, "P-0001", confirm=lambda *_: None, commit=True)
+    assert saved["committed"] == git(repo, "rev-parse", "HEAD") and saved["refreshed"] == [id]
+    assert load_mission(repo, id)["crew"]["project_sha256"] == crew._sha(PROJECT_TEXT.encode())
+    assert "No new service without asking." in brief_text(repo, id, "context")
+
+
+# Review fixes for 0.3.4 and 0.3.5
+
+
+def test_approval_does_not_move_a_mission_past_an_earlier_setup_commit(repo):  # noqa: F811
+    """An agent's earlier commit that weakens factory.json stays in the mission's candidate."""
+    from test_workflow import git
+
+    id = plan_mission(repo)
+    commit(repo, "mission records")
+    config = json.loads((repo / "factory.json").read_text())
+    config["checks"] = [{**c, "required": False} for c in config["checks"]] + [
+        {
+            "id": "noop",
+            "command": ["python", "-c", "pass"],
+            "cwd": ".",
+            "required": True,
+            "timeout_seconds": 30,
+        }
+    ]
+    (repo / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
+    commit(repo, "quietly weaken the checks")
+    base = load_mission(repo, id)["base_commit"]
+    shown = setup_proposals.propose(repo, {"reason": "Ignore temporary files", "gitignore": ["*.tmp"]})
+    assert any(f"after {id} was created" in w for w in shown["warnings"])
+    done = setup_proposals.apply(repo, "S-0001", confirm=lambda *_: None)
+    (moved,) = done["missions"]
+    assert "only the approved setup commit may be moved past" in moved["not_moved"]
+    assert load_mission(repo, id)["base_commit"] == base != git(repo, "rev-parse", "HEAD")
+    assert any("factory.json" in r for r in assess_gate(repo, id)["reasons"])
+
+
+def test_a_moved_ready_mission_loses_its_ci_result(repo):  # noqa: F811
+    from test_workflow import git
+
+    from software_factory.workflow import update_mission
+
+    id = plan_mission(repo)
+    commit(repo, "mission records")
+    ci = {"url": "https://ci.example.invalid/1", "head_sha": git(repo, "rev-parse", "HEAD"), "branch": "main",
+          "trunk": "refs/heads/main", "trunk_kind": "local", "conclusion": "success", "fingerprint": "a" * 64,
+          "recorded_at": "2026-09-30T00:00:00Z"}  # fmt: skip
+    update_mission(repo, id, lambda m: m.setdefault("delivery", {}).update(ci_ref=ci))
+    checks = json.loads((repo / "factory.json").read_text())["checks"]
+    more_time = [{**c, "timeout_seconds": 120} for c in checks]
+    setup_proposals.propose(repo, {"reason": "Give the unit check more time", "checks": more_time})
+    done = setup_proposals.apply(repo, "S-0001", confirm=lambda *_: None)
+    assert "base_commit" in done["missions"][0]
+    assert "ci_ref" not in load_mission(repo, id)["delivery"]
+
+
+def test_a_failed_commit_restores_everything(project, monkeypatch):
+    from test_workflow import git
+
+    before = (project / "factory.json").read_bytes()
+    ignore_before = (project / ".gitignore").read_bytes()
+    setup_proposals.propose(project, SETUP)
+
+    def boom(*_args, **_kwargs):
+        raise FactoryError("Git identity is missing")
+
+    monkeypatch.setattr(setup_proposals, "commit_paths", boom)
+    with pytest.raises(
+        FactoryError, match="Setup not applied \\(everything was restored\\): Git identity is missing"
+    ):
+        setup_proposals.apply(project, "S-0001", confirm=lambda *_: None)
+    assert (project / "factory.json").read_bytes() == before
+    assert (project / ".gitignore").read_bytes() == ignore_before
+    assert git(project, "status", "--short") == ""
+    assert setup_proposals.proposals(project)[0]["status"] == "proposed"
+    monkeypatch.undo()
+    assert setup_proposals.apply(project, "S-0001", confirm=lambda *_: None)["commit"]
+
+
+def test_knowledge_approval_commits_only_the_approved_file(repo):  # noqa: F811
+    from test_workflow import git
+
+    save_recipe(repo)
+    stray = repo / ".factory/crew/recipes/add-endpoint.md"
+    stray.write_text(stray.read_text() + "- Stray edit by someone else.\n")
+    propose(repo)
+    saved = crew.apply(repo, crew.list_proposals(repo)[-1]["id"], confirm=lambda *_: None, commit=True)
+    assert saved["committed"]
+    changed = git(repo, "show", "--name-only", "--format=", "HEAD").split()
+    assert sorted(changed) == [".factory/crew/ledger.jsonl", ".factory/crew/project.md"]
+    assert "add-endpoint.md" in git(repo, "status", "--short")
+
+
+def test_the_summary_keeps_hints_a_command_adds(repo):  # noqa: F811
+    from software_factory.workflow import mission_summary
+
+    record = {
+        **load_mission(repo, plan_mission(repo)),
+        "note": "Resume with --resolution",
+        "handoff_packet": "p.md",
+    }
+    summary = mission_summary(record)
+    assert summary["note"] == "Resume with --resolution" and summary["handoff_packet"] == "p.md"
+    assert summary["about"].startswith("Summary of the mission record")
+
+
+def test_an_explicit_base_at_head_gets_the_same_setup_check(repo):  # noqa: F811
+    change_setup(repo)
+    put(repo, ".factory/local/request.md", "Please change VALUE to 2 in src/app.py.\n")
+    with pytest.raises(FactoryError, match="Finish the factory setup before starting work"):
+        cli(repo, "mission", "create", "--id", "M-B", "--title", "Value", "--base", "HEAD",
+            "--request-file", ".factory/local/request.md")  # fmt: skip
+
+
+def test_a_mission_from_another_branch_is_not_moved(repo):  # noqa: F811
+    from test_workflow import git
+
+    id = create(repo)["id"]
+    commit(repo, "mission records")
+    git(repo, "switch", "-qc", "other")
+    change_setup(repo)
+    commit(repo, "setup on another branch")
+    with pytest.raises(FactoryError, match="was created on branch main, not other"):
+        rebase_mission(repo, id)
+
+
+def test_guard_keeps_the_orchestrator_out_of_the_factory_runtime():
+    for command in ("cat .factory/src/software_factory/workflow.py", "grep -r gate .factory/src",
+                    "cat ./.factory/.venv/pyvenv.cfg", "ls .factory/src"):  # fmt: skip
+        code, reason = guard_decision(command)
+        assert code == 2 and "factory's own runtime" in reason, (command, reason)
+    assert guard_decision("cat .factory/roles/orchestrator.md") == (0, "")
+
+
+def test_every_installed_instruction_caps_questions_per_round():
+    for name in ("roles/orchestrator.md", "skills/factory-specify/SKILL.md", "prompts/factory-build.md"):
+        text = (asset_root() / name).read_text()
+        assert "at most 5" in text.lower(), name
+        assert "no limit on questions" not in text, name
+
+
+def test_agents_md_tells_every_client_to_leave_the_runtime_alone(tmp_path):
+    install(tmp_path, selected="codex", skip_sync=True)
+    assert "is not product code: do not read or search it" in (tmp_path / "AGENTS.md").read_text()
+
+
+# 0.3.7: models per role, enforced by each client; orchestrator enforcement always on
+
+
+def guard_payload(payload):
+    spec = importlib.util.spec_from_file_location("guard", asset_root() / "hooks/orchestrator_guard.py")
+    guard = importlib.util.module_from_spec(spec)
+    saved, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(guard)
+    finally:
+        sys.dont_write_bytecode = saved
+    out, err = io.StringIO(), io.StringIO()
+    return guard.main([], io.StringIO(json.dumps(payload)), out, err)
+
+
+def test_role_models_reach_every_clients_agent_files(tmp_path):
+    import tomllib
+
+    from software_factory.rendering import render
+
+    install(tmp_path, selected="claude,codex,copilot", skip_sync=True)
+    config = json.loads((tmp_path / "factory.json").read_text())
+    config["model_selection"]["roles"]["codex"] = {"implementer": "gpt-5.5-codex", "planner": "inherit"}
+    config["model_selection"]["roles"]["copilot"] = {"reviewer": "claude-opus-5-5"}
+    (tmp_path / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
+    render(tmp_path)
+    assert "model: sonnet" in (tmp_path / ".claude/agents/factory-implementer.md").read_text()
+    assert "model: haiku" in (tmp_path / ".claude/agents/factory-verifier.md").read_text()
+    codex = tomllib.loads((tmp_path / ".codex/agents/factory-implementer.toml").read_text())
+    assert codex["model"] == "gpt-5.5-codex"
+    assert "model" not in tomllib.loads((tmp_path / ".codex/agents/factory-planner.toml").read_text())
+    assert (
+        "model: claude-opus-5-5"
+        in (tmp_path / ".github/agents/factory-copilot-reviewer.agent.md").read_text()
+    )
+    from software_factory.cli import doctor
+
+    models = doctor(tmp_path)["models"]
+    assert models["mode"] == "roles" and models["claude"]["reviewer"] == "opus"
+    assert (
+        models["codex"]["planner"] == "inherit (session model)"
+        and models["codex"]["implementer"] == "gpt-5.5-codex"
+    )
+
+
+def test_inherit_mode_pins_no_model(tmp_path):
+    from software_factory.rendering import render
+
+    install(tmp_path, selected="claude", skip_sync=True)
+    config = json.loads((tmp_path / "factory.json").read_text())
+    config["model_selection"] = {"mode": "inherit"}
+    (tmp_path / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
+    render(tmp_path)
+    assert "model:" not in (tmp_path / ".claude/agents/factory-implementer.md").read_text()
+
+
+def test_the_orchestrator_guard_holds_every_main_session_without_agent_flag(tmp_path):
+    install(tmp_path, selected="claude", skip_sync=True)
+    settings = json.loads((tmp_path / ".claude/settings.json").read_text())
+    [entry] = settings["hooks"]["PreToolUse"]
+    assert entry["matcher"] == "*" and "orchestrator_guard.py" in entry["hooks"][0]["command"]
+    edit = {"hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": {"file_path": "src/app.py"}}
+    assert guard_payload(edit) == 2  # the main session: no agent_id
+    specialist = {**edit, "agent_id": "a1", "agent_type": "factory-implementer"}
+    assert guard_payload(specialist) == 0  # a delegated specialist's own call passes through
+
+
+def test_a_setup_proposal_can_turn_models_and_enforcement_on_but_not_off(project):
+    value = {
+        "reason": "Pin models per role",
+        "model_selection": {"mode": "roles", "roles": {"claude": {"implementer": "fable"}}},
+    }
+    setup_proposals.propose(project, value)
+    setup_proposals.apply(project, "S-0001", confirm=lambda *_: None)
+    assert "model: fable" in (project / ".claude/agents/factory-implementer.md").read_text()
+    with pytest.raises(FactoryError, match="can only turn enforcement on"):
+        setup_proposals.propose(
+            project, {"reason": "Switch the guard off", "enforcement": {"claude_orchestrator_agent": False}}
+        )

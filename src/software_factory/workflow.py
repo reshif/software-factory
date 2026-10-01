@@ -599,6 +599,237 @@ def untrusted_source(mission):
     return source if source in UNTRUSTED_SOURCES else None
 
 
+SUMMARY_NOTE = "Summary of the mission record; add --full, or run mission status, for everything"
+
+
+def mission_summary(mission):
+    """What an orchestrator needs after a change, without the whole record."""
+    request, criteria = mission.get("request") or {}, mission.get("criteria") or {}
+    summary = {
+        "id": mission["id"],
+        "title": mission.get("title"),
+        "kind": mission.get("kind"),
+        "state": mission["state"],
+        "previous_state": mission.get("previous_state"),
+        "version": mission.get("version"),
+        "base_commit": mission.get("base_commit"),
+        "request": {
+            "chain": request.get("chain"),
+            "clarifications": len(request.get("clarifications", [])),
+            **({"source": request["source"]} if request.get("source") else {}),
+        },
+        "criteria": {
+            "items": [item["id"] for item in criteria.get("items", [])],
+            "open_ambiguities": [
+                a["id"] for a in criteria.get("ambiguities", []) if a.get("status") == "open"
+            ],
+        },
+        "scope_accepted": mission.get("scope_docs") is not None and mission["state"] != "PROPOSED",
+        "tasks": [
+            {"id": t["id"], "status": t["status"], "attempts": t.get("attempts", 0)} for t in mission["tasks"]
+        ],
+        "decisions": [{"id": d["id"], "kind": d["kind"]} for d in mission["decisions"]],
+        "reviews": [
+            {"id": r["id"], "kind": r.get("kind"), "status": r["status"]} for r in mission.get("reviews", [])
+        ],
+        "blockers": [b if isinstance(b, str) else b.get("reason") for b in mission.get("blockers", [])],
+        "about": SUMMARY_NOTE,
+    }
+    # Hints a command adds beside the record (resume instructions, handoff packets, warnings).
+    for key in (
+        "note",
+        "next",
+        "warnings",
+        "handoff_packet",
+        "handoff_packet_error",
+        "live_gate",
+        "committed_records",
+    ):
+        if key in mission:
+            summary[key] = mission[key]
+    if mission.get("models"):
+        summary["models"] = mission["models"]["roles"]
+    crew_record = mission.get("crew")
+    if crew_record:
+        summary["crew"] = {
+            "project": "loaded" if crew_record.get("project_sha256") else crew_record.get("project", "none"),
+            "recipe": (crew_record.get("recipe") or {}).get("name"),
+        }
+    return summary
+
+
+def is_mission_record(value):
+    return isinstance(value, dict) and all(
+        key in value for key in ("schema_version", "id", "state", "tasks", "decisions", "base_commit")
+    )
+
+
+def setup_problems(root):
+    """Setup the user has not finished: uncommitted changes to protected paths, and stale exports.
+
+    A mission's base is the commit it is created on, and a product mission is not briefed while
+    protected paths differ from that base, so creating one on unfinished setup only produces a
+    mission that must be blocked at once.
+    """
+    problems = []
+    try:
+        protected = set(PROTECTED_FLOOR) | set(control_json(root, "policy.json").get("protected_paths", []))
+    except (FactoryError, OSError, ValueError):
+        protected = set(PROTECTED_FLOOR)
+    dirty = [
+        p
+        for p in candidate_snapshot(root)["dirty_paths"]
+        if not is_metadata(p) and any(matches_path(p, q) for q in protected)
+    ]
+    if dirty:
+        problems.append("uncommitted changes to factory setup: " + ", ".join(dirty[:8]))
+    if safe_path(root, "factory.lock.json").exists():  # The same condition as the gate's export check.
+        from .rendering import render
+
+        try:
+            render(root, check=True)
+        except FactoryError as exc:
+            problems.append(str(exc))
+    return problems
+
+
+MODELS_FIRST = (
+    "Choose the models before starting work: {problems}. Run `software-factory models roles`, show the user "
+    "one line per role (role: model) with the choices it lists, take their changes, pipe its proposal to "
+    "`software-factory setup propose --input -` and ask them to reply `approve S-n setup`; then create the mission"
+)
+SETUP_FIRST = (
+    "Finish the factory setup before starting work: {problems}. The user keeps the change by running "
+    '`software-factory render` and then committing it (`git add -A && git commit -m "Update factory setup"`), '
+    "or drops it with `git restore <file>`"
+)
+
+
+def rebase_mission(root, id, *, decision=None, in_flight=False, only_commit=None):
+    """Move a PROPOSED mission's base past setup commits, keeping its request and clarifications.
+
+    With ``in_flight`` (only after the user approved a setup proposal, named by ``decision``) a
+    mission in any pre-merge state moves too, provided no task is active: its verification and
+    reviews bind the old configuration through the candidate fingerprint, so they are stale and
+    must be run again under the approved setup. It moves only when the approved commit
+    (``only_commit``) is the single non-record change since its base: an earlier commit to a
+    protected path stays in the mission's candidate, where the gate reports it.
+
+    Equivalent to cancelling the mission and creating it again on the new commit, without losing
+    what the user already answered. Allowed only before any scope is accepted or task exists, when
+    every commit since the base changes nothing but protected factory paths, the setup is committed
+    and rendered, and the constitution is the one the mission was created under (a changed
+    constitution is reconciled with the user's exception decision instead).
+    """
+    from . import crew
+
+    config = load_config(root)
+    current = load_mission(root, id)
+    head = git(root, "rev-parse", "HEAD")
+    problems = setup_problems(root)
+    if problems:
+        raise FactoryError(SETUP_FIRST.format(problems="; ".join(problems)))
+    files, record, previous = {}, None, {}
+    if "crew" in current and current["state"] == "PROPOSED":
+        recipe = (current["crew"].get("recipe") or {}).get("name")
+        files, record = crew.snapshot(root, id, config, recipe)
+        previous = {relative: crew._read(safe_path(root, relative)) for relative in files}
+
+    def restore():
+        for relative, data in previous.items():
+            if data is None:
+                safe_path(root, relative).unlink(missing_ok=True)
+            else:
+                write_bytes(
+                    root, relative, data, mode=0o600 if relative.startswith(crew.PRIVATE + "/") else 0o644
+                )
+
+    def mutate(mission):
+        if in_flight:
+            if effective_state(mission) not in PRE_MERGE_STATES:
+                raise FactoryError(f"Mission {id} is past merge; its base does not move")
+            if any(t["status"] in ACTIVE_TASK_STATES for t in mission["tasks"]):
+                raise FactoryError(f"Stop the active tasks of {id} before its setup changes")
+        elif mission["state"] != "PROPOSED" or mission["tasks"]:
+            raise FactoryError(
+                "mission rebase applies only to a PROPOSED mission without tasks; later, a setup change goes "
+                "through a setup proposal the user approves (software-factory setup propose)"
+            )
+        if hash_file(root, CONSTITUTION_PATH) != mission["constitution_hash"]:
+            raise FactoryError(
+                "The constitution changed since this mission was created; reconcile it with the user's exception "
+                "decision and accept-scope (see the constitution-enforcement runbook)"
+            )
+        base = mission["base_commit"]
+        if base == head:
+            raise FactoryError(f"Mission {id} is already based on the current commit")
+        try:
+            git(root, "merge-base", "--is-ancestor", base, head)
+        except FactoryError as exc:
+            raise FactoryError(
+                f"Mission base {base} is not an ancestor of HEAD; create a new mission"
+            ) from exc
+        try:
+            recorded_branch = git(root, "symbolic-ref", "--short", "HEAD")
+        except FactoryError:
+            recorded_branch = "DETACHED"
+        if mission.get("branch") not in (None, recorded_branch):
+            raise FactoryError(
+                f"Mission {id} was created on branch {mission['branch']}, not {recorded_branch}; move it there"
+            )
+        # The mission's own baseline decides what counts as setup: a later policy edit cannot
+        # turn product paths into protected ones.
+        _, baseline = _policy(root, mission)
+        protected = _protected_patterns({}, baseline)
+        if only_commit is not None:
+            earlier = [
+                p
+                for p in git(
+                    root,
+                    "diff",
+                    "--no-ext-diff",
+                    "--name-only",
+                    "--no-renames",
+                    base,
+                    f"{only_commit}^",
+                    "--",
+                ).split("\n")
+                if p and not is_metadata(p)
+            ]
+            if only_commit != head or earlier:
+                raise FactoryError(
+                    "Other commits since this mission's base changed "
+                    + (", ".join(earlier[:5]) or "the branch")
+                    + "; only the approved setup commit may be moved past, so this mission keeps its base and its "
+                    "gate reports those changes"
+                )
+        changed = git(root, "diff", "--no-ext-diff", "--name-only", "--no-renames", base, head, "--").split(
+            "\n"
+        )
+        product = [
+            p for p in changed if p and not is_metadata(p) and not any(matches_path(p, q) for q in protected)
+        ]
+        if product:
+            raise FactoryError(
+                "The commits since this mission's base change product files ("
+                + ", ".join(product[:5])
+                + "), not only factory setup; create a new mission from the new commit"
+            )
+        mission.setdefault("base_history", []).append(
+            {"from": base, "to": head, "decision": decision or f"SETUP-{head[:8]}", "at": now()}
+        )
+        mission["base_commit"] = head
+        if in_flight:
+            # A recorded CI result belongs to the old configuration; merging needs a new one.
+            (mission.get("delivery") or {}).pop("ci_ref", None)
+        if record is not None:
+            mission["crew"] = record
+            crew.write_snapshot(root, files)
+
+    mission = update_mission(root, id, mutate, rollback=restore)
+    return {"mission": id, "base_commit": mission["base_commit"], "base_history": mission["base_history"][-1]}
+
+
 def create_mission(root, input, require_request=False):
     """Create a mission; the CLI always passes require_request (a request-less mission is legacy)."""
     reject_unknown_fields(input, CREATE_FIELDS, "mission")
@@ -633,6 +864,25 @@ def create_mission(root, input, require_request=False):
             f"A request from a {source} is untrusted input, so it takes the feature lane (--kind feature), "
             "not the patch lane"
         )
+    at_head = revision is None
+    if revision is not None:
+        try:
+            at_head = git(root, "rev-parse", "--verify", f"{revision}^{{commit}}") == git(
+                root, "rev-parse", "HEAD"
+            )
+        except FactoryError:
+            at_head = False
+    if require_request and at_head:
+        problems = setup_problems(root)
+        if problems:
+            raise FactoryError(SETUP_FIRST.format(problems="; ".join(problems)))
+    from .model_roles import binding
+    from .model_roles import problems as model_problems
+
+    if require_request and safe_path(root, "factory.lock.json").exists():
+        unsettled = model_problems(config)
+        if unsettled:
+            raise FactoryError(MODELS_FIRST.format(problems="; ".join(unsettled)))
     try:
         base = git(root, "rev-parse", "--verify", "--end-of-options", f"{revision or 'HEAD'}^{{commit}}")
     except FactoryError as exc:
@@ -674,6 +924,9 @@ def create_mission(root, input, require_request=False):
             "blockers": [],
             "delivery": {},
         }
+        models = binding(config)
+        if models:
+            mission["models"] = models
         if request is not None:
             digest_ = sha256(request)
             mission["request"] = {
@@ -1896,7 +2149,7 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             "Return the content for context.md with these sections: Codebase map; Conventions; Affected files"
             " and tests; Dependencies; External documentation; Open questions. Each open question names the"
             " evidence behind it, why the answer matters, and a suggested default the user can accept with"
-            " 'ok'; order them by impact and group them into one interview round."
+            " 'ok'; order them by impact (the orchestrator asks at most 5 per round)."
             if kind == "context"
             else "Return research findings for context.md: each question, the answer, its sources and the"
             " remaining uncertainty.",
@@ -1915,8 +2168,14 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
                 "## Interview rules",
                 "",
                 (
-                    "- There is no limit on questions or rounds: ask everything whose answer would change the"
-                    " result, ordered by impact, and nothing whose answer would not."
+                    "- Rounds are unlimited, but each round has at most 5 questions: list everything whose answer"
+                    " would change the result, ranked by impact, and nothing whose answer would not; settle"
+                    " routine choices as assumptions instead of asking."
+                ),
+                (
+                    "- Write each question as one short sentence in plain words a non-expert can answer (no file"
+                    " paths, jargon or stacked sub-questions), then one line on why it matters (put evidence and"
+                    " paths there) and a suggested answer; offer two or three concrete choices where they exist."
                 ),
                 (
                     "- Include at least one question marked '(probably not considered)': the belief, constraint or"
@@ -2277,6 +2536,14 @@ def mission_brief(root, id, kind=None, task=None):
                 "instructions or client configuration: "
                 + ", ".join(touched[:10])
                 + "; revert them, or make the change in a maintenance mission"
+                + (
+                    ". If the user committed a factory setup change after this mission was created, run "
+                    f"`software-factory mission rebase --mission {id}` (PROPOSED missions keep their request and answers)"
+                    if mission["state"] == "PROPOSED" and not set(touched) & set(candidate["dirty_paths"])
+                    else ". The user first commits or reverts the uncommitted setup change"
+                    if set(touched) & set(candidate["dirty_paths"])
+                    else ""
+                )
                 + (
                     ". Only saved knowledge changed: if you committed knowledge the user approved, run "
                     f"`software-factory crew refresh --mission {id}` (PROPOSED missions)"
@@ -3014,6 +3281,23 @@ def transition_mission(root, id, to, reason=None, next=None, decision=None):
         mission["state"] = to
 
     result = update_mission(root, id, mutate, readiness=to == "READY_PR")
+    if to == "READY_PR":
+        from .delivery import commit_records
+
+        # A records-only commit: the reviewed candidate's content head does not move (0.3.8).
+        try:
+            committed = commit_records(root, id, "ready for pull request")
+        except FactoryError as exc:
+            result.setdefault("warnings", []).append(f"Mission records were not committed: {exc}")
+        else:
+            if committed:
+                result["committed_records"] = committed
+        result.setdefault(
+            "next",
+            f"Ask the user to reply `approve {id} publish` (or run `software-factory mission publish --mission {id}` "
+            f"in their terminal); the factory pushes and opens the pull request, then `mission sync --mission {id}` "
+            "records CI",
+        )
     if to == "CANCELED":
         try:
             result["handoff_packet"] = create_packet(root, id, "handoff")["path"]
@@ -3953,6 +4237,15 @@ def _assess_gate_snapshot(root, mission, candidate, resuming_to=None):
     config = load_config(root)
     if not config.get("owners", {}).get("maintainer"):
         reasons.append(MAINTAINER_REQUIRED)
+    if mission.get("models"):
+        from .model_roles import binding
+
+        current = binding(config)
+        if not current or current["sha256"] != mission["models"]["sha256"]:
+            reasons.append(
+                "The model for each role changed since this mission started; its work ran under the earlier "
+                "models. Finish it under the map it started with, or cancel it and start a new mission"
+            )
     if resuming_to is not None:
         if (
             mission["state"] not in HOLD_STATES
@@ -4228,7 +4521,7 @@ def record_ci(root, id, url=None, head=None, conclusion=None, reason=None, trunk
             if mission["state"] != "READY_PR":
                 raise FactoryError("A CI result can only be recorded for READY_PR")
             # A failure is recorded against the checked-out candidate, like a success.
-            if head != git(root, "rev-parse", "HEAD"):
+            if head not in (git(root, "rev-parse", "HEAD"), candidate_snapshot(root)["head"]):
                 raise FactoryError(
                     "CI head is not the checked-out candidate commit (HEAD); record the failure from the"
                     " work branch whose HEAD CI tested"
@@ -4254,7 +4547,9 @@ def record_ci(root, id, url=None, head=None, conclusion=None, reason=None, trunk
         raise FactoryError(
             "Commit the reviewed candidate before recording CI: " + ", ".join(snapshot["dirty_paths"])
         )
-    if head != snapshot["head"]:
+    # CI may have tested HEAD or the reviewed content head below records-only commits; both carry
+    # exactly the reviewed product content.
+    if head not in (snapshot["commit"], snapshot["head"]):
         raise FactoryError("CI head is not the reviewed candidate commit")
     from .civerify import verification_mode, verify_with_gh
 
@@ -4268,7 +4563,7 @@ def record_ci(root, id, url=None, head=None, conclusion=None, reason=None, trunk
         branch = current_branch(root)
         if same_branch(branch, selected["name"]) or is_ancestor(root, head, selected["sha"]):
             raise FactoryError("CI must be recorded from a work branch with candidate not yet on trunk")
-        if git(root, "rev-parse", "HEAD") != head:
+        if head not in (git(root, "rev-parse", "HEAD"), candidate_snapshot(root)["head"]):
             raise FactoryError("CI head is not the reviewed candidate commit")
         current = assess_gate(root, id)
         if (
@@ -4281,6 +4576,7 @@ def record_ci(root, id, url=None, head=None, conclusion=None, reason=None, trunk
             "fingerprint_format": "git-mode-v1",
             "url": url,
             "head_sha": head,
+            **({"candidate_head": snapshot["head"]} if snapshot["head"] != head else {}),
             "branch": branch,
             "trunk": selected["name"],
             "trunk_kind": selected["kind"],
@@ -4356,7 +4652,7 @@ def assess_merged(root, id, mission=None):
             candidate = {
                 "fingerprint": ci["fingerprint"],
                 "fingerprint_format": ci.get("fingerprint_format"),
-                "head": ci["head_sha"],
+                "head": ci.get("candidate_head", ci["head_sha"]),
                 "spec_hash": mission["spec_hash"],
             }
             current = validate_verification(root, mission, config, candidate)
@@ -4874,6 +5170,12 @@ def _mission_handler(args):
     root, command = args.root, args.mission_command
     id = getattr(args, "mission", None)
     catalog = read_json(root, args.model_catalog) if getattr(args, "model_catalog", None) else None
+    if command == "rebase":
+        return rebase_mission(root, id)
+    if command in {"publish", "sync"}:
+        from .delivery import handle
+
+        return handle(root, command, id)
     if command == "recipe":
         from .crew import set_recipe
 
@@ -5042,6 +5344,9 @@ def add_parser(subparsers):
         "block": "Block the mission with a reason and next step",
         "resume": "Resume a blocked mission with a recorded resolution",
         "recipe": "Use a saved recipe the user confirmed (--use NAME) or stop using one (--clear); PROPOSED only",
+        "rebase": "Move a PROPOSED mission's base past factory-setup commits, keeping its request and answers",
+        "publish": "Push a READY_PR mission's work branch and open its pull request (the user's own terminal)",
+        "sync": "Record what GitHub reports for a published mission: CI for its commit, then the merge",
         "accept-scope": "Record acceptance of the mission scope",
         "clarify": "Append a verbatim clarification from a --input text file",
         "criteria": "Record acceptance criteria, exclusions and ambiguities from --input JSON",
@@ -5111,6 +5416,9 @@ def add_parser(subparsers):
         "block",
         "resume",
         "recipe",
+        "rebase",
+        "publish",
+        "sync",
         "accept-scope",
         "clarify",
         "criteria",
@@ -5144,6 +5452,21 @@ def add_parser(subparsers):
             ),
         )
         parser.set_defaults(handler=_mission_handler)
+        if command not in {
+            "list",
+            "recover-lock",
+            "template",
+            "halt",
+            "unhalt",
+            "status",
+            "history",
+            "lanes",
+            "publish",
+            "sync",
+        }:
+            parser.add_argument(
+                "--full", action="store_true", help="Print the whole mission record instead of the summary"
+            )
         if command not in {"create", "list", "recover-lock", "template", "halt", "unhalt"}:
             option(parser, "mission", required=True)
         if command == "template":
@@ -5271,7 +5594,24 @@ def add_parser(subparsers):
     checks = subparsers.add_parser("checks", help="Run configured setup and product checks")
     checks.add_argument("--only", metavar="ID", help="Run only this configured check")
     checks.add_argument("--require-clean", action="store_true", help="Fail unless the working tree is clean")
-    checks.set_defaults(handler=lambda a: run_checks(a.root, a.only, a.require_clean))
+    checks.add_argument(
+        "--add",
+        metavar="ID",
+        help="Setup (you): add a required check, e.g. checks --add tests -- uv run pytest",
+    )
+    checks.add_argument("argv", nargs=argparse.REMAINDER, help="With --add: the check command, after --")
+
+    def checks_handler(a):
+        command = [part for part in a.argv if part != "--"] if a.argv and a.argv[0] == "--" else list(a.argv)
+        if a.add:
+            from .checks import add_check
+
+            return add_check(a.root, a.add, command)
+        if command:
+            raise FactoryError("checks takes a command only with --add ID")
+        return run_checks(a.root, a.only, a.require_clean)
+
+    checks.set_defaults(handler=checks_handler)
     verify = subparsers.add_parser("verify", help="Run checks and record mission verification evidence")
     verify.add_argument("--mission", required=True, metavar="ID", help="Mission ID")
     verify.add_argument(

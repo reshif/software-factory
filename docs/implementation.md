@@ -44,6 +44,14 @@ Built in seven reviewed steps, each with the full suite, lint, build and an isol
 
 Removed as superseded: the 0.2.x release artifacts, the 0.2.5 architecture set (replaced by [architecture.md](architecture.md)) and the research drafts, at the user's request.
 
+## 0.3.6 shorter interviews, runtime kept out of agents' reach, current architecture guide
+
+From the user's review after their first missions:
+
+- **Interviews:** rounds stay unlimited, but each round asks at most 5 questions, most important first. Each question is one short sentence in plain words a non-expert can answer; evidence, why it matters and a suggested answer go on separate lines, and routine choices become stated assumptions instead of questions. Orchestrator, planner, specify skill, build/blueprint/onboard prompts and the context brief say so.
+- **The pinned runtime is not product code:** `.factory/src` (114 Python files) and `.factory/.venv` exist so each repository runs the exact CLI and gate it was set up with, the evidence binds that runtime, and a clone works without a registry. Agents have no reason to read them. Claude now gets owned `permissions.deny` rules `Read(./.factory/src/**)` and `Read(./.factory/.venv/**)` in `.claude/settings.json` (removed again by uninstall, leaving the user's own rules), every client's AGENTS.md section says not to read or search them, and the orchestrator guard refuses shell reads of them.
+- **Architecture guide:** the installed `.factory/docs/architecture.md` now has the current mission flow (options, setup proposals, retro), the full `init` flow, what every file under `.factory/` is for and who uses it, why the runtime is copied into the repository, and where parallel work happens.
+
 ## 0.3.5 setup proposals
 
 The same first real mission then produced a nine-step terminal list for the user: install tools, paste a whole `factory.json`, append ignore rules, render, check, commit, restart, and wait for the mission to be cancelled and recreated. The cause was the design, not the agent: "setup belongs to the user" (*Authority*) and "never change check definitions to obtain a pass" had been implemented as "the user types the change by hand". What those rules protect is the user's decision over the exact change, which a proposal and approval keep.

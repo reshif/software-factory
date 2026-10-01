@@ -31,7 +31,7 @@ Your profile never reaches a brief the gate re-renders, so gate results do not d
 
 `software-factory crew match --text "<request>"` lists recipes whose triggers appear in a request; the orchestrator suggests one and uses it only if you confirm (`mission create --recipe NAME`, or `mission recipe --mission ID --use NAME|--clear` while PROPOSED). The recipe is frozen into `crew-context.md`. Round 0 of the interview shows its defaults and asks whether each is still true; your reply is recorded as a clarification next to the defaults you were shown, and only that makes a default quotable by the criteria. Its known pitfalls reach implementer and code-review briefs. Requests from a contributor or an anonymous author never get a recipe.
 
-Every round also carries a question you probably had not considered, and each contradiction between your request, your answers, the saved knowledge and the repository is asked as its own question; it stays an open ambiguity (origin `contradiction`) that blocks scope until you settle it. There is no limit on questions or rounds.
+Every round also carries a question you probably had not considered, and each contradiction between your request, your answers, the saved knowledge and the repository is asked as its own question; it stays an open ambiguity (origin `contradiction`) that blocks scope until you settle it. Rounds are unlimited, with at most 5 plain, short questions each.
 
 ## Options graded before building
 

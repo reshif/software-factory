@@ -591,7 +591,8 @@ def test_an_open_contradiction_blocks_scope_and_is_labelled(repo):  # noqa: F811
 def test_every_context_brief_carries_the_interview_rules(repo):  # noqa: F811
     id = create(repo)["id"]
     text = brief_text(repo, id, "context")
-    assert "There is no limit on questions or rounds" in text
+    assert "Rounds are unlimited, but each round has at most 5 questions" in text
+    assert "one short sentence in plain words a non-expert can answer" in text
     assert "'(probably not considered)'" in text and "'(contradiction)'" in text
 
 
@@ -1096,9 +1097,7 @@ def test_entry_prompts_for_onboarding_and_retros_are_installed(tmp_path):
     install(tmp_path, selected="claude", skip_sync=True)
     onboard = (tmp_path / ".claude/skills/factory-onboard/SKILL.md").read_text()
     retro = (tmp_path / ".claude/skills/factory-retro/SKILL.md").read_text()
-    assert (
-        "crew propose --target project|personal" in onboard and "no limit on questions or rounds" in onboard
-    )
+    assert "crew propose --target project|personal" in onboard and "at most 5 questions per round" in onboard
     assert "crew propose --mission ID" in retro and "no approve-all" in retro
     assert "/factory-onboard records project knowledge" in (tmp_path / "CLAUDE.md").read_text()
 
@@ -1631,3 +1630,23 @@ def test_a_mission_from_another_branch_is_not_moved(repo):  # noqa: F811
     commit(repo, "setup on another branch")
     with pytest.raises(FactoryError, match="was created on branch main, not other"):
         rebase_mission(repo, id)
+
+
+def test_guard_keeps_the_orchestrator_out_of_the_factory_runtime():
+    for command in ("cat .factory/src/software_factory/workflow.py", "grep -r gate .factory/src",
+                    "cat ./.factory/.venv/pyvenv.cfg", "ls .factory/src"):  # fmt: skip
+        code, reason = guard_decision(command)
+        assert code == 2 and "factory's own runtime" in reason, (command, reason)
+    assert guard_decision("cat .factory/roles/orchestrator.md") == (0, "")
+
+
+def test_every_installed_instruction_caps_questions_per_round():
+    for name in ("roles/orchestrator.md", "skills/factory-specify/SKILL.md", "prompts/factory-build.md"):
+        text = (asset_root() / name).read_text()
+        assert "at most 5" in text.lower(), name
+        assert "no limit on questions" not in text, name
+
+
+def test_agents_md_tells_every_client_to_leave_the_runtime_alone(tmp_path):
+    install(tmp_path, selected="codex", skip_sync=True)
+    assert "is not product code: do not read or search it" in (tmp_path / "AGENTS.md").read_text()

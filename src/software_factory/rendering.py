@@ -176,7 +176,7 @@ RECORD_FIELDS = {
     "file": {"kind": str, "sha256": str},
     "block": {"kind": str, "sha256": str, "separator": str, "existed": bool},
     "toml": {"kind": str, "values": dict, "created_table": bool, "existed": bool, "appended": str},
-    "json": {"kind": str, "entry_sha256": str, "created": list, "existed": bool},
+    "json": {"kind": str, "entry_sha256": str, "created": list, "existed": bool, "deny": list},
 }
 RECORD_REQUIRED = {
     "file": {"kind", "sha256"},
@@ -184,7 +184,10 @@ RECORD_REQUIRED = {
     "toml": {"kind", "values"},
     "json": {"kind", "entry_sha256", "created", "existed"},
 }
-JSON_CONTAINERS = ("hooks", "hooks.UserPromptSubmit")
+JSON_CONTAINERS = ("hooks", "hooks.UserPromptSubmit", "permissions", "permissions.deny")
+# The factory's own runtime is not product code: agents have no reason to read or search it, and
+# reading it only spends their context. Claude applies Read rules to Grep and Glob as well.
+RUNTIME_DENY = ("Read(./.factory/src/**)", "Read(./.factory/.venv/**)")
 
 
 def _check_record(name: str, record) -> None:
@@ -285,6 +288,11 @@ def _settings_doc(text: str, name: str) -> dict:
         raise FactoryError(f"Invalid Claude settings: `hooks` in {name} must be an object")
     if isinstance(hooks, dict) and not isinstance(hooks.get("UserPromptSubmit", []), list):
         raise FactoryError(f"Invalid Claude settings: `hooks.UserPromptSubmit` in {name} must be a list")
+    permissions = doc.get("permissions")
+    if permissions is not None and not isinstance(permissions, dict):
+        raise FactoryError(f"Invalid Claude settings: `permissions` in {name} must be an object")
+    if isinstance(permissions, dict) and not isinstance(permissions.get("deny", []), list):
+        raise FactoryError(f"Invalid Claude settings: `permissions.deny` in {name} must be a list")
     return doc
 
 
@@ -343,6 +351,14 @@ def strip_owned(root: Path, name: str, record: dict) -> bytes | None:
             del hooks["UserPromptSubmit"]
         if "hooks" in record["created"] and "hooks" in doc and not doc["hooks"]:
             del doc["hooks"]
+        owned_deny = set(record.get("deny", []))
+        permissions = doc.get("permissions") or {}
+        if owned_deny and isinstance(permissions.get("deny"), list):
+            permissions["deny"] = [rule for rule in permissions["deny"] if rule not in owned_deny]
+            if "permissions.deny" in record["created"] and not permissions["deny"]:
+                del permissions["deny"]
+            if "permissions" in record["created"] and "permissions" in doc and not doc["permissions"]:
+                del doc["permissions"]
         if not doc and not record["existed"]:
             return None
         if len(kept) == len(entries) and doc == _settings_doc(text, name):
@@ -545,7 +561,7 @@ def plan_render(
     )
     common = (
         constitution.strip()
-        + "\n\n## Factory session entry\n\nThis entry applies to the main session only; a delegated factory specialist follows its agent file and brief instead. Read factory.json and .factory/roles/orchestrator.md for factory tasks. Use the canonical .factory/skills workflows and delegate bounded tasks to the installed factory specialists. One writer per workspace. Existing product instructions and host permissions remain in force.\n\n"
+        + "\n\n## Factory session entry\n\nThis entry applies to the main session only; a delegated factory specialist follows its agent file and brief instead. Read factory.json and .factory/roles/orchestrator.md for factory tasks. Use the canonical .factory/skills workflows and delegate bounded tasks to the installed factory specialists. One writer per workspace. Existing product instructions and host permissions remain in force. The factory's own runtime (`.factory/src`, `.factory/.venv`) is not product code: do not read or search it; use the `software-factory` CLI.\n\n"
         + f"Python command: `uv run --locked --project .factory software-factory doctor` (the pinned `{VENV_CLI}` is equivalent).{codex_command}\nEntry prompts: "
         + entry_text
         + ". Planning is draft-only; status is read-only. Model selection uses `software-factory models plan`;"
@@ -840,12 +856,27 @@ def plan_render(
             created.append("hooks.UserPromptSubmit")
         if entry not in doc["hooks"]["UserPromptSubmit"]:
             doc["hooks"]["UserPromptSubmit"].append(entry)
+        if "permissions" not in doc:
+            doc["permissions"] = {}
+            created.append("permissions")
+        if "deny" not in doc["permissions"]:
+            doc["permissions"]["deny"] = []
+            created.append("permissions.deny")
+        owned = list(old[name].get("deny", [])) if name in old else []
+        for rule in RUNTIME_DENY:
+            if rule not in doc["permissions"]["deny"]:
+                doc["permissions"]["deny"].append(rule)
+                owned.append(rule)
         changes[name] = _settings_bytes(doc)
+        previous_created = old[name]["created"] if name in old else []
         generated[name] = {
             "kind": "json",
             "entry_sha256": _entry_sha(entry),
-            "created": old[name]["created"] if name in old else created,
+            "created": previous_created + [c for c in created if c not in previous_created]
+            if name in old
+            else created,
             "existed": old[name]["existed"] if name in old else base is not None,
+            "deny": sorted(set(owned)),
         }
     if "codex" in selected_profiles:
         name = ".codex/config.toml"

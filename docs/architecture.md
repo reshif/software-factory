@@ -85,6 +85,8 @@ flowchart TD
 
 Mission states: PROPOSED → PLANNED (accept-scope) → IMPLEMENTING → VERIFYING → REVIEWING → READY_PR → MERGED, with PAUSED and BLOCKED holds, CANCELED, and optional delivery states after MERGED. Transitions come from `workflow.json`; every write of `mission.json` appends a hash-chained event.
 
+What `init` does step by step, what every file under `.factory/` is for and who reads it, and where parallel work happens are in the installed guide, [src/software_factory/data/docs/architecture.md](../src/software_factory/data/docs/architecture.md) (copied to `.factory/docs/architecture.md` in every project).
+
 ## 3. Authority: who may record what
 
 ```mermaid

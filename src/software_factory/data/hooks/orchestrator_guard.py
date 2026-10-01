@@ -365,7 +365,15 @@ def outside_project(value: str) -> bool:
     )
 
 
+RUNTIME_PATHS = (".factory/src", ".factory/.venv")
+
+
 def check_path(value: str, label: str) -> None:
+    normalized = value.removeprefix("./")
+    if any(normalized == p or normalized.startswith(p + "/") for p in RUNTIME_PATHS):
+        raise Denied(
+            f"{label} {value!r} is the factory's own runtime, not product code; use the software-factory CLI"
+        )
     if outside_project(value):
         raise Denied(
             f"{label} {value!r} could read outside the project; use a project-relative path "

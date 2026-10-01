@@ -39,6 +39,8 @@ The renderer writes four entry skills alongside the registered workflow skills. 
 | Plan only | `/factory-blueprint` | `$factory-blueprint` | Proposed outcome and constraints |
 | Continue existing work | `/factory-resume` | `$factory-resume` | Actual mission ID |
 | Inspect without changes | `/factory-status` | `$factory-status` | Actual mission ID |
+| Record project or personal knowledge | `/factory-onboard` | `$factory-onboard` | `project` (default) or `personal` |
+| Turn a finished mission into lessons | `/factory-retro` | `$factory-retro` | Actual mission ID |
 | Recommend models only | `/factory-models` | `$factory-models` | Objective, task needs and selection constraints |
 
 `factory-build` and direct `factory-start` record the model checkpoint first. With the default `model_selection.mode: "inherit"` and JEV off, that is one inherited line. Only when JEV is enabled or the mode is `recommend`/`required` do they run the [model-selection checkpoint](model-selection.md#startup-checkpoint) through factory-models or JEV. Resume revalidates it; blueprint keeps planning-only boundaries; status never refreshes it.

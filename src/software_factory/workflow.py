@@ -101,6 +101,8 @@ PROTECTED_FLOOR = (
     ".factory/hooks/**",
     ".factory/templates/**",
     ".factory/docs/**",
+    # Project knowledge (Learning with consent) steers every later brief.
+    ".factory/crew/**",
     # Client configuration is read from nested directories too, so protect it at any depth.
     "**/.claude/**",
     "**/.codex/**",
@@ -144,10 +146,13 @@ DELIVERY_FIELDS = {
 REQUEST_LIMIT = 256 * 1024
 MIN_EXCERPT = 8
 REVIEW_KINDS = ("code", "acceptance", "adversarial")
-BRIEF_KINDS = ("context", "research", "assess", "plan", "code", "acceptance", "adversarial", "verify")
+BRIEF_KINDS = (
+    "context", "research", "assess", "spec", "options", "grade", "plan", "code", "acceptance", "adversarial", "verify",
+    "retro",
+)  # fmt: skip
 DIFF_BRIEFS = {"code", "acceptance", "adversarial", "verify"}
 DECISION_KINDS = ("scope", "merge", "release", "recovery", "exception", "decline", "exclusion")
-CREATE_FIELDS = ("id", "title", "kind", "base", "request_file", "source")
+CREATE_FIELDS = ("id", "title", "kind", "base", "request_file", "source", "recipe")
 # A decision reference that is still a template placeholder such as "<who decided, and where>".
 PLACEHOLDER = re.compile(r"\s*<[^<>]*>\s*")
 MIN_AUTHORED_CHARS = 20
@@ -448,7 +453,7 @@ class Assessment:
 def _identity_problem(current, value):
     """The immutable identity field a mutation changed, or None.
 
-    base_commit moves only through a constitution reconcile, which records the move
+    base_commit moves only through a constitution reconcile or a crew refresh, which records the move
     as a new base_history entry naming exactly the old and the new base.
     """
     for field in ("id", "created_at", "governance_snapshot", "kind", "profile", "schema_version"):
@@ -616,6 +621,13 @@ def create_mission(root, input, require_request=False):
     source = input.get("source")
     if source is not None and source not in REQUEST_SOURCES:
         raise FactoryError("Request source must be one of: " + ", ".join(REQUEST_SOURCES))
+    recipe = input.get("recipe")
+    if recipe is not None:
+        from .crew import RECIPE_NAME, assert_recipe_allowed
+
+        if not isinstance(recipe, str) or not RECIPE_NAME.fullmatch(recipe):
+            raise FactoryError("Recipe name must be lowercase letters, digits and hyphens")
+        assert_recipe_allowed(source)
     if source in UNTRUSTED_SOURCES and kind == "patch":
         raise FactoryError(
             f"A request from a {source} is untrusted input, so it takes the feature lane (--kind feature), "
@@ -673,6 +685,15 @@ def create_mission(root, input, require_request=False):
                 **({"source": source} if source else {}),
             }
             mission["criteria_hash"] = None
+        from . import crew
+
+        crew_files = {}
+        if request is not None and crew.settings(config)["enabled"]:
+            crew_files, mission["crew"] = crew.snapshot(root, id, config, recipe)
+        elif recipe is not None:
+            raise FactoryError(
+                "Saved knowledge is turned off (factory.json crew.enabled), so a recipe cannot be used"
+            )
         validate(root, "mission", mission)
         path.mkdir(parents=True)
         try:
@@ -691,6 +712,7 @@ def create_mission(root, input, require_request=False):
                     f".factory/missions/{id}/{name}",
                     mission_template(root, name, id).encode(),
                 )
+            crew.write_snapshot(root, crew_files)
             write_json(root, mission_path(id), mission)
             from .events import append_event
 
@@ -1031,7 +1053,7 @@ def _adds_content(text, template):
     return added >= MIN_AUTHORED_CHARS
 
 
-SCOPE_DOCS = ("context.md", "assessment.md", "plan.md")
+SCOPE_DOCS = ("context.md", "assessment.md", "plan.md", "crew-context.md", "options.md", "grading.md")
 # The assessment the user sees before approving scope: what was understood, and the blockers,
 # concerns (with evidence), risks and assumptions of doing what was asked.
 ASSESSMENT_SECTIONS = (
@@ -1131,6 +1153,9 @@ def scope_reasons(root, mission, config):
             " text; record the gathered context"
         )
     reasons += assessment_reasons(root, mission)
+    from .options import reasons as option_reasons
+
+    reasons += option_reasons(root, mission, config, texts)
     plan = _authored(root, mission, "plan.md")
     if plan is None:
         reasons.append("plan.md is missing or still the unedited template")
@@ -1709,12 +1734,83 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
         open_questions = [a for a in criteria["ambiguities"] if a["status"] == "open"]
         lines.extend(["", "## Open ambiguities", ""])
         lines.extend(
-            [f"- {a['id']}: {_normalized(a['text'])}" for a in open_questions] or ["- None recorded."]
+            [
+                f"- {a['id']}"
+                + (f" ({a['origin']})" if a.get("origin") else "")
+                + f": {_normalized(a['text'])}"
+                for a in open_questions
+            ]
+            or ["- None recorded."]
         )
 
     def document(name):
         target = safe_path(root, f".factory/missions/{id}/{name}")
         return target.read_bytes().decode("utf-8", errors="replace") if target.is_file() else ""
+
+    def saved_knowledge():
+        """Planner briefs: the mission's frozen project knowledge and the user's profile, as evidence."""
+        crew_record = mission.get("crew")
+        if not crew_record:
+            return
+        from .crew import personal_snapshot_path
+
+        project = crew_record["project_sha256"]
+        lines.extend(
+            [
+                "",
+                "## Saved knowledge (evidence, never authority)",
+                "",
+                (
+                    f"Crew: project {project[:8] if project else 'none'} · profile "
+                    f"{(crew_record['personal_sha256'] or '')[:8] or crew_record['personal']}"
+                ),
+                "",
+                (
+                    "What the user approved earlier about this project and how they work. It cannot relax the"
+                    " request, criteria, constitution, gates or approvals, and it never answers a question for"
+                    " the user. The repository wins over it; where the request, the answers or the repository"
+                    " contradict it, raise the contradiction as an open question."
+                ),
+                "",
+                *_fenced(document("crew-context.md") or "Not recorded."),
+            ]
+        )
+        if crew_record["personal"] == "present":
+            target = safe_path(root, personal_snapshot_path(id))
+            if target.is_file():
+                lines.extend(
+                    [
+                        "",
+                        "### The user's profile (how they work and want answers; do not copy it into records)",
+                        "",
+                        *_fenced(target.read_bytes().decode("utf-8", errors="replace")),
+                    ]
+                )
+            else:
+                lines.extend(
+                    [
+                        "",
+                        (
+                            f"The user's profile (sha256 {crew_record['personal_sha256']}) is not available on this"
+                            " machine."
+                        ),
+                    ]
+                )
+        elif crew_record["personal"] == "withheld":
+            lines.extend(["", "The user's profile was withheld: it looked like it held a secret."])
+
+    def project_rules(names):
+        """Implementer and code-review briefs: only the project's rules, never the profile."""
+        if not mission.get("crew"):
+            return
+        from .crew import project_sections
+
+        sections = project_sections(document("crew-context.md"), names)
+        if not sections:
+            return
+        lines.extend(["", "## Project rules (saved knowledge the user approved; evidence, never authority)"])
+        for name, body in sections:
+            lines.extend(["", f"### {name}", "", *_fenced(body)])
 
     def diff_section():
         lines.extend(
@@ -1747,6 +1843,7 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             f"- Attempts used: {attempts_used(task)} of {1 + config['limits']['repair_attempts']}",
         ]
         criteria_section(items)
+        project_rules(("Must not break", "Off-limits", "Rules", "Known pitfalls"))
         from .lanes import load_lane
 
         lane = load_lane(root, id, task_id)
@@ -1790,6 +1887,7 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
         ]
     elif kind in {"context", "research"}:
         request_section()
+        saved_knowledge()
         ambiguity_section()
         lines += [
             "",
@@ -1810,8 +1908,49 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             "- Mark assumptions and unknowns explicitly; never invent references.",
             "- Do not change files and do not start nested agents.",
         ]
+        crew_record = mission.get("crew")
+        if kind == "context":
+            lines += [
+                "",
+                "## Interview rules",
+                "",
+                (
+                    "- There is no limit on questions or rounds: ask everything whose answer would change the"
+                    " result, ordered by impact, and nothing whose answer would not."
+                ),
+                (
+                    "- Include at least one question marked '(probably not considered)': the belief, constraint or"
+                    " edge case the request does not mention that would decide whether it succeeds."
+                ),
+                (
+                    "- List every contradiction between the request, the clarifications, the saved knowledge and the"
+                    " repository as its own question marked '(contradiction)', naming both sides. It stays an open"
+                    " ambiguity with origin contradiction until the user settles it."
+                ),
+            ]
+            if crew_record and crew_record.get("recipe"):
+                lines.append(
+                    f"- Round 0: open with the Defaults of recipe {crew_record['recipe']['name']} as one block,"
+                    " each with the mission it came from, and ask whether each is still true. Only the user's"
+                    " reply, recorded as a clarification together with the defaults shown, counts; the recipe"
+                    " itself never answers a question."
+                )
+        if kind == "context" and crew_record and not crew_record["project_sha256"]:
+            lines += [
+                "",
+                "## Project knowledge draft",
+                "",
+                (
+                    "No project knowledge is recorded. After context.md, also return a draft of"
+                    " .factory/crew/project.md with these sections: # <project name>; ## Purpose; ## Users;"
+                    " ## Must not break; ## Definition of done; ## Off-limits; ## Rules. Use only what the"
+                    " repository shows and mark every inferred line '(inferred)'. The orchestrator offers it to the"
+                    " user as a proposal; the user decides what is saved."
+                ),
+            ]
     elif kind == "assess":
         request_section()
+        saved_knowledge()
         lines.extend(
             ["", "## Context (context.md)", "", *_fenced(document("context.md") or "Not recorded yet.")]
         )
@@ -1840,15 +1979,143 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             "- Never invent evidence; say what you could not verify.",
             "- Do not change files and do not start nested agents.",
         ]
+    elif kind == "spec":
+        request_section()
+        saved_knowledge()
+        lines.extend(
+            ["", "## Context (context.md)", "", *_fenced(document("context.md") or "Not recorded yet.")]
+        )
+        lines.extend(
+            [
+                "",
+                "## Assessment (assessment.md)",
+                "",
+                *_fenced(document("assessment.md") or "Not recorded yet."),
+            ]
+        )
+        ambiguity_section()
+        lines.extend(["", "## Template: spec.md", "", *_fenced(mission_template(root, "spec.md", id))])
+        lines += [
+            "",
+            "## Return",
+            "",
+            (
+                "Return the text of spec.md and the criteria JSON (items, exclusions, ambiguities); the plan comes"
+                " after the options are graded. The orchestrator records them; do not write files."
+            ),
+            "",
+            "## Criteria rules",
+            "",
+            (
+                "- Give each criterion an id AC-<n>, an observable text and a route: check, e2e, property, manual"
+                f" or review; route check names configured checks: {', '.join(c['id'] for c in config['checks'])}."
+            ),
+            (
+                f"- Every criterion cites excerpts copied exactly from the request or a clarification (at least"
+                f" {MIN_EXCERPT} characters). A recipe default is quotable only through the clarification that"
+                " recorded the user's reply to it."
+            ),
+            (
+                "- Criteria describe the outcome, not one approach: the options are graded against them next, so"
+                " they must not presuppose the design."
+            ),
+            "- Mark assumptions and unknowns explicitly; never invent references.",
+            "- Do not change files and do not start nested agents.",
+        ]
+    elif kind == "options":
+        from .options import require_criteria
+
+        require_criteria(mission)
+        request_section()
+        saved_knowledge()
+        criteria_section(criteria["items"])
+        lines.extend(
+            ["", "## Specification (spec.md)", "", *_fenced(document("spec.md") or "Not recorded yet.")]
+        )
+        lines.extend(
+            ["", "## Context (context.md)", "", *_fenced(document("context.md") or "Not recorded yet.")]
+        )
+        lines.extend(["", "## Template: options.md", "", *_fenced(mission_template(root, "options.md", id))])
+        lines += [
+            "",
+            "## Return",
+            "",
+            "Return the text of options.md. The orchestrator records it; do not write files.",
+            "",
+            "## Option rules (Alternatives before commitment)",
+            "",
+            (
+                "- Give at least two genuinely different approaches, three by default: different in architecture,"
+                " dependency or trade-off, not the same idea reworded."
+            ),
+            "- For each option: a short sketch, its trade-offs, and how it meets each criterion above.",
+            (
+                "- Only when the request dictates one approach, give one option and a line"
+                ' `Dictated by: "<exact words from the request or a clarification>"`.'
+            ),
+            "- Start with the line `Author: <your session>`; do not rank or pick a winner: a separate reviewer grades.",
+            "- Do not change files and do not start nested agents.",
+        ]
+    elif kind == "grade":
+        from .options import OPTIONS_DOC, require_criteria
+
+        require_criteria(mission)
+        options_text = document(OPTIONS_DOC)
+        if not options_text:
+            raise FactoryError(
+                "Record options.md first (`mission brief --kind options`, then record-doc --doc options)"
+            )
+        request_section()
+        criteria_section(criteria["items"])
+        lines.extend(["", "## Options (options.md)", "", *_fenced(options_text)])
+        lines += [
+            "",
+            "## Bound inputs",
+            "",
+            f"- Options-sha256: {sha256(options_text.encode())}",
+            f"- Criteria-hash: {digest(criteria)}",
+            "",
+            "## Template: grading.md",
+            "",
+            *_fenced(mission_template(root, "grading.md", id)),
+            "",
+            "## Return",
+            "",
+            (
+                "Return the text of grading.md. Copy Options-sha256 and Criteria-hash from Bound inputs; the"
+                " orchestrator fills Brief-sha256 with the sha256 that `mission brief` reported for this brief."
+            ),
+            "",
+            "## Grading rules",
+            "",
+            (
+                "- You work in a context separate from the options' author: judge only the request, the criteria"
+                " and the options above; you are deliberately not shown the planner's context or assessment."
+            ),
+            "- Score every option against every criterion from 0 (fails it) to 5 (meets it fully), harshly.",
+            "- Name the winner (Winner: O-<n>) and list what is still weak about it, for the plan to fix.",
+            "- `Grader:` names your session; it must not be the options' author or the maintainer.",
+            "- Grading is advice: it informs the user's scope approval and satisfies no check.",
+            "- Do not change files and do not start nested agents.",
+        ]
     elif kind == "plan":
         request_section()
+        saved_knowledge()
         context = document("context.md")
         lines.extend(["", "## Context (context.md)", "", *_fenced(context or "Not recorded yet.")])
         assessment = document("assessment.md")
         lines.extend(["", "## Assessment (assessment.md)", "", *_fenced(assessment or "Not recorded yet.")])
         ambiguity_section()
         criteria_section(criteria["items"])
-        for name in ("spec.md", "plan.md", "recovery.md"):
+        from .options import GRADING_DOC, OPTIONS_DOC, required
+
+        graded = required(mission, config)
+        if graded:
+            for name, label in ((OPTIONS_DOC, "Options"), (GRADING_DOC, "Grading")):
+                lines.extend(
+                    ["", f"## {label} ({name})", "", *_fenced(document(name) or "Not recorded yet.")]
+                )
+        for name in ("plan.md", "recovery.md") if graded else ("spec.md", "plan.md", "recovery.md"):
             lines.extend(["", f"## Template: {name}", "", *_fenced(mission_template(root, name, id))])
         chain = mission["request"]["chain"]
         configured = ", ".join(c["id"] for c in config["checks"])
@@ -1857,6 +2124,14 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             "## Return",
             "",
             (
+                "Return the text of plan.md and recovery.md; spec.md and the criteria are recorded. plan.md's"
+                " `## Approach` starts with the line `Chosen option: O-<n>`, the grader's winner, and fixes the"
+                " weaknesses the grading lists. Building another option is the user's choice: cite their recorded"
+                " clarification as `Chosen option: O-<n> (user override, clarification <N>)`. The orchestrator"
+                " records them; do not write files."
+            )
+            if graded
+            else (
                 "Return the text of spec.md, plan.md and recovery.md, and the criteria JSON (items, exclusions,"
                 " ambiguities). The orchestrator records them; do not write files."
             ),
@@ -1869,7 +2144,8 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             ),
             (
                 f"- Every criterion cites excerpts copied exactly from the request or a clarification (at least"
-                f" {MIN_EXCERPT} characters)."
+                f" {MIN_EXCERPT} characters). A recipe default is quotable only through the clarification that"
+                " recorded the user's reply to it."
             ),
             (
                 "- Criteria with route e2e, property or manual need evidence:<path> evidence at completion;"
@@ -1881,7 +2157,8 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             ),
             (
                 "- Ambiguities are Q-<n> with status open, resolved or waived; resolved and waived name the"
-                " decision that settled them. Scope cannot be accepted while any ambiguity is open."
+                " decision that settled them. Scope cannot be accepted while any ambiguity is open. An ambiguity"
+                " may carry origin: request, contradiction, recipe-default or unconsidered."
             ),
             (
                 "- plan.md needs a '## Architecture' section with a fenced mermaid diagram that is not the"
@@ -1918,6 +2195,7 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
         ]
     elif kind == "code":
         criteria_section(criteria["items"])
+        project_rules(("Must not break", "Off-limits", "Known pitfalls"))
         diff_section()
         lines += [
             "",
@@ -1961,6 +2239,11 @@ def render_brief(root, mission, kind, task_id=None, diff=None, config=None):
             "- Record reproduced failures as findings with verified true; record criteria_verdicts.",
             '- Record the review with kind "adversarial". Do not start nested agents.',
         ]
+    elif kind == "retro":
+        from .retro import render as render_retro
+
+        request_section()
+        render_retro(root, mission, lines, _fenced, _normalized, document)
     else:
         raise FactoryError("Brief kind must be one of: " + ", ".join(BRIEF_KINDS))
     return "\n".join(lines) + "\n"
@@ -1972,8 +2255,13 @@ def mission_brief(root, id, kind=None, task=None):
     if kind is not None and kind not in BRIEF_KINDS:
         raise FactoryError("Brief kind must be one of: " + ", ".join(BRIEF_KINDS))
     mission = load_mission(root, id)
+    if kind == "retro":
+        from .retro import assert_retro_state
+
+        assert_retro_state(mission)
     candidate = fingerprint(root, mission)
-    if mission["kind"] != "maintenance":
+    # After merge no gate remains for this mission, so changed controls cannot slip past one.
+    if mission["kind"] != "maintenance" and effective_state(mission) in PRE_MERGE_STATES:
         # Agents load instruction and client-config files before any gate runs, so a
         # product mission is not briefed while those differ from the mission base.
         current, baseline = _policy(root, mission)
@@ -1989,6 +2277,12 @@ def mission_brief(root, id, kind=None, task=None):
                 "instructions or client configuration: "
                 + ", ".join(touched[:10])
                 + "; revert them, or make the change in a maintenance mission"
+                + (
+                    ". Only saved knowledge changed: if you committed knowledge the user approved, run "
+                    f"`software-factory crew refresh --mission {id}` (PROPOSED missions)"
+                    if all(p.startswith(".factory/crew/") for p in touched)
+                    else ""
+                )
             )
     diff = (
         candidate_diff(root, mission["base_commit"], candidate["changed_paths"])
@@ -3399,6 +3693,14 @@ def approve_decision(root, id, kind, reference, subject_hash=None, decision_id=N
                 "Scope is approved only after the user has seen the assessment (blockers, concerns, risks): "
                 + "; ".join(problems)
             )
+        from .options import reasons as option_reasons
+
+        problems = option_reasons(root, mission, load_config(root), request_texts(root, mission))
+        if problems:
+            raise FactoryError(
+                "Scope is approved only after the user has seen the graded options (Alternatives before "
+                "commitment): " + "; ".join(problems)
+            )
     candidate = fingerprint(root, mission)
     bound = {}
     if candidate.get("spec_hash"):
@@ -4187,6 +4489,11 @@ def mission_status(root, id):
                 "fingerprint": None,
                 "reasons": [str(exc)],
             }
+    from .options import summary as options_summary
+
+    graded = options_summary(root, mission)
+    if graded:
+        mission["options_summary"] = graded
     return mission
 
 
@@ -4474,7 +4781,7 @@ def _input(args):
     return value
 
 
-MISSION_DOCS = ("context", "assessment", "spec", "plan", "recovery", "handoff")
+MISSION_DOCS = ("context", "assessment", "spec", "options", "grading", "plan", "recovery", "handoff", "retro")
 # Minimal --input skeletons; every "<...>" is a placeholder the orchestrator replaces.
 INPUT_TEMPLATES = {
     "task": {
@@ -4544,9 +4851,17 @@ def record_doc(root, id, doc, relative):
     path = f".factory/missions/{assert_id(id)}/{doc}.md"
     with state_lock(root):
         mission = load_mission(root, id)
-        if mission["state"] in TERMINAL_STATES:
+        if doc == "retro":
+            # A retro looks back at finished work, so it is the one record a terminal mission may gain.
+            from .retro import assert_retro_state
+
+            assert_retro_state(mission)
+        elif mission["state"] in TERMINAL_STATES:
             raise FactoryError(f"Mission records are immutable in terminal state {mission['state']}")
-        if doc in {"context", "spec", "plan"} and effective_state(mission) not in {"PROPOSED", "PLANNED"}:
+        if doc in {"context", "spec", "options", "grading", "plan"} and effective_state(mission) not in {
+            "PROPOSED",
+            "PLANNED",
+        }:
             raise FactoryError(
                 f"{doc}.md can only be recorded in PROPOSED or PLANNED; run accept-scope to return to PLANNED first"
             )
@@ -4559,12 +4874,16 @@ def _mission_handler(args):
     root, command = args.root, args.mission_command
     id = getattr(args, "mission", None)
     catalog = read_json(root, args.model_catalog) if getattr(args, "model_catalog", None) else None
+    if command == "recipe":
+        from .crew import set_recipe
+
+        return set_recipe(root, args.mission, None if args.clear else args.use)
     if command == "create":
         request_file = getattr(args, "request_file", None)
         if args.input:
             flags = [
                 f"--{n}"
-                for n in ("id", "title", "kind", "base", "source")
+                for n in ("id", "title", "kind", "base", "source", "recipe")
                 if getattr(args, n, None) is not None
             ]
             if flags:
@@ -4593,6 +4912,7 @@ def _mission_handler(args):
                 "kind": args.kind,
                 "base": args.base,
                 **({"source": args.source} if args.source else {}),
+                **({"recipe": args.recipe} if args.recipe else {}),
                 "request_file": request_file,
             }
         if getattr(args, "worktree", False):
@@ -4721,6 +5041,7 @@ def add_parser(subparsers):
         "transition": "Move the mission to another state (--to)",
         "block": "Block the mission with a reason and next step",
         "resume": "Resume a blocked mission with a recorded resolution",
+        "recipe": "Use a saved recipe the user confirmed (--use NAME) or stop using one (--clear); PROPOSED only",
         "accept-scope": "Record acceptance of the mission scope",
         "clarify": "Append a verbatim clarification from a --input text file",
         "criteria": "Record acceptance criteria, exclusions and ambiguities from --input JSON",
@@ -4750,6 +5071,7 @@ def add_parser(subparsers):
         "kind": ("KIND", "Mission work type"),
         "base": ("REV", "Baseline Git revision"),
         "source": ("WHO", "Who the request comes from: maintainer (default), contributor or anonymous"),
+        "recipe": ("NAME", "Saved recipe to start from (the user confirmed it); see crew match"),
         "input": ("PATH", "Repository path of the input JSON, or - for stdin"),
         "task": ("ID", "Task ID"),
         "to": ("STATE", "Target state"),
@@ -4788,6 +5110,7 @@ def add_parser(subparsers):
         "transition",
         "block",
         "resume",
+        "recipe",
         "accept-scope",
         "clarify",
         "criteria",
@@ -4832,7 +5155,7 @@ def add_parser(subparsers):
                 help="Input kind: " + ", ".join(INPUT_TEMPLATES),
             )
         if command == "create":
-            for name in ("id", "title", "kind", "base", "input", "request-file", "source"):
+            for name in ("id", "title", "kind", "base", "input", "request-file", "source", "recipe"):
                 option(parser, name)
             parser.add_argument(
                 "--worktree",
@@ -4842,6 +5165,10 @@ def add_parser(subparsers):
             parser.add_argument(
                 "--skip-sync", action="store_true", help="With --worktree, do not set up the pinned runtime"
             )
+        if command == "recipe":
+            chosen = parser.add_mutually_exclusive_group(required=True)
+            chosen.add_argument("--use", metavar="NAME", help="Recipe the user confirmed for this mission")
+            chosen.add_argument("--clear", action="store_true", help="Stop using a recipe")
         if command == "list":
             parser.add_argument(
                 "--all", action="store_true", help="Also list missions in other factory worktrees"

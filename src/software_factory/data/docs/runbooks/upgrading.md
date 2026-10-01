@@ -16,7 +16,7 @@ File transactions use preimage checks, private journals and exclusive locks. `so
 
 ## Constitution changes and in-flight missions
 
-A release can ship a new constitution (0.3.1 ships 2.0.0). Commit the upgrade on its own, outside any product mission's diff: a changed `.factory/CONSTITUTION.md` inside a product mission's candidate fails that mission's gate ("Protected factory path requires a maintenance mission"), by design.
+A release can ship a new constitution (0.3.1 ships 2.0.0, 0.3.3 ships 2.1.0). Commit the upgrade on its own, outside any product mission's diff: a changed `.factory/CONSTITUTION.md` inside a product mission's candidate fails that mission's gate ("Protected factory path requires a maintenance mission"), by design.
 
 Missions record the constitution hash they accepted, so after such an upgrade every pre-merge mission accepted under the old text stops at its next transition and the gate reports "Constitution changed since mission acceptance"; those errors print the exact reconciliation commands. The upgrade never blocks on this. When the release changes the constitution, its report lists each such mission under `missions_needing_constitution_reconcile` as `{id, state, from_version, to_version}`, with a `constitution_reconcile_note` when the list is not empty (also in `--dry-run`). When the constitution is unchanged, the key is absent. Missions already MERGED or later keep their evidence as judged.
 

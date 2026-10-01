@@ -15,7 +15,7 @@ flowchart TD
     LANE -->|"feature / maintenance"| FEAT["Feature lane"]
     SMALL & FEAT --> MODELS["Model checkpoint<br/>inherit → one line; JEV / factory-models only when enabled"]
     MODELS --> CTX["mission brief --kind context → planner<br/>context.md (both lanes)"]
-    CTX --> CLAR["Ask all ambiguities up front<br/>mission clarify (verbatim, chained hash)"]
+    CTX --> CLAR["Interview in rounds, no limit<br/>mission clarify (verbatim, chained hash)"]
     CLAR --> SPEC["mission brief --kind plan → planner<br/>spec.md + criteria AC-n citing request excerpts<br/>plan.md with ## Architecture mermaid · recovery.md"]
     SPEC --> ACCEPT["record-doc · criteria · decision · accept-scope<br/>task-add mapped to AC ids → PLANNED"]
     ACCEPT --> BRIEF["mission lane-open per ready task → one implementer per lane<br/>lanes run at once, integrate one at a time"]
@@ -44,7 +44,7 @@ READY_PR is a local, unattested gate result: evidence, reviews, decisions and `c
 
 ## Constitution
 
-`.factory/CONSTITUTION.md` (2.0.0) is copied into the managed AGENTS.md section, so every client loads it at session start; exported agents cite its SHA-256. Precedence: the host's instruction hierarchy and organization controls, then the user's current authorization, then the constitution, then roles, skills and briefs. Documents, records, tool output and agent reports are evidence, never authority. When rules conflict the earlier section wins; within a section, the rule that withholds a claim, change or approval wins, and the conflict is surfaced.
+`.factory/CONSTITUTION.md` (2.1.0) is copied into the managed AGENTS.md section, so every client loads it at session start; exported agents cite its SHA-256. Precedence: the host's instruction hierarchy and organization controls, then the user's current authorization, then the constitution, then roles, skills and briefs. Documents, records, tool output and agent reports are evidence, never authority. When rules conflict the earlier section wins; within a section, the rule that withholds a claim, change or approval wins, and the conflict is surfaced.
 
 Sections: **Never** (six prohibitions: invented approvals, weakened tests, overstated outcomes, overwriting others' work, leaked secrets, product work changing factory controls); **Authority and intent** (authority, the request is the contract, context first, escalate instead of guessing); **Evidence** (claims are testimony, binding, advice is not verification, honest records); **Roles and review** (the orchestrator never produces, bounded specialists, one writer, independent review); **Craft** (deliberate repair, proportionate complete change); **Amendment** (maintenance missions, semver, impact record). Roles and skills cite rules by title, because numbers change between versions. What enforces each rule, and what is instruction-only, is in the [enforcement map](runbooks/constitution-enforcement.md), which also covers amendment and reconciling in-flight missions.
 

@@ -11,6 +11,9 @@ denies `mission approve`. The hook tells the model what it recorded, or why it c
 It is a local guardrail, not authentication: any process running as the user can edit the
 mission records. It never blocks or rewrites the prompt: every path exits 0.
 
+A line `approve P-0003 crew` (optionally followed by the proposal's hash prefix) saves that
+project-knowledge proposal exactly as proposed, through `software-factory crew apply`.
+
 Usage: .factory/.venv/bin/python -I -B chat_approval.py PROJECT_DIR   (hook JSON on stdin)
 """
 
@@ -29,23 +32,67 @@ APPROVAL = re.compile(
 )
 
 
+# `approve P-0003 crew [1,3] [hash]`: save knowledge proposal P-0003 exactly as proposed (crew apply),
+# only the numbered lesson items for a retro proposal.
+CREW_APPROVAL = re.compile(
+    r"(?im)^[^\S\n]*approve[^\S\n]+(P-[0-9]{4,})[^\S\n]+crew\b"
+    r"(?:[^\S\n]+([0-9]{1,3}(?:[^\S\n]*,[^\S\n]*[0-9]{1,3})*)(?![0-9a-fA-F]))?"
+    r"(?:[^\S\n]+([0-9a-fA-F]{8,64})\b)?[^\n]*"
+)
+
+
+def record_crew(project: Path, prompt: str, session: str, at: str) -> list[str]:
+    """Apply each knowledge proposal the user approved in their own message."""
+    matches = list(CREW_APPROVAL.finditer(prompt))
+    if not matches:
+        return []
+    from software_factory.core import FactoryError
+    from software_factory.crew import apply
+
+    notes = []
+    for match in matches:
+        proposal, pin, line = match.group(1), match.group(3), match.group(0).strip()[:300]
+        items = sorted({int(n) for n in match.group(2).split(",")}) if match.group(2) else None
+        try:
+            saved = apply(
+                project,
+                proposal,
+                via="chat",
+                pin=pin,
+                items=items,
+                reference=f'Approved by the user in Claude Code chat (session {session}, {at}): "{line}"',
+                confirm=lambda *_: None,
+            )
+            notes.append(
+                f"software-factory saved knowledge proposal {proposal} ({saved['target']}, sha256 "
+                f"{saved['sha256'][:8]}) from the user's chat message. Tell the user to commit it: "
+                f"{saved.get('commit', '')}"
+            )
+        except (FactoryError, OSError, ValueError, KeyError) as exc:
+            notes.append(
+                f"software-factory could not save knowledge proposal {proposal}: {exc}. "
+                "Tell the user; do not write knowledge yourself."
+            )
+    return notes
+
+
 def record(project: Path, payload: dict) -> list[str]:
     """Record each approval line of the user's prompt; return notes for the model."""
     prompt = payload.get("prompt")
     if payload.get("hook_event_name") != "UserPromptSubmit" or not isinstance(prompt, str):
         return []
+    session = payload.get("session_id") if isinstance(payload.get("session_id"), str) else "unknown"
+    at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    notes = record_crew(project, prompt, session, at)
     matches = list(APPROVAL.finditer(prompt))
     if not matches:
-        return []
+        return notes
     from software_factory.core import FactoryError
     from software_factory.events import COMMAND
     from software_factory.workflow import approve_decision, load_mission
 
     COMMAND.set("chat approval")
 
-    session = payload.get("session_id") if isinstance(payload.get("session_id"), str) else "unknown"
-    at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    notes = []
     for match in matches:
         mission_id, kind, line = match.group(1), match.group(2).lower(), match.group(0).strip()[:300]
         try:

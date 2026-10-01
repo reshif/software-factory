@@ -249,7 +249,7 @@ def test_root_help_describes_and_groups_every_command(capsys):
             "version",
             "auth",
         ],
-        "Mission workflow": ["mission", "serve", "status", "checks", "verify", "gate", "packet"],
+        "Mission workflow": ["mission", "serve", "status", "checks", "verify", "gate", "packet", "crew"],
         "Models & JEV": ["models", "semantic (jev)", "triage"],
     }
     assert sorted(n for group in groups.values() for n in group) == sorted(

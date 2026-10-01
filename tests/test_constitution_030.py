@@ -1,4 +1,4 @@
-"""0.3.1 constitution 2.0.0: reconciling in-flight missions, upgrade reporting and instruction budget."""
+"""Constitution 2.x (2.0.0 in 0.3.1, 2.1.0 in 0.3.3): reconciling in-flight missions, upgrade reporting and instruction budget."""
 
 from __future__ import annotations
 
@@ -21,10 +21,12 @@ from software_factory.workflow import (
     transition_mission,
 )
 
-# Managed AGENTS.md block for a claude,codex,copilot install with constitution 2.0.0 measured
-# 6227 bytes; the budget is that size + 10%. Growing past it needs a deliberate, reviewed change.
-AGENTS_BLOCK_BUDGET = 6849
-CONSTITUTION_WORD_LIMIT = 800
+# Managed AGENTS.md block for a claude,codex,copilot install with constitution 2.1.0 measured
+# 7549 bytes; the budget is that size + 10%. Growing past it needs a deliberate, reviewed change.
+# 2.1.0 (Crew: no interview limit, alternatives before commitment, learning with consent) was
+# approved by the user on 2026-09-30 and raised both limits.
+AGENTS_BLOCK_BUDGET = 8304
+CONSTITUTION_WORD_LIMIT = 900
 
 
 @pytest.fixture
@@ -35,7 +37,7 @@ def repo(tmp_path):
 def amend_constitution(root):
     path = root / CONSTITUTION_PATH
     text = path.read_text()
-    amended = re.sub(r"^Version: \d+\.\d+\.\d+", "Version: 2.1.0", text, count=1, flags=re.MULTILINE)
+    amended = re.sub(r"^Version: \d+\.\d+\.\d+", "Version: 2.2.0", text, count=1, flags=re.MULTILINE)
     assert amended != text
     path.write_text(amended + "\n20. **Fixture amendment.** Added for a reconciliation test.\n")
     return hash_file(root, CONSTITUTION_PATH)
@@ -52,7 +54,7 @@ def implementing(root, kind="feature"):
 
 
 def exception(
-    root, id, subject_hash, decision_id=None, reference="Maintainer approved constitution 2.1.0 in PR #7"
+    root, id, subject_hash, decision_id=None, reference="Maintainer approved constitution 2.2.0 in PR #7"
 ):
     return record_decision(
         root,
@@ -69,7 +71,7 @@ def exception(
 def test_constitution_version_is_parsed_from_version_line():
     assert constitution_version("# C\n\nVersion: 2.0.0 · Ratified: 2026-09-28\n") == "2.0.0"
     assert constitution_version("# C\n\nNo version here\n") is None
-    assert constitution_version((asset_root() / "CONSTITUTION.md").read_text()) == "2.0.0"
+    assert constitution_version((asset_root() / "CONSTITUTION.md").read_text()) == "2.1.0"
 
 
 def test_product_mission_reconciles_changed_constitution(repo):
@@ -81,7 +83,7 @@ def test_product_mission_reconciles_changed_constitution(repo):
         transition_mission(repo, id, "VERIFYING")
     message = str(refused.value)
     assert message.startswith("Constitution changed (mission bound to sha256 " + before["constitution_hash"])
-    assert f"{CONSTITUTION_PATH} is now sha256 {new_hash}, version 2.1.0" in message
+    assert f"{CONSTITUTION_PATH} is now sha256 {new_hash}, version 2.2.0" in message
     assert f"software-factory mission block --mission {id} --reason" in message
     # 0.3.2: the exception is the user's own approval, so the hint names `mission approve`.
     assert (
@@ -109,7 +111,7 @@ def test_product_mission_reconciles_changed_constitution(repo):
         accept_scope(repo, id)  # decisions bound to the wrong hashes
     assert load_mission(repo, id)["constitution_hash"] == before["constitution_hash"]
 
-    payload["reference"] = "Maintainer approved constitution 2.1.0 in PR #7"
+    payload["reference"] = "Maintainer approved constitution 2.2.0 in PR #7"
     # 0.3.2: an exception is the user's own approval, recorded through `mission approve`.
     from software_factory.workflow import approve_decision
 
@@ -119,13 +121,13 @@ def test_product_mission_reconciles_changed_constitution(repo):
     # 0.3.2: a product mission's base must advance past the constitution commit, so it must exist.
     with pytest.raises(FactoryError, match="commit the constitution change first"):
         cli(repo, "mission", "accept-scope", "--mission", id)
-    head = commit(repo, "Adopt constitution 2.1.0")
+    head = commit(repo, "Adopt constitution 2.2.0")
     mission = cli(repo, "mission", "accept-scope", "--mission", id)
     assert mission["state"] == "PLANNED" and mission["previous_state"] is None
     assert mission["base_commit"] == head
     assert mission["base_history"][0]["from"] == before["base_commit"]
     assert mission["base_history"][0]["decision"] == payload["id"]
-    assert mission["constitution_hash"] == new_hash and mission["constitution_version"] == "2.1.0"
+    assert mission["constitution_hash"] == new_hash and mission["constitution_version"] == "2.2.0"
     assert [t["status"] for t in mission["tasks"]] == ["TODO"]
     assert mission["tasks"][0]["attempts"] == before["tasks"][0]["attempts"] == 1
     assert mission["blockers"] == []
@@ -171,7 +173,7 @@ def test_maintenance_mission_reconciles_as_before(repo):
     exception(repo, id, new_hash)
     mission = accept_scope(repo, id)
     assert mission["state"] == "PLANNED" and mission["constitution_hash"] == new_hash
-    assert mission["constitution_version"] == "2.1.0" and mission["tasks"][0]["attempts"] == 1
+    assert mission["constitution_version"] == "2.2.0" and mission["tasks"][0]["attempts"] == 1
 
 
 def test_unversioned_constitution_drops_stale_version(repo):
@@ -223,11 +225,11 @@ def test_upgrade_reports_missions_needing_constitution_reconcile(tmp_path):
     _mission_fixture(tmp_path, "M-OTHER", "PLANNED", "1" * 64)
     _mission_fixture(tmp_path, "M-DONE", "DELIVERED", old_hash, "1.0.0")
     _mission_fixture(tmp_path, "M-GONE", "CANCELED", old_hash)
-    _mission_fixture(tmp_path, "M-CURRENT", "PLANNED", new_hash, "2.0.0")
+    _mission_fixture(tmp_path, "M-CURRENT", "PLANNED", new_hash, "2.1.0")
     expected = [
-        {"id": "M-ACTIVE", "state": "IMPLEMENTING", "from_version": "1.0.0", "to_version": "2.0.0"},
-        {"id": "M-LEGACY", "state": "BLOCKED", "from_version": "1.0.0", "to_version": "2.0.0"},
-        {"id": "M-OTHER", "state": "PLANNED", "from_version": None, "to_version": "2.0.0"},
+        {"id": "M-ACTIVE", "state": "IMPLEMENTING", "from_version": "1.0.0", "to_version": "2.1.0"},
+        {"id": "M-LEGACY", "state": "BLOCKED", "from_version": "1.0.0", "to_version": "2.1.0"},
+        {"id": "M-OTHER", "state": "PLANNED", "from_version": None, "to_version": "2.1.0"},
     ]
     for dry_run in (True, False):
         report = install(tmp_path, upgrade=True, skip_sync=True, dry_run=dry_run)

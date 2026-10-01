@@ -207,6 +207,90 @@ def enforcement_checks(command, project, work, env, shell):
     assert json.loads(run([command, "doctor", "--root", str(project)], cwd=work, env=env))["ok"]
 
 
+def crew_checks(command, work, env, shell):
+    """0.3.3: constitution 2.1.0, project knowledge with consent, graded options, new entry prompts."""
+    project = work / "crew-product"
+    project.mkdir()
+    (project / "README.md").write_text("Crew smoke product\n")
+    run([command, "init", str(project), "--profile", "claude,codex,copilot", "--commit"], cwd=work, env=env)
+    agents = (project / "AGENTS.md").read_text()
+    assert "Version: 2.1.0" in agents and "with no fixed number" in agents
+    installed = [p for p in project.rglob("*.md") if ".venv" not in p.parts]
+    assert not any("two or three questions" in p.read_text() for p in installed)
+    for name in ("factory-onboard", "factory-retro"):
+        exported = [p for p in project.rglob(f"{name}/SKILL.md") if ".factory" not in p.parts]
+        assert {p.relative_to(project).parts[0] for p in exported} >= {".claude", ".agents"}, exported
+    root = ["--root", str(project)]
+    request = project / ".factory/local/request.md"
+    request.write_text("Please add a health endpoint.\n")
+    run([command, "mission", "create", "--id", "M-1", "--title", "Health", "--kind", "feature",
+         "--request-file", ".factory/local/request.md", *root], cwd=project, env=env)  # fmt: skip
+
+    def fails(argv):
+        result = subprocess.run(argv, cwd=project, env=env, capture_output=True, text=True,
+                                stdin=subprocess.DEVNULL, check=False, timeout=180)  # fmt: skip
+        assert result.returncode == 1, (argv, result.stdout, result.stderr)
+        return result.stderr
+
+    refused = fails([command, "mission", "accept-scope", "--mission", "M-1", *root])
+    assert "options are graded against the criteria" in refused.lower(), refused
+    knowledge = project / ".factory/local/knowledge.md"
+    knowledge.write_text(
+        "# Crew smoke product\n\n## Purpose\nA smoke test.\n\n## Users\nThe release process.\n\n"
+        "## Must not break\n- The health endpoint.\n\n## Definition of done\nThe smoke passes.\n\n"
+        "## Off-limits\n- Nothing.\n\n## Rules\n- Keep it small.\n"
+    )
+    proposed = json.loads(
+        run(
+            [
+                command,
+                "crew",
+                "propose",
+                "--target",
+                "project",
+                "--input",
+                ".factory/local/knowledge.md",
+                *root,
+            ],
+            cwd=project,
+            env=env,
+        )
+    )
+    assert proposed["proposal"] == "P-0001" and not (project / ".factory/crew").exists()
+    denied = subprocess.run([command, "crew", "apply", "--proposal", "P-0001", *root], cwd=project, env=env,
+                            capture_output=True, text=True, stdin=subprocess.DEVNULL, check=False, timeout=180)  # fmt: skip
+    assert denied.returncode == 1 and "interactive terminal" in denied.stderr, denied.stderr
+    runtime = str(project / ".factory/.venv/bin/python")
+    guard = str(project / ".factory/hooks/orchestrator_guard.py")
+    for line in ("software-factory crew apply --proposal P-0001", "software-factory crew forget --target project",
+                 "software-factory crew import --from ~/crew"):  # fmt: skip
+        payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": line}}
+        result = subprocess.run([runtime, "-I", "-B", guard], cwd=project, env=env, input=json.dumps(payload),
+                                capture_output=True, text=True, check=False, timeout=60)  # fmt: skip
+        assert result.returncode == 2, (line, result.stdout, result.stderr)
+    settings = json.loads((project / ".claude/settings.json").read_text())
+    chat = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+    prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "smoke", "prompt": "approve P-0001 crew"}
+    saved = subprocess.run([shell, "-c", chat], cwd=project, env={**env, "CLAUDE_PROJECT_DIR": str(project)},
+                           input=json.dumps(prompt), capture_output=True, text=True, check=False, timeout=120)  # fmt: skip
+    assert saved.returncode == 0 and "saved knowledge proposal P-0001" in saved.stdout, (
+        saved.stdout,
+        saved.stderr,
+    )
+    assert (project / ".factory/crew/project.md").read_text() == knowledge.read_text()
+    status = json.loads(run([command, "crew", "status", *root], cwd=project, env=env))
+    assert status["project"]["ledgered"] and status["ledger"] == {"count": 1, "problems": []}
+    brief = fails([command, "mission", "brief", "--mission", "M-1", "--kind", "context", *root])
+    assert "crew refresh --mission M-1" in brief, brief
+    run(["git", "add", "-A"], cwd=project, env=env)
+    run(["git", "-c", "user.name=Smoke", "-c", "user.email=smoke@example.invalid", "commit", "-qm", "crew"],
+        cwd=project, env=env)  # fmt: skip
+    run([command, "crew", "refresh", "--mission", "M-1", *root], cwd=project, env=env)
+    run([command, "mission", "brief", "--mission", "M-1", "--kind", "context", *root], cwd=project, env=env)
+    removed = json.loads(run([command, "uninstall", *root], cwd=project, env=env))
+    assert ".factory/crew" in removed["retained"] and (project / ".factory/crew/ledger.jsonl").is_file()
+
+
 def routing_fixture(root):
     """Run only inside the installed project interpreter; provider behavior is mocked."""
     import io
@@ -494,6 +578,7 @@ def main():
         assert json.loads(run([command, "doctor", "--root", str(project)], cwd=work, env=environment))["ok"]
         drift_reinstall_checks(command, project, work, environment)
         enforcement_checks(command, project, work, environment, shell)
+        crew_checks(command, work, environment, shell)
         assert json.loads(run([command, "auth", "status"], cwd=project, env=environment))["configured"]
         assert all(b"synthetic-wheel-fixture" not in data for data in tree(project).values())
         assert json.loads(run([command, "auth", "logout"], cwd=work, env=environment))["removed"]
@@ -513,6 +598,7 @@ def main():
                     "jev_toggle_and_offline_plan_validation": "pass (mocked provider)",
                     "persistent_auth_pinned_lookup_preservation_and_logout": "pass",
                     "orchestrator_agent_export_and_pinned_guard": "pass (live client behaviour not_run)",
+                    "crew_knowledge_chat_hook_guard_options_protection_uninstall": "pass (live client not_run)",
                     "live_provider": "not_run",
                 },
                 indent=2,

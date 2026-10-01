@@ -115,6 +115,18 @@ HUMAN_ONLY = {
     ("mission", "unhalt"): (
         "software-factory mission unhalt lifts the kill switch; only the user runs it, in their terminal"
     ),
+    ("crew", "apply"): (
+        "software-factory crew apply saves knowledge the user approved; show the user the proposal's exact "
+        "text and ask them to reply `approve P-n crew` in chat or run crew apply in their terminal"
+    ),
+    (
+        "crew",
+        "forget",
+    ): "software-factory crew forget removes knowledge; only the user runs it, in their terminal",
+    ("crew", "import"): (
+        "software-factory crew import reads the user's own Crew folder outside this repository; ask the user "
+        "to run it in their terminal"
+    ),
     ("mission", "ci-result"): (
         "software-factory mission ci-result records a remote CI result the user observed; ask the user "
         "to run it in their terminal with the run URL"
@@ -122,7 +134,7 @@ HUMAN_ONLY = {
 }
 FACTORY_SUBCOMMANDS = {
     "mission": {
-        "create": ({"--id", "--title", "--kind", "--base", "--input", "--request-file", "--source"}, set()),
+        "create": ({"--id", "--title", "--kind", "--base", "--input", "--request-file", "--source", "--recipe"}, set()),
         "list": (set(), {"--all"}),
         "halt": ({"--reason"}, set()),
         "status": MISSION_ONLY,
@@ -134,6 +146,7 @@ FACTORY_SUBCOMMANDS = {
         "transition": ({"--mission", "--to", "--reason", "--next", "--decision"}, set()),
         "block": ({"--mission", "--reason", "--next"}, set()),
         "resume": ({"--mission", "--to", "--model-catalog", "--resolution"}, {"--replan-models"}),
+        "recipe": ({"--mission", "--use"}, {"--clear"}),
         "accept-scope": MISSION_ONLY,
         "clarify": INPUT_ONLY,
         "criteria": INPUT_ONLY,
@@ -153,6 +166,18 @@ FACTORY_SUBCOMMANDS = {
         "model-plan": INPUT_ONLY,
         "record-delivery": INPUT_ONLY,
         "template": ({"--mission", "--kind"}, set()),
+    },
+    "crew": {
+        "status": (set(), set()),
+        "library": (set(), set()),
+        "show": ({"--target"}, set()),
+        "propose": ({"--target", "--mission", "--input"}, set()),
+        "retro-signals": ({"--mission"}, set()),
+        "proposals": (set(), set()),
+        "withdraw": ({"--proposal"}, set()),
+        "defer": ({"--key", "--for", "--reference"}, {"--clear"}),
+        "refresh": ({"--mission"}, set()),
+        "match": ({"--text"}, set()),
     },
     "semantic": {"status": (set(), set()), "example": (set(), set()), "check": SEMANTIC, "verify-claims": SEMANTIC},
     "jev": {"status": (set(), set()), "example": (set(), set()), "check": SEMANTIC, "verify-claims": SEMANTIC},

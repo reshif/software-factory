@@ -933,7 +933,10 @@ def test_context_takes_one_stat_per_watched_path(root, monkeypatch):
     original = routing.Path.stat
 
     def counting(self, *args, **kwargs):
-        calls.append(self)
+        # Count only routing's own stat calls: before Python 3.12, pathlib's exists(), is_file()
+        # and resolve() call Path.stat internally, which says nothing about routing.
+        if sys._getframe(1).f_code.co_filename == routing.__file__:
+            calls.append(self)
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(routing.Path, "stat", counting)

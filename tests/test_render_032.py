@@ -19,7 +19,9 @@ from software_factory.rendering import (
     strip_owned,
 )
 
-ENTRIES = {"factory-build", "factory-blueprint", "factory-resume", "factory-status"}
+ENTRIES = {
+    "factory-build", "factory-blueprint", "factory-resume", "factory-status", "factory-onboard", "factory-retro",
+}  # fmt: skip
 
 
 def frontmatter(path):

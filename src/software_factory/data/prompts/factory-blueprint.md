@@ -13,7 +13,7 @@ Run the planning half of the flow:
 
 1. Store the verbatim request with `mission create --request-file -` (quoted heredoc) (`--kind patch` for the small lane).
 2. Context phase through a planner with `mission brief --kind context` (factory-specify); record the returned text with `mission record-doc --doc context --input -`.
-3. Ask every material ambiguity up front; record answers with `mission clarify`.
+3. Ask every material ambiguity before the spec, in as many rounds as the answers require (no limit); record answers with `mission clarify`.
 4. Brief the planner with `mission brief --kind plan`. It drafts spec.md with AC-n criteria citing request excerpts, routes and exclusions; record spec.md with `mission record-doc --doc spec --input -`. Record each exclusion the user actually agreed to as an `exclusion` decision bound to the current request chain head (and a decision for each resolved or waived ambiguity), then record the criteria with `mission criteria`.
 5. The planner drafts plan.md with a `## Architecture` mermaid diagram and tasks mapped to criteria (factory-plan), and recovery.md; record them with `mission record-doc --doc plan` and `--doc recovery`.
 

@@ -1,4 +1,4 @@
-"""0.3.2 gap fixes from the independent assessment (docs/research/software-factory-gap-assessment.md)."""
+"""0.3.2 gap fixes from the independent gap assessment of 2026-09-28."""
 
 from __future__ import annotations
 

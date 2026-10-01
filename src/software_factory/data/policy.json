@@ -26,7 +26,8 @@
     ".factory/uv.lock",
     ".factory/run.py",
     ".factory/docs/**",
-    ".factory/hooks/**"
+    ".factory/hooks/**",
+    ".factory/crew/**"
   ],
   "sensitive_paths": [
     "src/auth/**",

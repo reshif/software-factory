@@ -22,7 +22,10 @@ from urllib.parse import parse_qs, urlparse
 
 from .core import FactoryError, assert_id, asset_root, load_config
 
-DOCS = ("request.md", "context.md", "assessment.md", "spec.md", "plan.md")
+DOCS = (
+    "request.md", "context.md", "assessment.md", "spec.md", "options.md", "grading.md", "plan.md", "retro.md",
+    "crew-context.md",
+)  # fmt: skip
 MAX_DOC = 60_000
 EVENTS_SHOWN = 300
 
@@ -32,6 +35,91 @@ def _doc(root: Path, mission_id: str, name: str) -> str | None:
     if not path.is_file():
         return None
     return path.read_text(encoding="utf-8", errors="replace")[:MAX_DOC]
+
+
+def _attention(path: Path, mission: dict, item: dict) -> list[dict]:
+    """What this mission needs from the user right now, in plain words."""
+    from .workflow import assessment_reasons
+
+    needs = []
+    state, decisions = mission["state"], {d["kind"] for d in mission["decisions"]}
+    if state == "BLOCKED" and mission.get("blockers"):
+        last = mission["blockers"][-1]
+        needs.append(
+            {"kind": "blocked", "text": last if isinstance(last, str) else last.get("reason", "Blocked")}
+        )
+    elif state == "PAUSED":
+        needs.append({"kind": "paused", "text": "Paused; resume it when ready"})
+    if state == "PROPOSED" and "scope" not in decisions:
+        try:
+            assessed = mission.get("request") is not None and not assessment_reasons(path, mission)
+        except (FactoryError, OSError):
+            assessed = False
+        needs.append(
+            {
+                "kind": "approve",
+                "text": f"Review the assessment and spec, then reply `approve {mission['id']} scope`"
+                if assessed
+                else "Waiting for the interview and assessment",
+            }
+        )
+    if state == "READY_PR":
+        if not (mission.get("delivery") or {}).get("ci_ref"):
+            text = "Open the pull request and record its CI result"
+        elif "merge" not in decisions:
+            text = f"CI is recorded: reply `approve {mission['id']} merge` when you are ready to merge"
+        else:
+            text = "Merge approved: merge the pull request, then record MERGED"
+        needs.append({"kind": "ci", "text": text})
+    if item.get("stale"):
+        needs.append({"kind": "stale", "text": f"No change for {item.get('idle_hours')} h"})
+    try:
+        from .retro import signals
+
+        offer = signals(path, mission["id"])
+        if offer["offer"]:
+            needs.append(
+                {
+                    "kind": "retro",
+                    "text": f"A retro is worth it ({offer['signals'][0]}): ask for /factory-retro {mission['id']}",
+                }
+            )
+    except (FactoryError, OSError, ValueError, KeyError):
+        pass
+    return needs
+
+
+def knowledge_payload(root: Path) -> dict:
+    """Project knowledge for the Deck: what is recorded, the ledger and proposals awaiting the user."""
+    from .crew import list_proposals
+    from .crew import status as crew_status
+
+    try:
+        report = crew_status(root)
+    except (FactoryError, OSError, ValueError) as exc:
+        return {"error": str(exc)}
+    pending = []
+    for proposal in list_proposals(root):
+        if proposal.get("status") != "proposed":
+            continue
+        items = proposal.get("items") or []
+        if proposal.get("target") == "personal":
+            how = f"run `software-factory crew apply --proposal {proposal['id']}` in your terminal"
+        elif items:
+            how = (
+                f"reply `approve {proposal['id']} crew {','.join(map(str, items))}` (or a subset) after merge"
+            )
+        else:
+            how = f"reply `approve {proposal['id']} crew`"
+        pending.append({**proposal, "approve": how})
+    return {
+        "project": report["project"],
+        "personal": {"present": report["personal"]["present"]},
+        "recipes": report["recipes"],
+        "ledger": report["ledger"],
+        "proposals": pending,
+        "gaps": report["gaps"],
+    }
 
 
 def missions_payload(root: Path) -> dict:
@@ -49,6 +137,7 @@ def missions_payload(root: Path) -> dict:
             out.append(
                 {
                     **item,
+                    "attention": _attention(path, mission, item),
                     "kind": mission["kind"],
                     "tasks": {s: sum(t["status"] == s for t in tasks) for s in {t["status"] for t in tasks}},
                     "task_count": len(tasks),
@@ -64,8 +153,17 @@ def missions_payload(root: Path) -> dict:
     except FactoryError:
         pass
     from . import __version__
+    from .watch import halted
 
-    return {"root": str(root), "version": __version__, "missions": missions, "generated_at": time.time()}
+    return {
+        "root": str(root),
+        "project": root.name,
+        "version": __version__,
+        "halted": halted(root),
+        "knowledge": knowledge_payload(root),
+        "missions": missions,
+        "generated_at": time.time(),
+    }
 
 
 def _locate(root: Path, mission_id: str) -> Path:
@@ -98,7 +196,17 @@ def mission_payload(root: Path, mission_id: str) -> dict:
             "recent": read_events(where, mission_id)[-EVENTS_SHOWN:],
         },
         "docs": {name: _doc(where, mission_id, name) for name in DOCS},
+        "options": _options(where, mission),
     }
+
+
+def _options(where: Path, mission: dict) -> dict | None:
+    from .options import summary
+
+    try:
+        return summary(where, mission)
+    except (FactoryError, OSError):
+        return None
 
 
 def gate_payload(root: Path, mission_id: str) -> dict:
@@ -114,7 +222,7 @@ def gate_payload(root: Path, mission_id: str) -> dict:
 
 
 def _signature(root: Path) -> str:
-    """Changes whenever any mission record in this repository or its worktrees changes."""
+    """Changes whenever a mission record (here or in other worktrees), knowledge or a proposal changes."""
     from .workspaces import factory_worktrees
 
     newest, count = 0.0, 0
@@ -122,8 +230,10 @@ def _signature(root: Path) -> str:
         places = [root, *factory_worktrees(root)]
     except FactoryError:
         places = [root]
-    for place in places:
-        for current, _dirs, files in os.walk(place / ".factory/missions"):
+    watched = [place / ".factory/missions" for place in places]
+    watched += [root / ".factory/crew", root / ".factory/local/crew/proposals"]
+    for directory in watched:
+        for current, _dirs, files in os.walk(directory):
             for name in files:
                 try:
                     newest = max(newest, os.stat(os.path.join(current, name)).st_mtime)

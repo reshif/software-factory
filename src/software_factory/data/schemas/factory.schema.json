@@ -234,10 +234,127 @@
           "enum": [
             "inherit",
             "recommend",
-            "required"
+            "required",
+            "roles"
           ]
+        },
+        "roles": {
+          "description": "With mode `roles`: the model each role uses, per client (`claude` accepts aliases such as opus, sonnet, haiku, fable or a full model ID; `codex` and `copilot` take the client's model name). A missing role or client, or `inherit`, uses the session's model.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "claude": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "orchestrator": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                },
+                "planner": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                },
+                "implementer": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                },
+                "verifier": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                },
+                "reviewer": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                }
+              }
+            },
+            "codex": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "orchestrator": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                },
+                "planner": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                },
+                "implementer": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                },
+                "verifier": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                },
+                "reviewer": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                }
+              }
+            },
+            "copilot": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "orchestrator": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                },
+                "planner": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                },
+                "implementer": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                },
+                "verifier": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                },
+                "reviewer": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+                }
+              }
+            }
+          }
         }
-      }
+      },
+      "description": "How specialists get their models. `roles` (the default for new projects) pins a model per role in each client's agent files, so the client enforces it; `inherit` uses the session's model; `recommend`/`required` plan models per task with `software-factory models plan`."
     },
     "approvals": {
       "description": "How the user's own scope, exception, merge and release approvals are recorded. `mission approve` in an interactive terminal always works; agents can never record these decisions.",
@@ -252,14 +369,14 @@
       }
     },
     "enforcement": {
-      "description": "Opt-in client enforcement of the orchestrator role. Local guardrail only; live behaviour is not verified by the factory.",
+      "description": "Client enforcement of the orchestrator role, on by default. Local guardrail only; live behaviour is not verified by the factory.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "claude_orchestrator_agent": {
-          "description": "Export .claude/agents/factory-orchestrator.md (launch with claude --agent factory-orchestrator) with a PreToolUse guard hook.",
+          "description": "With the claude profile: a PreToolUse guard in .claude/settings.json checks every main-session tool call in this project (specialists' calls pass through), and .claude/agents/factory-orchestrator.md adds a tool allowlist when started with claude --agent factory-orchestrator. Set false to turn both off.",
           "type": "boolean",
-          "default": false
+          "default": true
         }
       }
     },

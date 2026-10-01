@@ -11,7 +11,7 @@ from test_mission_030 import ASSESSMENT, create, plan_mission, put, repo  # noqa
 
 from software_factory.core import asset_root, hash_file
 from software_factory.installation import install, uninstall
-from software_factory.rendering import CLAUDE_SETTINGS, RUNTIME_DENY, chat_approval_entry, render
+from software_factory.rendering import CLAUDE_SETTINGS, RUNTIME_DENY, chat_approval_entry, guard_entry, render
 from software_factory.workflow import load_mission
 
 USER_SETTINGS = {
@@ -45,7 +45,7 @@ def run_hook(root, prompt, event="UserPromptSubmit"):
 def test_claude_install_adds_the_chat_approval_hook(tmp_path):
     install(tmp_path, selected="claude", skip_sync=True)
     assert settings(tmp_path) == {
-        "hooks": {"UserPromptSubmit": [chat_approval_entry()]},
+        "hooks": {"UserPromptSubmit": [chat_approval_entry()], "PreToolUse": [guard_entry()]},
         "permissions": {"deny": list(RUNTIME_DENY)},
     }
     record = json.loads((tmp_path / "factory.lock.json").read_text())["generated"][CLAUDE_SETTINGS]
@@ -73,6 +73,11 @@ def test_disabling_chat_approvals_removes_only_the_factory_entry(tmp_path):
     install(tmp_path, selected="claude", skip_sync=True)
     config = json.loads((tmp_path / "factory.json").read_text())
     config["approvals"] = {"chat": False}
+    (tmp_path / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
+    render(tmp_path)
+    assert "UserPromptSubmit" not in settings(tmp_path)["hooks"]  # The orchestrator guard stays.
+    assert settings(tmp_path)["hooks"]["PreToolUse"] == [guard_entry()]
+    config["enforcement"] = {"claude_orchestrator_agent": False}
     (tmp_path / "factory.json").write_text(json.dumps(config, indent=2) + "\n")
     render(tmp_path)
     assert not (tmp_path / CLAUDE_SETTINGS).exists()  # The factory created it, so it goes entirely.

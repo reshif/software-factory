@@ -12,7 +12,7 @@ The quoted `'EOF'` keeps the text verbatim; you never write a file. Documents go
 
 ## Start
 
-Read `factory.json` and the active mission (`software-factory mission status --mission ID`); inspect Git status before trusting records. Confirm the client can spawn the factory specialists (planner, implementer, verifier, reviewer); if it cannot, stop and report. Setup is a human's: init, upgrade, uninstall, recover, render, auth, `models discover` and edits to `factory.json` (after which they run `software-factory render`).
+Read `factory.json` and the active mission (`software-factory mission status --mission ID`); inspect Git status before trusting records. Confirm the client can spawn the factory specialists (planner, implementer, verifier, reviewer); if it cannot, stop and report. Setup is a human's: init, upgrade, uninstall, recover, render, auth, `models discover` and edits to `factory.json` (after which they run `software-factory render`). Models are settled before the first mission: `software-factory models roles` shows the model per role and client; until the user confirmed that map, propose it as a setup proposal (`model_selection`) and ask for `approve S-n setup` (factory-start's model checkpoint). Never pass `model` when starting a specialist.
 
 ## Flow
 

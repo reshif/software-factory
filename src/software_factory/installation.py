@@ -24,6 +24,7 @@ from .core import (
     sha256,
     validate,
 )
+from .model_roles import default_roles, default_selection
 from .onboarding import (
     COMMIT_COMMAND,
     INITIAL_COMMIT_MESSAGE,
@@ -78,7 +79,7 @@ def starter(name: str, selected, *, checks=None, maintainer=None) -> dict:
             "recovery_command": None,
         },
         "evidence_exclude": [".factory/missions/", ".factory/local/", "factory.lock.json"],
-        "model_selection": {"mode": "roles", "roles": {"claude": dict(DEFAULT_CLAUDE_ROLES)}},
+        "model_selection": default_selection(selected),
         "enforcement": {"claude_orchestrator_agent": True},
         "jev": {
             "enabled": False,
@@ -89,14 +90,9 @@ def starter(name: str, selected, *, checks=None, maintainer=None) -> dict:
     }
 
 
-# Each specialist runs on a model suited to its job; the client enforces it from the agent file.
-DEFAULT_CLAUDE_ROLES = {
-    "orchestrator": "opus",
-    "planner": "opus",
-    "reviewer": "opus",
-    "implementer": "sonnet",
-    "verifier": "haiku",
-}
+# Each specialist runs on a model suited to its job; the client enforces it from the agent file. The
+# starter map is a suggestion: the first factory-build asks the user to confirm or change it.
+DEFAULT_CLAUDE_ROLES = default_roles("claude")
 
 
 def kernel_payload() -> dict[str, bytes]:

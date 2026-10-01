@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "software-factory"
-version = "0.3.8"
+version = "0.3.9"
 description = "Portable repository software factory with optional JEV semantic assistance"
 requires-python = ">=3.11"
 dependencies = ["jsonschema>=4.23,<5", "PyYAML>=6.0,<7", "tomlkit>=0.13,<1", "watchdog>=6,<7"]

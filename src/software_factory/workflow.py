@@ -647,6 +647,8 @@ def mission_summary(mission):
     ):
         if key in mission:
             summary[key] = mission[key]
+    if mission.get("models"):
+        summary["models"] = mission["models"]["roles"]
     crew_record = mission.get("crew")
     if crew_record:
         summary["crew"] = {
@@ -691,6 +693,11 @@ def setup_problems(root):
     return problems
 
 
+MODELS_FIRST = (
+    "Choose the models before starting work: {problems}. Run `software-factory models roles`, show the user "
+    "one line per role (role: model) with the choices it lists, take their changes, pipe its proposal to "
+    "`software-factory setup propose --input -` and ask them to reply `approve S-n setup`; then create the mission"
+)
 SETUP_FIRST = (
     "Finish the factory setup before starting work: {problems}. The user keeps the change by running "
     '`software-factory render` and then committing it (`git add -A && git commit -m "Update factory setup"`), '
@@ -869,6 +876,13 @@ def create_mission(root, input, require_request=False):
         problems = setup_problems(root)
         if problems:
             raise FactoryError(SETUP_FIRST.format(problems="; ".join(problems)))
+    from .model_roles import binding
+    from .model_roles import problems as model_problems
+
+    if require_request and safe_path(root, "factory.lock.json").exists():
+        unsettled = model_problems(config)
+        if unsettled:
+            raise FactoryError(MODELS_FIRST.format(problems="; ".join(unsettled)))
     try:
         base = git(root, "rev-parse", "--verify", "--end-of-options", f"{revision or 'HEAD'}^{{commit}}")
     except FactoryError as exc:
@@ -910,6 +924,9 @@ def create_mission(root, input, require_request=False):
             "blockers": [],
             "delivery": {},
         }
+        models = binding(config)
+        if models:
+            mission["models"] = models
         if request is not None:
             digest_ = sha256(request)
             mission["request"] = {
@@ -4220,6 +4237,15 @@ def _assess_gate_snapshot(root, mission, candidate, resuming_to=None):
     config = load_config(root)
     if not config.get("owners", {}).get("maintainer"):
         reasons.append(MAINTAINER_REQUIRED)
+    if mission.get("models"):
+        from .model_roles import binding
+
+        current = binding(config)
+        if not current or current["sha256"] != mission["models"]["sha256"]:
+            reasons.append(
+                "The model for each role changed since this mission started; its work ran under the earlier "
+                "models. Finish it under the map it started with, or cancel it and start a new mission"
+            )
     if resuming_to is not None:
         if (
             mission["state"] not in HOLD_STATES

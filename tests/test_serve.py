@@ -116,3 +116,44 @@ def test_attention_follows_what_the_user_can_do_next(repo):  # noqa: F811
     assert "approve M-NEW merge" in _attention(repo, ready, {})[0]["text"]
     ready["decisions"] = [{"kind": "merge"}]
     assert _attention(repo, ready, {})[0]["text"].startswith("Merge approved")
+
+
+def test_activity_says_what_changed_and_only_what_is_new(deck):
+    from software_factory.workflow import transition_mission
+
+    page = call(deck, "/", token=False)[1]
+    assert b'data-v="live"' in page and b"/api/activity" in page
+    status, body = call(deck, "/api/activity")
+    activity = json.loads(body)
+    assert status == 200 and activity["halted"] is None and activity["root"] == str(deck.root)
+    (mission,) = activity["missions"]
+    assert mission["id"] == "M-REQ" and mission["tasks"][0] == {
+        "id": "T-ONE",
+        "title": "Change app",
+        "status": "TODO",
+        "depends_on": [],
+    }
+    assert mission["pace"]["hour"] == mission["seq"] and mission["pace"]["quiet_for"] < 60
+    assert activity["events"][0]["change"]["state"] == [None, "PROPOSED"]
+    assert activity["events"][-1]["change"] == {"tasks": {"T-ONE": [None, "TODO"]}}
+    seen = mission["seq"]
+    transition_mission(deck.root, "M-REQ", "IMPLEMENTING")
+    newer = json.loads(call(deck, f"/api/activity?since=M-REQ:{seen},junk")[1])
+    assert [e["seq"] for e in newer["events"]] == [seen + 1]
+    assert newer["events"][0]["change"] == {"state": ["PLANNED", "IMPLEMENTING"]}
+    assert call(deck, "/api/activity", token=False)[0] == 401
+
+
+def test_activity_shows_the_files_an_open_lane_is_writing(repo):  # noqa: F811
+    from test_lanes_parallel import lane, lanes_ready
+
+    from software_factory.serve import activity_payload
+
+    lanes_ready(repo)
+    opened = lane(repo, "lane-open", "T-1")
+    (repo / opened["path"] / "src/limiter.py").write_text("LIMIT = 5\n")
+    (mission,) = activity_payload(repo)["missions"]
+    (live,) = mission["lanes"]
+    assert live["task"] == "T-1" and [f["path"] for f in live["files"]] == ["src/limiter.py"]
+    assert 0 <= live["files"][0]["age"] < 60
+    assert {t["id"]: t["status"] for t in mission["tasks"]}["T-1"] == "RUNNING"

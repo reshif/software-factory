@@ -6,6 +6,10 @@ event log and, on request, the live readiness gate. It only reads: every request
 GET is refused, so nothing on the page can approve, record or change anything. API calls need
 the per-session token printed at start, and the Host header must name this server, so another
 web page cannot read the records through the browser (including by DNS rebinding).
+
+``/api/activity`` feeds the Live orbit: every mission's stage, tasks and pace taken from its
+event log, each event with what it changed, and the files each open lane has changed with their
+age. It reads records and ``git diff`` in lane worktrees; nothing in it is estimated.
 """
 
 from __future__ import annotations
@@ -28,6 +32,8 @@ DOCS = (
 )  # fmt: skip
 MAX_DOC = 60_000
 EVENTS_SHOWN = 300
+ACTIVITY_EVENTS = 400
+LIVE_FILES = 24
 
 
 def _doc(root: Path, mission_id: str, name: str) -> str | None:
@@ -221,6 +227,157 @@ def gate_payload(root: Path, mission_id: str) -> dict:
     }
 
 
+def _diff(previous: dict | None, event: dict) -> dict:
+    """What one event changed: the mission state and each task status that moved."""
+    before = previous or {}
+    out = {}
+    if before.get("state") != event.get("state"):
+        out["state"] = [before.get("state"), event.get("state")]
+    old = before.get("tasks") or {}
+    moved = {k: [old.get(k), v] for k, v in (event.get("tasks") or {}).items() if old.get(k) != v}
+    if moved:
+        out["tasks"] = moved
+    return out
+
+
+def _seconds(iso: str | None, at: float) -> float | None:
+    from datetime import UTC, datetime
+
+    try:
+        then = datetime.fromisoformat(str(iso))
+    except ValueError:
+        return None
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=UTC)
+    return max(0.0, at - then.timestamp())
+
+
+def _live_files(where: Path, mission_id: str, task_id: str, at: float) -> list[dict]:
+    """Files an open lane has changed against its base, newest first: what an agent is writing now."""
+    from .lanes import _candidate_paths, lane_path
+
+    lane = where / lane_path(mission_id, task_id)
+    if not lane.is_dir():
+        return []
+    try:
+        paths = _candidate_paths(lane)
+    except (FactoryError, OSError, ValueError):
+        return []
+    files = []
+    for name in paths:
+        try:
+            age = max(0.0, at - (lane / name).stat().st_mtime)
+        except OSError:
+            age = None  # deleted in the lane
+        files.append({"path": name, "age": None if age is None else round(age, 1)})
+    files.sort(key=lambda f: f["age"] if f["age"] is not None else float("inf"))
+    return files[:LIVE_FILES]
+
+
+def activity_payload(root: Path, since_seq: dict | None = None) -> dict:
+    """Everything the live orbit animates, from the records alone.
+
+    Each mission carries its stage, tasks, attention and how busy it has been (events in the
+    last hour and day, seconds since its last event). ``events`` are the most recent events of
+    every mission with what each changed; ``since`` (``{mission: seq}``) returns only newer ones.
+    Open lanes list the files their agent has changed, with how long ago each was written.
+    """
+    from .events import read_events
+    from .lanes import open_lanes
+    from .workflow import list_missions, load_mission
+    from .workspaces import factory_worktrees
+
+    at = time.time()
+    try:
+        places = [root, *factory_worktrees(root)]
+    except FactoryError:
+        places = [root]
+    missions, events = [], []
+    for where in places:
+        for item in list_missions(where)["missions"]:
+            if "error" in item:
+                continue
+            mission = load_mission(where, item["id"])
+            try:
+                log = read_events(where, mission["id"])
+            except (OSError, ValueError):
+                log = []
+            ages = [a for a in (_seconds(e.get("at"), at) for e in log) if a is not None]
+            lanes = []
+            for lane in open_lanes(where, mission["id"]):
+                lanes.append(
+                    {
+                        "task": lane["task"],
+                        "opened_at": lane.get("opened_at"),
+                        "files": _live_files(where, mission["id"], lane["task"], at),
+                    }
+                )
+            missions.append(
+                {
+                    "id": mission["id"],
+                    "title": mission.get("title") or item.get("title"),
+                    "kind": mission.get("kind"),
+                    "state": mission["state"],
+                    "previous_state": mission.get("previous_state"),
+                    "worktree": str(where),
+                    "stale": bool(item.get("stale")),
+                    "attention": [a["kind"] for a in _attention(where, mission, item)],
+                    "tasks": [
+                        {
+                            "id": t["id"],
+                            "title": t.get("title"),
+                            "status": t["status"],
+                            "depends_on": t.get("depends_on") or [],
+                        }
+                        for t in mission["tasks"]
+                    ],
+                    "lanes": lanes,
+                    "pace": {
+                        "hour": sum(a < 3600 for a in ages),
+                        "day": sum(a < 86400 for a in ages),
+                        "quiet_for": round(min(ages), 1) if ages else None,
+                    },
+                    "seq": log[-1]["seq"] if log else 0,
+                }
+            )
+            after = (since_seq or {}).get(mission["id"], 0)
+            previous = None
+            for event in log:
+                if event["seq"] > after:
+                    events.append(
+                        {
+                            "mission": mission["id"],
+                            "seq": event["seq"],
+                            "at": event.get("at"),
+                            "command": event.get("command"),
+                            "state": event.get("state"),
+                            "user": (event.get("actor") or {}).get("user"),
+                            "change": _diff(previous, event),
+                        }
+                    )
+                previous = event
+    events.sort(key=lambda e: (str(e["at"]), e["seq"]))
+    from .watch import halted
+
+    return {
+        "root": str(root),
+        "now": at,
+        "halted": halted(root),
+        "missions": missions,
+        "events": events[-ACTIVITY_EVENTS:],
+    }
+
+
+def _since(query: dict) -> dict:
+    """``since=M-1:4,M-2:9`` → ``{"M-1": 4, "M-2": 9}``; malformed parts are ignored."""
+    out = {}
+    for part in (query.get("since") or [""])[0].split(","):
+        mission, _, seq = part.partition(":")
+        if mission and seq.isdigit():
+            out[mission] = int(seq)
+    return out
+
+
 def _signature(root: Path) -> str:
     """Changes whenever a mission record (here or in other worktrees), knowledge or a proposal changes."""
     from .workspaces import factory_worktrees
@@ -293,6 +450,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(200, mission_payload(root, parts[2]))
             if len(parts) == 4 and parts[1] == "mission" and parts[3] == "gate":
                 return self._json(200, gate_payload(root, parts[2]))
+            if parts[1:] == ["activity"]:
+                return self._json(200, activity_payload(root, _since(query)))
             if parts[1:] == ["stream"]:
                 return self._stream(root)
             return self._json(404, {"error": "Unknown endpoint"})

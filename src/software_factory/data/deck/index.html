@@ -3,229 +3,286 @@
 <title>Mission Deck</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
 <style>
-/* A deliberate single dark world: an operations console for a factory floor. */
+/* The Mission Deck wears the MAPS Home desk: near-black, one orange accent for work, amber for what waits on
+   you, red only for what broke; Inter for words, JetBrains Mono for every label, count and time. */
 :root{
   color-scheme:dark;
-  --bg:#0A1016; --bg2:#0E1620; --panel:#121C27; --panel2:#172331; --raise:#1D2B3B;
-  --line:#243446; --line2:#2F4358;
-  --ink:#E6EDF3; --ink2:#B9C6D3; --muted:#7F92A6;
-  --ice:#8CC4FF; --ice-d:#16304B;
-  --brass:#E1AE52; --brass-d:#3A2C12;
-  --ok:#5ED39A; --ok-d:#123526; --warn:#F2B35B; --warn-d:#3A2A12; --crit:#FF7A6B; --crit-d:#3D1814;
-  --run:#7EA6FF; --run-d:#18264A; --idle:#6F8193; --idle-d:#1A2530;
-  --ui:"Geist",system-ui,-apple-system,"Segoe UI",sans-serif;
-  --mono:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  --bg:#0a0b0d; --bg2:#111317; --panel:#111317; --panel2:#16191e; --raise:#1d2127;
+  --line:#23272e; --line2:#2f343c;
+  --ink:#ececef; --ink2:#a4a9b4; --muted:#8b93a1;
+  --accent:#ff7a3d; --accent-d:rgba(255,122,61,.12);
+  --ice:#58a6ff; --ice-d:rgba(88,166,255,.12); --agent:#39c5cf;
+  --brass:#ffb347; --brass-d:rgba(255,179,71,.12);
+  --ok:#3fb950; --ok-d:rgba(63,185,80,.12); --warn:#d29922; --warn-d:rgba(210,153,34,.13); --crit:#ff918a; --crit-d:rgba(248,81,73,.12);
+  --run:#ff7a3d; --run-d:rgba(255,122,61,.12); --idle:#6b7280; --idle-d:rgba(255,255,255,.04);
+  --ui:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --hud:34px; --rail:340px; --dur:140ms;
 }
 *{box-sizing:border-box}
 html,body{height:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:13.5px;line-height:1.45}
+body{margin:0;color:var(--ink);font:400 13px/20px var(--ui);-webkit-font-smoothing:antialiased;font-feature-settings:"cv11","ss01";
+  background:radial-gradient(1100px 520px at 78% -12%,rgba(255,122,61,.07),transparent 60%),radial-gradient(900px 480px at -8% 0%,rgba(57,197,207,.05),transparent 60%),var(--bg);background-attachment:fixed}
 button{font:inherit;color:inherit;cursor:pointer}
-:focus-visible{outline:2px solid var(--ice);outline-offset:2px;border-radius:6px}
+::selection{background:rgba(255,122,61,.3)}
+*{scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
 .mono{font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums}
 .muted{color:var(--muted)}
-.lbl{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600}
-h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.005em;text-wrap:balance}
+.lbl{font:600 9.5px/14px var(--mono);letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
+h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.01em;text-wrap:balance}
+h3{font-size:14px;line-height:20px}
 
-.app{display:grid;grid-template-columns:268px minmax(0,1fr) 320px;grid-template-rows:52px minmax(0,1fr) 30px;min-height:100%;
-  padding-inline:16px;gap:0 14px}
-@media (max-width:1180px){.app{grid-template-columns:240px minmax(0,1fr)}.inspector{grid-column:1/-1}}
-@media (max-width:760px){.proj .crumb{display:none}.pf{margin-left:0;width:100%}.pf button{flex:1;justify-content:center;flex-direction:column;align-items:center;gap:0}.top .ro{display:none}#mmeta .wt{display:none}}
-@media (max-width:760px){.app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto}.main{order:1}.rail{order:2}.inspector{order:3}.status{order:4}}
+/* ---------- the desk: HUD · Brain + mission · one ladder ---------- */
+.hd{display:grid;grid-template-columns:minmax(0,1fr) var(--rail);grid-template-rows:var(--hud) auto minmax(0,1fr);height:100vh}
+.hv-hud{grid-column:1/-1;display:flex;align-items:center;gap:22px;padding:0 20px;border-bottom:1px solid var(--line);font:500 10.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);white-space:nowrap;overflow-x:auto;scrollbar-width:none}
+.hv-hud .grow{flex:1}
+.logo{display:inline-flex;align-items:center;gap:8px;color:var(--ink);font-weight:700;letter-spacing:.2em}
+.logo svg{flex:none;color:var(--accent)}
+.hv-time{display:inline-flex;align-items:baseline;gap:10px}.hv-time b{font:700 13px/1 var(--mono);color:var(--ink);letter-spacing:.04em;font-variant-numeric:tabular-nums}
+.proj{display:inline-flex;align-items:baseline;gap:10px;min-width:0}.proj b{color:var(--ink);font-weight:600;letter-spacing:.08em}
+.proj .crumb{text-transform:none;letter-spacing:.02em;color:var(--muted);max-width:34ch;overflow:hidden;text-overflow:ellipsis}
+.hd-word{display:inline-flex;align-items:center;gap:8px;font:700 11px/1 var(--mono);letter-spacing:.2em;color:var(--muted)}
+.hd-word i{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.hd-word.calm{color:var(--ink2)}.hd-word.calm i{background:var(--ok)}
+.hd-word.work{color:var(--accent)}.hd-word.work i{background:var(--accent);box-shadow:0 0 8px var(--accent);animation:pulse 1.4s infinite}
+.hd-word.wait{color:var(--brass)}.hd-word.wait i{background:var(--brass);box-shadow:0 0 8px var(--brass)}
+.hd-word.bad{color:var(--crit)}.hd-word.bad i{background:var(--crit);box-shadow:0 0 8px var(--crit)}
+@keyframes pulse{50%{opacity:.35}}
+.pf{display:inline-flex;gap:16px}
+.pf button{display:inline-flex;align-items:baseline;gap:6px;border:0;background:none;padding:0;color:var(--muted);font:inherit;letter-spacing:inherit;text-transform:inherit}
+.pf button:not(:disabled):hover{color:var(--ink)}.pf button:disabled{cursor:default}
+.pf b{font:700 12px/1 var(--mono);color:var(--ink);font-variant-numeric:tabular-nums}
+.pf .t-crit,.pf .t-crit b{color:var(--crit)}.pf .t-brass,.pf .t-brass b{color:var(--brass)}.pf .t-ok b{color:var(--ok)}.pf .t-run,.pf .t-run b{color:var(--accent)}
+.sample{display:inline-flex;align-items:center;gap:7px}
+.sample::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor}
+.conn-ok{color:var(--ink2)}.conn-ok::before{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.conn-warn{color:var(--warn)}.conn-crit{color:var(--crit)}.conn-crit::before{animation:pulse 1.2s infinite}
+.ro{color:var(--muted);border-bottom:1px dashed var(--line2);padding-bottom:2px}
+.halt{grid-column:1/-1;border-bottom:1px solid rgba(248,81,73,.5);background:linear-gradient(90deg,var(--crit-d),transparent);color:var(--crit);padding:8px 20px;font:600 11px/16px var(--mono);letter-spacing:.08em}
 
-/* top bar */
-.top{grid-column:1/-1;display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--line);flex-wrap:wrap;padding-block:8px}
-.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px}
-.logo svg{flex:none}
-.crumb{color:var(--muted)}
-.search{margin-left:auto;display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:5px 10px;min-width:220px;color:var(--muted)}
-.kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--line2);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:var(--ink2)}
-.ro{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink2);border:1px solid var(--line);border-radius:999px;padding:3px 10px}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px var(--ok-d)}
-.sample{font-size:11.5px;color:var(--warn);background:var(--warn-d);border-radius:999px;padding:3px 10px;font-weight:600}
-.conn-ok{color:var(--ok);background:var(--ok-d)}.conn-crit{color:var(--crit);background:var(--crit-d)}.conn-warn{color:var(--warn);background:var(--warn-d)}
+.hv-centre{grid-row:3;overflow:auto;min-height:0;min-width:0;padding:14px 18px 40px;display:flex;flex-direction:column;gap:14px}
+.hv-centre>*{flex-shrink:0}
+.hd-rail{grid-row:3;grid-column:2;overflow:auto;min-height:0;border-left:1px solid var(--line);padding:14px 18px 20px;display:flex;flex-direction:column;gap:18px}
 
-/* rail */
-.rail{padding-block:14px;display:flex;flex-direction:column;gap:10px;min-width:0;border-right:1px solid var(--line);padding-right:14px}
-@media (max-width:760px){.rail{border-right:0;padding-right:0}}
-.mcard{text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 12px;display:flex;flex-direction:column;gap:7px}
-.mcard:hover{border-color:var(--line2);background:var(--panel2)}
-.mcard[aria-current="true"]{border-color:var(--ice);box-shadow:inset 3px 0 0 var(--ice);background:var(--panel2)}
-.mhead{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
-.mtitle{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.mhead .mono{white-space:nowrap;flex:none}
-.mnote{font-size:11.5px;color:var(--brass);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.mnote.k-blocked{color:var(--crit)}.mnote.k-ci{color:var(--ok)}
-.prog{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
-.prog span{height:4px;border-radius:2px;background:var(--line)}
-.prog .d{background:var(--ok)} .prog .n{background:var(--run)} .prog .b{background:var(--crit)}
-
-.chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;border-radius:999px;padding:2px 8px;white-space:nowrap;letter-spacing:.02em}
-.chip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
-.c-ok{color:var(--ok);background:var(--ok-d)} .c-warn{color:var(--warn);background:var(--warn-d)} .c-crit{color:var(--crit);background:var(--crit-d)}
-.c-run{color:var(--run);background:var(--run-d)} .c-idle{color:var(--idle);background:var(--idle-d)} .c-brass{color:var(--brass);background:var(--brass-d)} .c-ice{color:var(--ice);background:var(--ice-d)}
-
-/* main */
-.main{padding-block:14px;display:flex;flex-direction:column;gap:12px;min-width:0}
-.mission-head{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:flex-end;justify-content:space-between}
-.mission-head h1{font-size:21px}
-.req{color:var(--ink2);max-width:80ch}
-.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
-@media (max-width:1000px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media (max-width:520px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
-.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:4px}
-.kpi .v{font-size:19px;font-weight:600;font-variant-numeric:tabular-nums}
-.kpi svg{display:block}
-
-.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);overflow-x:auto}
-.tab{background:none;border:0;border-bottom:2px solid transparent;padding:8px 12px;color:var(--muted);font-weight:500;white-space:nowrap}
-.tab[aria-selected="true"]{color:var(--ink);border-color:var(--ice)}
-.view{min-height:0}
-
-/* floor */
-.stage{position:relative;height:clamp(340px,62vh,680px);touch-action:none;border:1px solid var(--line);border-radius:12px;overflow:hidden;
-  background:radial-gradient(120% 90% at 50% 20%,#14223A 0%,#0A1220 50%,#05080D 100%)}
+/* ---------- the Brain ---------- */
+.stage{position:relative;height:clamp(440px,calc(100vh - var(--hud) - 96px),980px);flex:none;touch-action:none;border:1px solid var(--line);border-radius:6px;overflow:hidden;transition:box-shadow .6s;
+  background:radial-gradient(60% 55% at 50% 50%,rgba(28,32,44,.55),rgba(10,11,13,0) 100%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='97' viewBox='0 0 56 97'%3E%3Cpath d='M28 1 55 16.5v32L28 65 1 48.5v-32zM28 65l27 15.5v32M28 65 1 80.5v32' fill='none' stroke='%23ffffff' stroke-opacity='.05'/%3E%3C/svg%3E") center / 56px 97px,#0b0d12}
+.hd[data-level="wait"] .stage{box-shadow:inset 0 0 0 1px rgba(255,179,71,.35),inset 0 0 48px rgba(255,179,71,.07)}
+.hd[data-level="bad"] .stage{box-shadow:inset 0 0 0 1px rgba(248,81,73,.5),inset 0 0 56px rgba(248,81,73,.09)}
+.hd[data-level="work"] .stage{box-shadow:inset 0 0 0 1px rgba(255,122,61,.28)}
 .stage canvas{display:block;width:100%;height:100%;cursor:grab}
 .stage canvas:active{cursor:grabbing}
-.stagebar{position:absolute;left:10px;right:10px;top:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;pointer-events:none}
+.stagebar{position:absolute;right:10px;top:10px;z-index:3;display:flex;align-items:center;gap:6px;pointer-events:none}
 .stagebar>*{pointer-events:auto}
-.switch{display:inline-flex;background:rgba(12,19,28,.82);border:1px solid var(--line2);border-radius:10px;padding:3px;gap:2px;backdrop-filter:blur(8px)}
-.switch button{background:none;border:0;border-radius:7px;padding:6px 14px;font-weight:600;font-size:12.5px;color:var(--muted)}
-.switch button[aria-selected="true"]{background:var(--ice-d);color:var(--ice);box-shadow:inset 0 0 0 1px #2D5A85}
-.caption{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:flex-start;justify-content:space-between;padding-top:10px}
-.howto{margin:0;max-width:78ch;color:var(--ink2);font-size:13px}
-.hud .row{display:flex;gap:6px;flex-wrap:wrap}
+.switch{display:inline-flex;border:1px solid var(--line2);border-radius:4px;overflow:hidden;background:rgba(10,11,13,.75)}
+.switch button{border:0;border-right:1px solid var(--line);background:transparent;color:var(--muted);font:500 9.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:8px 10px}
+.switch button:last-child{border-right:0}.switch button:hover{color:var(--ink)}.switch button[aria-selected="true"]{color:var(--ink);background:var(--raise);box-shadow:inset 0 -1px 0 var(--accent)}
 .controls{display:flex;gap:6px}
-.ctl{background:rgba(18,28,39,.85);border:1px solid var(--line2);border-radius:8px;padding:5px 10px;font-size:12px;backdrop-filter:blur(6px)}
-.ctl[aria-pressed="true"]{border-color:var(--ice);color:var(--ice)}
-.legend{display:flex;gap:6px 14px;flex-wrap:wrap;font-size:12px;color:var(--ink2)}
-.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
-.tooltip{position:absolute;pointer-events:none;background:var(--raise);border:1px solid var(--line2);border-radius:8px;padding:6px 9px;font-size:12px;white-space:nowrap;transform:translate(12px,12px)}
-.nogl{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:24px;color:var(--ink2)}
+.ctl{border:1px solid var(--line2);border-radius:4px;background:rgba(10,11,13,.75);color:var(--ink2);font:500 9.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:8px 10px;transition:color var(--dur),border-color var(--dur)}
+.ctl:hover{color:var(--accent);border-color:var(--accent)}.ctl[aria-pressed="true"]{color:var(--accent)}.ctl:disabled{opacity:.5;cursor:default}
+.hd-caption{position:absolute;left:16px;top:14px;z-index:2;max-width:calc(100% - 420px);display:flex;flex-direction:column;gap:3px;pointer-events:none}
+.hd-caption .lbl{color:var(--muted)}
+.hd-caption b{font:600 15px/20px var(--ui);color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hd-caption span.m{font:400 11px/16px var(--mono);color:var(--ink2)}
+.tooltip{position:absolute;z-index:4;pointer-events:none;max-width:360px;padding:4px 9px;border:1px solid var(--line2);border-radius:3px;background:rgba(10,11,13,.92);font:400 11px/16px var(--mono);color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transform:translate(12px,12px)}
+.livehud{position:absolute;left:14px;bottom:14px;z-index:2;max-width:min(480px,calc(100% - 28px));display:flex;flex-direction:column;gap:6px;pointer-events:none}
+.lh-word{align-self:flex-start;display:flex;align-items:center;gap:8px;font:700 10.5px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;padding:7px 10px;border:1px solid var(--line2);border-radius:4px;background:rgba(10,11,13,.82)}
+.lh-word::before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor;animation:pulse 1.4s infinite}
+.lh-word.run{color:var(--accent)}.lh-word.brass{color:var(--brass)}.lh-word.crit{color:var(--crit)}.lh-word.ice{color:var(--ice)}.lh-word.idle{color:var(--ink2)}
+.lh-word.idle::before{background:var(--ok);animation:none}.lh-word.crit::before{animation:none}
+.lh-tick{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:1px}
+.lh-tick li{padding:3px 9px;border-left:2px solid var(--line2);background:rgba(10,11,13,.72);font:400 11px/16px var(--mono);color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lh-tick li b{color:var(--ink);font-weight:600}
+.lh-tick li:first-child{color:var(--ink);animation:lh-in .4s ease-out}
+.lh-tick li.t-run{border-left-color:var(--accent)}.lh-tick li.t-ok{border-left-color:var(--ok)}.lh-tick li.t-brass{border-left-color:var(--brass)}.lh-tick li.t-crit{border-left-color:var(--crit)}
+@keyframes lh-in{from{opacity:0;transform:translateX(-8px)}}
+@media (max-width:640px){.lh-tick li:nth-child(n+4){display:none}}
+.insp-card{position:absolute;right:12px;top:52px;z-index:3;width:350px;max-height:calc(100% - 70px);overflow:auto;padding:14px 16px;border:1px solid var(--line2);border-radius:6px;background:rgba(10,11,13,.92);backdrop-filter:blur(6px);display:flex;flex-direction:column;gap:10px;box-shadow:0 12px 32px rgba(0,0,0,.55)}
+.insp-card[hidden],.livehud[hidden],.tooltip[hidden]{display:none}
+.insp-x{position:absolute;right:8px;top:8px;width:24px;height:24px;border:0;background:transparent;color:var(--muted);font:500 14px/1 var(--mono)}
+.insp-x:hover{color:var(--accent)}
+#insp>div:first-child{padding-right:26px}
+.files{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3px}
+.files li{display:flex;justify-content:space-between;gap:10px}.files li span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nogl{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:24px;color:var(--ink2);font:400 12px/18px var(--mono)}
+.caption{display:flex;flex-wrap:wrap;gap:8px 24px;align-items:baseline;justify-content:space-between;margin-top:-4px}
+.howto{margin:0;max-width:96ch;color:var(--muted);font:400 11.5px/17px var(--ui)}
+.legend{display:flex;gap:4px 14px;flex-wrap:wrap;font:400 9.5px/14px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:-1px;box-shadow:0 0 6px currentColor}
 
-/* panels used by tabs */
-.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+/* ---------- type ---------- */
+.hv-sec{display:flex;align-items:baseline;gap:10px;padding:2px 0 8px}
+.hv-sec b{font:700 11.5px/16px var(--mono);letter-spacing:.22em;text-transform:uppercase;color:var(--ink)}
+.hv-meta{margin-left:auto;font:400 10px/14px var(--mono);letter-spacing:.06em;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip{display:inline-flex;align-items:center;gap:6px;font:600 9.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;border-radius:3px;padding:4px 7px;white-space:nowrap}
+.chip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.c-ok{color:var(--ok);background:var(--ok-d)} .c-warn{color:var(--warn);background:var(--warn-d)} .c-crit{color:var(--crit);background:var(--crit-d)}
+.c-run{color:var(--accent);background:var(--run-d)} .c-idle{color:var(--ink2);background:var(--idle-d)} .c-brass{color:var(--brass);background:var(--brass-d)} .c-ice{color:var(--ice);background:var(--ice-d)}
+
+/* ---------- the ladder ---------- */
+.hd-head{display:flex;align-items:baseline;gap:10px;margin-bottom:8px}
+.hd-head b{font:700 10.5px/14px var(--mono);letter-spacing:.2em;color:var(--ink2);text-transform:uppercase}
+.hd-head span{margin-left:auto;font:400 10px/14px var(--mono);color:var(--muted);white-space:nowrap}
+.hd-rung.wait .hd-head b{color:var(--brass)}.hd-rung.work .hd-head b{color:var(--accent)}.hd-rung.bad .hd-head b{color:var(--crit)}
+.needs,#mlist{display:flex;flex-direction:column}
+.need,.mcard{display:block;width:100%;text-align:left;border:0;background:transparent;padding:6px 0 7px 11px;border-left:2px solid var(--line2);margin-bottom:8px;min-width:0;color:inherit}
+.need:hover,.mcard:hover{background:rgba(255,255,255,.025)}
+.need{border-left-color:var(--brass)}
+.need.k-blocked{border-left:4px solid var(--crit);background:rgba(248,81,73,.06);padding-left:9px}
+.need.k-ci{border-left-color:var(--ok)}.need.k-stale,.need.k-paused{border-left-color:var(--warn)}.need.k-knowledge{border-left-color:var(--ice)}
+.need .r1,.mhead{display:flex;align-items:baseline;gap:8px;min-width:0}
+.need .r1 b,.mtitle{flex:1;min-width:0;font:600 13px/18px var(--ui);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.need .meta,.mhead .mono{font:400 10px/16px var(--mono);color:var(--muted);white-space:nowrap;flex:none}
+.need .nt{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:1px;font:400 12px/17px var(--ui);color:var(--ink2)}
+.need code{font:400 11px/16px var(--mono);color:var(--brass);background:var(--brass-d);border-radius:3px;padding:0 4px}
+.mcard[aria-current="true"]{border-left-color:var(--accent);box-shadow:-1px 0 10px rgba(255,122,61,.25);background:rgba(255,122,61,.04)}
+.mcard.k-blocked{border-left-color:var(--crit)}
+.mrow{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:5px}
+.mrow .muted{font:400 10px/16px var(--mono);letter-spacing:.04em}
+.mnote{display:block;margin-top:3px;font:400 11.5px/16px var(--ui);color:var(--brass);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mnote.k-blocked{color:var(--crit)}.mnote.k-ci{color:var(--ok)}
+.prog{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-top:5px}
+.prog span{height:3px;border-radius:2px;background:var(--line2)}
+.prog .d{background:var(--ok)} .prog .n{background:var(--accent);box-shadow:0 0 6px rgba(255,122,61,.6)} .prog .b{background:var(--crit)}
+.feed .ev{display:grid;grid-template-columns:40px minmax(0,1fr);gap:8px;align-items:baseline;padding:3px 0;font:400 12.5px/17px var(--ui);color:var(--ink2)}
+.feed .ev .t{font:400 10.5px/17px var(--mono);color:var(--muted)}
+.feed .ev .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.feed .ev .sum{grid-column:2;font:400 10.5px/15px var(--mono);color:var(--muted)}
+.feed .ev i{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:7px;vertical-align:1px}
+.hd-fyi{margin-top:auto;padding-top:12px;border-top:1px dashed var(--line);display:flex;flex-direction:column;gap:12px}
+.hd-calm{font:400 12px/18px var(--ui);color:var(--muted);padding:2px 0}
+.hd-calm b{display:block;font:600 15px/22px var(--ui);color:var(--ink)}
+
+/* ---------- the mission, under the Brain ---------- */
+.mission-head{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:flex-end;justify-content:space-between;padding-top:6px}
+.mission-head h1{font-size:20px;line-height:28px}
+.req{color:var(--ink2);max-width:96ch;font-size:13px}
+.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;border:1px solid var(--line);border-radius:6px;background:rgba(17,19,23,.6)}
+@media (max-width:1000px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:520px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.kpi{position:relative;padding:10px 14px;display:flex;flex-direction:column;gap:4px;border-right:1px solid var(--line);min-width:0}
+.kpi:last-child{border-right:0}
+.kpi::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:2px;background:var(--accent,transparent);opacity:.85}
+.kpi .v{font:700 18px/24px var(--mono);font-variant-numeric:tabular-nums}
+.kpi .sub{font:400 10.5px/15px var(--mono);color:var(--muted)}
+.segbar{display:flex;gap:3px;height:4px}.segbar span{flex:1;border-radius:2px;background:var(--line2)}
+.segbar .ok{background:var(--ok)}.segbar .run{background:var(--accent)}.segbar .crit{background:var(--crit)}
+.stepper{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));padding:10px 6px 8px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.step{display:flex;flex-direction:column;align-items:center;gap:6px;position:relative;min-width:0}
+.step::before{content:"";position:absolute;top:9px;left:-50%;width:100%;height:1px;background:var(--line2)}
+.step:first-child::before{display:none}
+.step.d::before,.step.n::before,.step.b::before{background:var(--ok)}
+.step i{position:relative;z-index:1;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font:700 9.5px/1 var(--mono);font-style:normal;background:var(--bg);border:1px solid var(--line2);color:var(--muted)}
+.step.d i{border-color:var(--ok);color:var(--ok)}
+.step.n i{background:var(--accent);border-color:var(--accent);color:#1a0a02;box-shadow:0 0 12px rgba(255,122,61,.6)}
+.step.b i{background:var(--crit);border-color:var(--crit);color:#1a0a02;box-shadow:0 0 12px rgba(248,81,73,.6)}
+.step span{font:600 9px/13px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--muted);text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.step.n span,.step.b span{color:var(--ink)}
+.step .hold{color:var(--crit);letter-spacing:.06em}
+@media (max-width:620px){.step span{font-size:7.5px;letter-spacing:.04em}}
+.tabs{display:flex;gap:2px;overflow-x:auto;border-bottom:1px solid var(--line)}
+.tab{border:0;background:transparent;padding:9px 10px;color:var(--muted);font:500 9.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;white-space:nowrap;border-bottom:1px solid transparent;margin-bottom:-1px}
+.tab:hover{color:var(--ink)}.tab[aria-selected="true"]{color:var(--accent);border-bottom-color:var(--accent)}
+.view{min-height:0}
+
+/* ---------- panels inside the tabs ---------- */
+.card{border:1px solid var(--line);border-radius:6px;background:rgba(17,19,23,.6);padding:14px 16px;display:flex;flex-direction:column;gap:10px;min-width:0}
 .split{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:12px}
 @media (max-width:1000px){.split{grid-template-columns:minmax(0,1fr)}}
 .tbl{overflow-x:auto}
 table{border-collapse:collapse;width:100%}
-th{text-align:left;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:7px 8px;border-bottom:1px solid var(--line)}
+th{text-align:left;font:600 9.5px/14px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--muted);padding:7px 8px;border-bottom:1px solid var(--line)}
 td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 tr:last-child td{border-bottom:0}
 .gantt{overflow-x:auto}
 .g{min-width:760px;display:grid;grid-template-columns:150px repeat(24,1fr);row-gap:8px;align-items:center}
-.gax{white-space:nowrap;overflow:visible;font-size:10.5px;color:var(--muted);border-left:1px solid var(--line);padding-left:4px;height:18px}
-.gbar{height:26px;border-radius:6px;display:flex;align-items:center;padding:0 9px;font-size:11.5px;font-weight:600;white-space:nowrap;overflow:hidden;border:1px solid transparent}
-.gb-ok{background:var(--ok-d);color:var(--ok);border-color:#2A6B4B}.gb-run{background:var(--run-d);color:var(--run);border-color:#34508F}
-.gb-idle{background:transparent;color:var(--idle);border:1px dashed var(--idle)}.gb-crit{background:var(--crit-d);color:var(--crit);border-color:#7A3329}.gb-ice{background:var(--ice-d);color:var(--ice);border-color:#2D5A85}
-.gb-brass{background:var(--brass-d);color:var(--brass);border-color:#7A5A22}
-.concern{border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:4px;background:var(--panel2)}
+.gax{white-space:nowrap;overflow:visible;font:400 9.5px/18px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border-left:1px solid var(--line);padding-left:4px;height:18px}
+.gbar{height:24px;border-radius:3px;display:flex;align-items:center;padding:0 9px;font:600 10.5px/1 var(--mono);white-space:nowrap;overflow:hidden;border-left:2px solid currentColor}
+.gb-ok{background:var(--ok-d);color:var(--ok)}.gb-run{background:var(--run-d);color:var(--accent);box-shadow:-1px 0 10px rgba(255,122,61,.25)}
+.gb-idle{background:transparent;color:var(--muted);border:1px dashed var(--line2)}.gb-crit{background:var(--crit-d);color:var(--crit)}.gb-ice{background:var(--ice-d);color:var(--ice)}
+.gb-brass{background:var(--brass-d);color:var(--brass)}
+.concern{border-left:2px solid var(--warn);padding:6px 0 7px 11px;display:flex;flex-direction:column;gap:3px}
 .concern.acc{border-left-color:var(--brass)}
-.feed .ev{display:grid;grid-template-columns:46px 1fr;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
-.feed .ev:last-child{border-bottom:0}
 .phases{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
 @media (max-width:1000px){.phases{grid-template-columns:minmax(0,1fr)}}
 .phases ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:5px;color:var(--ink2)}
-
-/* inspector */
-.inspector{padding-block:14px;display:flex;flex-direction:column;gap:12px;min-width:0;border-left:1px solid var(--line);padding-left:14px}
-@media (max-width:1180px){.inspector{border-left:0;padding-left:0;border-top:1px solid var(--line)}}
-.kv{display:grid;grid-template-columns:110px 1fr;gap:6px 10px;font-size:12.5px}
-.kv dt{color:var(--muted)} .kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.kv{display:grid;grid-template-columns:96px minmax(0,1fr);gap:5px 10px;margin:0;font-size:12.5px}
+.kv dt{font:600 9px/18px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--muted)} .kv dd{margin:0;min-width:0;overflow-wrap:anywhere;line-height:18px}
 .checks{display:flex;flex-direction:column;gap:6px}
 .checks div{display:flex;gap:8px;align-items:flex-start}
-
-/* portfolio strip, needs-you centre, stage stepper, gate report */
-.proj{display:flex;flex-direction:column;line-height:1.2;min-width:0}
-.proj b{font-size:14px;font-weight:600}
-.proj .crumb{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:36ch}
-.pf{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
-.pf button{display:flex;align-items:baseline;gap:7px;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:5px 11px;font-size:11.5px;color:var(--muted)}
-.pf button:hover{border-color:var(--line2)}
-.pf b{font-size:17px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
-.pf .t-crit b{color:var(--crit)}.pf .t-brass b{color:var(--brass)}.pf .t-ok b{color:var(--ok)}.pf .t-run b{color:var(--run)}
-.pf .t-crit{border-color:#5A2A24}.pf .t-brass{border-color:#5C4620}
-.halt{grid-column:1/-1;margin-top:10px;border:1px solid #7A3329;background:linear-gradient(90deg,var(--crit-d),transparent);color:var(--crit);border-radius:10px;padding:9px 14px;font-weight:600}
-.needs{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:8px}
-.need{text-align:left;display:flex;gap:10px;align-items:flex-start;background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-left:3px solid var(--brass);border-radius:10px;padding:9px 12px}
-.need:hover{border-color:var(--line2)}
-.need.k-blocked{border-left-color:var(--crit)}.need.k-ci{border-left-color:var(--ok)}.need.k-stale,.need.k-paused{border-left-color:var(--warn)}
-.need .ic{flex:none;width:24px;height:24px;border-radius:7px;display:grid;place-items:center;font-size:12px;font-weight:700;background:var(--brass-d);color:var(--brass)}
-.need.k-blocked .ic{background:var(--crit-d);color:var(--crit)}.need.k-ci .ic{background:var(--ok-d);color:var(--ok)}.need.k-stale .ic,.need.k-paused .ic{background:var(--warn-d);color:var(--warn)}
-.need span{display:block}.need .nh{display:flex;gap:8px;align-items:baseline;white-space:nowrap;overflow:hidden}.need .nh>span{display:inline}
-.need .nt{font-size:12.5px;color:var(--ink2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-@media (max-width:760px){.pf button{font-size:10.5px;padding:5px 4px}.pf b{font-size:16px}}
-.need code{font-family:var(--mono);font-size:11.5px;color:var(--brass);background:var(--brass-d);border-radius:4px;padding:0 4px}
-.stepper{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 10px 10px;position:relative}
-.step{display:flex;flex-direction:column;align-items:center;gap:6px;position:relative;min-width:0}
-.step::before{content:"";position:absolute;top:10px;left:-50%;width:100%;height:2px;background:var(--line)}
-.step:first-child::before{display:none}
-.step.d::before,.step.n::before,.step.b::before{background:var(--ok)}
-.step i{position:relative;z-index:1;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-style:normal;font-size:11px;font-weight:700;background:var(--bg2);border:2px solid var(--line2);color:var(--muted)}
-.step.d i{background:var(--ok-d);border-color:var(--ok);color:var(--ok)}
-.step.n i{background:var(--run);border-color:var(--run);color:#0A1016;box-shadow:0 0 0 5px var(--run-d),0 0 18px var(--run);animation:pulse 2.2s ease-in-out infinite}
-.step.b i{background:var(--crit);border-color:var(--crit);color:#0A1016;box-shadow:0 0 0 5px var(--crit-d),0 0 18px var(--crit)}
-.step span{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
-.step.n span,.step.b span{color:var(--ink)}
-.step .hold{font-size:10px;color:var(--crit);letter-spacing:.02em;text-transform:none}
-@keyframes pulse{50%{box-shadow:0 0 0 8px var(--run-d),0 0 26px var(--run)}}
-@media (max-width:620px){.step span{font-size:9px;letter-spacing:0}.stepper{padding-inline:4px}}
-.segbar{display:flex;gap:3px;height:6px}.segbar span{flex:1;border-radius:3px;background:var(--line)}
-.segbar .ok{background:var(--ok)}.segbar .run{background:var(--run)}.segbar .crit{background:var(--crit)}
-.kpi .sub{font-size:11.5px;color:var(--muted)}
-.kpi{position:relative;overflow:hidden}
-.kpi::after{content:"";position:absolute;inset:0 0 auto 0;height:2px;background:var(--accent,transparent);opacity:.8}
-.verdict{display:flex;gap:14px;align-items:center;border-radius:12px;padding:14px 16px;border:1px solid var(--line)}
-.verdict .big{font-size:22px;font-weight:700;letter-spacing:-.01em}
-.verdict.pass{background:linear-gradient(90deg,var(--ok-d),transparent 70%);border-color:#2A6B4B}.verdict.pass .big{color:var(--ok)}
-.verdict.fail{background:linear-gradient(90deg,var(--crit-d),transparent 70%);border-color:#7A3329}.verdict.fail .big{color:var(--crit)}
-.verdict.none{background:linear-gradient(90deg,var(--idle-d),transparent 70%)}
+.verdict{display:flex;gap:14px;align-items:center;border-radius:6px;padding:14px 16px;border:1px solid var(--line)}
+.verdict .big{font:700 18px/24px var(--ui);letter-spacing:-.01em}
+.verdict.pass{background:linear-gradient(90deg,var(--ok-d),transparent 70%);border-color:rgba(63,185,80,.4)}.verdict.pass .big{color:var(--ok)}
+.verdict.fail{background:linear-gradient(90deg,var(--crit-d),transparent 70%);border-color:rgba(248,81,73,.45)}.verdict.fail .big{color:var(--crit)}
+.verdict.none{background:linear-gradient(90deg,rgba(255,255,255,.03),transparent 70%)}
 .ring{flex:none}
 .gcols{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:12px}
 @media (max-width:1000px){.gcols{grid-template-columns:minmax(0,1fr)}}
 .gl{display:flex;flex-direction:column;gap:0}
 .gl div{display:grid;grid-template-columns:22px 1fr;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);align-items:start}
 .gl div:last-child{border-bottom:0}
-.gl b{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-size:11px;margin-top:1px}
-.gl .x b{background:var(--crit-d);color:var(--crit)}.gl .w b{background:var(--warn-d);color:var(--warn)}.gl .v b{background:var(--ok-d);color:var(--ok)}.gl .o b{background:var(--idle-d);color:var(--idle)}
-.conn-ok::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:currentColor;margin-right:6px;vertical-align:1px;animation:blink 2s infinite}
-@keyframes blink{50%{opacity:.25}}
-.status{grid-column:1/-1;display:flex;align-items:center;gap:18px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted);overflow-x:auto;white-space:nowrap}
+.gl b{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font:700 10px/1 var(--mono);margin-top:1px}
+.gl .x b{background:var(--crit-d);color:var(--crit)}.gl .w b{background:var(--warn-d);color:var(--warn)}.gl .v b{background:var(--ok-d);color:var(--ok)}.gl .o b{background:var(--idle-d);color:var(--muted)}
+.status{display:flex;flex-direction:column;gap:3px;font:400 10px/15px var(--mono);letter-spacing:.04em;color:var(--muted)}
 .status b{color:var(--ink2);font-weight:500}
+@media (max-width:1100px){
+  .hd{grid-template-columns:minmax(0,1fr);grid-template-rows:var(--hud) auto auto auto;height:auto;min-height:100vh}
+  .hv-centre{overflow:visible}.hd-rail{grid-row:4;grid-column:1;border-left:0;border-top:1px solid var(--line);overflow:visible}
+  .stage{height:clamp(420px,70vh,760px)}
+}
+@media (max-width:760px){
+  .hv-hud{gap:14px;padding:0 12px}.proj,.pf,.ro,.hv-time span,.logo{display:none}
+  .hv-centre{padding:12px 12px 24px}.hd-rail{padding:14px 12px 20px}
+  .hd-caption{display:none}.stagebar{left:10px;right:10px;flex-wrap:wrap;justify-content:space-between}
+  .insp-card{position:static;width:auto;max-height:none;margin-top:10px;box-shadow:none}
+}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
-
 </head><body>
-<div class="app">
-  <header class="top">
-    <div class="logo">
-      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="1" y="12" width="6" height="9" rx="1.5" fill="#8CC4FF"/><rect x="8" y="7" width="6" height="14" rx="1.5" fill="#5ED39A"/><rect x="15" y="2" width="6" height="19" rx="1.5" fill="#E1AE52"/></svg>
-      Mission Deck
-    </div>
-    <div class="proj"><b id="proj">—</b><span class="crumb mono" id="crumb"></span></div>
+<div class="hd" id="hd" data-level="calm">
+  <header class="hv-hud">
+    <span class="logo"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.6" fill="currentColor"/><ellipse cx="8" cy="8" rx="7" ry="3.2" fill="none" stroke="currentColor" stroke-width="1.2" transform="rotate(-24 8 8)"/></svg>Mission Deck</span>
+    <span class="hv-time" id="clock"></span>
+    <span class="proj"><b id="proj">—</b><span class="crumb" id="crumb"></span></span>
+    <span class="hd-word calm" id="hd-word"><i></i>QUIET</span>
+    <span class="grow"></span>
+    <span class="pf" id="pf" aria-label="Portfolio"></span>
     <span class="sample conn-warn" id="conn">Connecting…</span>
-    <div class="pf" id="pf" aria-label="Portfolio"></div>
     <span class="ro" title="Approvals are recorded from your own chat message or terminal, never from this page">Read-only</span>
   </header>
   <div class="halt" id="halt" hidden></div>
 
-  <aside class="rail" aria-label="Missions">
-    <div style="display:flex;justify-content:space-between;align-items:baseline"><span class="lbl">Missions</span><span class="muted mono" id="mcount"></span></div>
-    <div id="mlist" style="display:flex;flex-direction:column;gap:8px"></div>
-    <div class="card" style="gap:6px">
-      <span class="lbl">Workspace</span>
-      <div class="kv" id="workspace"></div>
-    </div>
-    <div class="card" style="gap:6px">
-      <span class="lbl">Knowledge</span>
-      <div class="kv" id="knowledge"></div>
-      <p class="muted" style="margin:0;font-size:11.5px">Saved only with your approval; every save is in the ledger.</p>
-    </div>
-  </aside>
+  <main class="hv-centre" id="main">
+    <section class="brain" id="view-floor" style="position:relative">
+      <div class="stage" id="stage">
+        <canvas id="gl" aria-label="Interactive 3D view of your missions. Drag to rotate, scroll or pinch to zoom, click an object to inspect it."></canvas>
+        <div class="hd-caption" id="caption"></div>
+        <div class="stagebar">
+          <div class="switch" role="tablist" aria-label="3D view" id="vswitch">
+            <button role="tab" data-v="live" aria-selected="true">Live</button>
+            <button role="tab" data-v="galaxy" aria-selected="false">Galaxy</button>
+            <button role="tab" data-v="orbit" aria-selected="false">Orbit</button>
+            <button role="tab" data-v="floor" aria-selected="false">Floor</button>
+          </div>
+          <div class="controls">
+            <button class="ctl" id="b-play" aria-pressed="true">Motion</button>
+            <button class="ctl" id="b-reset">Reset</button>
+          </div>
+        </div>
+        <div class="tooltip" id="tip" hidden></div>
+        <div class="livehud" id="livehud" aria-live="polite" hidden><div class="lh-word" id="lh-word"></div><ol class="lh-tick" id="lh-tick"></ol></div>
+      </div>
+      <aside class="insp-card" id="insp-card" aria-label="Inspector" hidden><button class="insp-x" id="insp-x" aria-label="Close the inspector">✕</button><div id="insp" style="display:flex;flex-direction:column;gap:10px"></div></aside>
+      <div class="caption">
+        <p class="howto" id="howto"></p>
+        <div class="legend" id="legend"></div>
+      </div>
+    </section>
 
-  <main class="main" id="main">
-    <div id="needs-wrap" hidden><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px"><span class="lbl" style="color:var(--brass)">Needs you</span><span class="muted" style="font-size:11.5px">Approvals happen in your chat or terminal</span></div><div class="needs" id="needs"></div></div>
     <div class="mission-head">
       <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
         <span class="lbl" id="mmeta"></span>
@@ -237,47 +294,36 @@ tr:last-child td{border-bottom:0}
     <div class="stepper" id="stepper" aria-label="Mission stage"></div>
     <div class="kpis" id="kpis"></div>
     <div class="tabs" role="tablist" id="tabs"></div>
-    <section class="view" id="view-floor" role="tabpanel">
-      <div class="stage" id="stage">
-        <canvas id="gl" aria-label="Interactive 3D view of your missions. Drag to rotate, scroll or pinch to zoom, click an object to inspect it."></canvas>
-        <div class="stagebar">
-          <div class="switch" role="tablist" aria-label="3D view" id="vswitch">
-            <button role="tab" data-v="galaxy" aria-selected="true">Galaxy</button>
-            <button role="tab" data-v="orbit" aria-selected="false">Orbit</button>
-            <button role="tab" data-v="floor" aria-selected="false">Floor</button>
-          </div>
-          <div class="controls">
-            <button class="ctl" id="b-play" aria-pressed="true">Motion</button>
-            <button class="ctl" id="b-reset">Reset view</button>
-          </div>
-        </div>
-        <div class="tooltip" id="tip" hidden></div>
-      </div>
-      <div class="caption">
-        <p class="howto" id="howto"></p>
-        <div class="legend" id="legend"></div>
-      </div>
-    </section>
-    <section class="view" id="view-timeline" role="tabpanel" hidden></section>
+    <section class="view" id="view-timeline" role="tabpanel"></section>
     <section class="view" id="view-trace" role="tabpanel" hidden></section>
     <section class="view" id="view-assess" role="tabpanel" hidden></section>
     <section class="view" id="view-gate" role="tabpanel" hidden></section>
     <section class="view" id="view-docs" role="tabpanel" hidden></section>
   </main>
 
-  <aside class="inspector" aria-label="Inspector">
-    <span class="lbl">Inspector</span>
-    <div class="card" id="insp"></div>
-    <div class="card"><span class="lbl">Activity</span><div class="feed" id="feed"></div></div>
+  <aside class="hd-rail" aria-label="What needs you and what is moving" aria-live="polite">
+    <div class="hd-rung wait" id="needs-wrap" hidden>
+      <div class="hd-head"><b id="needs-title">Waiting on you</b><span>chat · terminal</span></div>
+      <div class="needs" id="needs"></div>
+    </div>
+    <div class="hd-rung work">
+      <div class="hd-head"><b>Missions</b><span id="mcount"></span></div>
+      <div id="mlist"></div>
+    </div>
+    <div class="hd-rung">
+      <div class="hd-head"><b>Landed</b><span>this mission's event log</span></div>
+      <div class="feed" id="feed"></div>
+    </div>
+    <div class="hd-fyi">
+      <div><div class="hd-head"><b>Workspace</b></div><dl class="kv" id="workspace"></dl></div>
+      <div><div class="hd-head"><b>Knowledge</b></div><dl class="kv" id="knowledge"></dl>
+        <p class="muted" style="margin:6px 0 0;font-size:11.5px">Saved only with your approval; every save is in the ledger.</p></div>
+      <div class="status">
+        <span><b id="st-host"></b> · session token · SSE</span>
+        <span>Records <b id="st-rec"></b> · last change <b id="st-last"></b> · gate <b id="st-gate"></b></span>
+      </div>
+    </div>
   </aside>
-
-  <footer class="status">
-    <span><span class="dot" style="display:inline-block;vertical-align:1px;margin-right:6px"></span><b id="st-host"></b> · session token</span>
-    <span>Records <b id="st-rec"></b></span>
-    <span>Last change <b id="st-last"></b></span>
-    <span>Gate <b id="st-gate"></b></span>
-    <span>Events <b>SSE</b> · <b>.factory/missions/*/events.jsonl</b></span>
-  </footer>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -354,7 +400,6 @@ function human(e){const c=e.command||"",o={};c.replace(/--([\w-]+)\s+(\S+)/g,(_,
   block:"Blocked: waiting on you",unblock:"Unblocked",pause:"Paused",resume:"Resumed",approve:"You approved in the terminal","ci-result":"CI result recorded",
   decision:"Decision recorded","accept-scope":"Scope accepted",criteria:"Acceptance criteria recorded",repair:"Repair started",chat:"You approved in chat"};
  const k=c.startsWith("chat approval")?"chat":w;return {text:T[k]||c,tone:k==="chat"||k==="approve"?"brass":k==="block"?"crit":/DONE|integrate|review|verify/.test(T[k]||"")?"ok":"run"}}
-const NEED_IC={blocked:"!",approve:"✓",ci:"↗",stale:"…",paused:"Ⅱ",retro:"↺",knowledge:"✎"};
 function renderPortfolio(){
  const S=SUMMARIES,working=S.filter(x=>x.tasks&&(x.tasks.RUNNING||x.tasks.VERIFYING)).length,blocked=S.filter(x=>x.state==="BLOCKED"),ready=S.filter(x=>x.state==="READY_PR"),
   K=WORKSPACE.knowledge||{},
@@ -365,9 +410,13 @@ function renderPortfolio(){
   ["Blocked",blocked.length,blocked.length?"t-crit":"",blocked[0]],["Ready",ready.length,ready.length?"t-ok":"",ready[0]]]
   .map(([l,n,c,x])=>`<button class="${c}" ${x&&x.id?`data-id="${x.id}"`:"disabled"}><b>${n}</b>${l}</button>`).join("");
  document.querySelectorAll("#pf button[data-id]").forEach(b=>b.onclick=()=>openMission(SUMMARIES.findIndex(x=>x.id===b.dataset.id)));
- const h=WORKSPACE.halted;$("halt").hidden=!h;if(h)$("halt").textContent=`Factory halted: ${h.reason}. No task starts until you run software-factory mission unhalt.`;
- $("needs-wrap").hidden=!needs.length;
- $("needs").innerHTML=needs.map(a=>`<button class="need k-${a.kind}" data-id="${a.id}"><span class="ic">${NEED_IC[a.kind]||"•"}</span><span style="min-width:0"><span class="nh"><span style="font-weight:600">${esc(a.title)}</span> <span class="mono muted">${esc(a.id)}</span></span><span class="nt">${esc(a.text).replace(/`([^`]+)`/g,"<code>$1</code>")}</span></span></button>`).join("");
+ const h=WORKSPACE.halted;$("halt").hidden=!h;if(h)$("halt").textContent=`FACTORY HALTED · ${h.reason}. No task starts until you run software-factory mission unhalt.`;
+ // the one word, readable from across the room; the Brain's edge tints with it
+ const waitN=needs.filter(a=>a.kind!=="blocked").length,[level,word]=h?["bad","HALTED"]:blocked.length?["bad",`${blocked.length} BLOCKED`]:waitN?["wait",`${waitN} WAITING`]:working?["work","AT WORK"]:["calm","QUIET"];
+ $("hd").dataset.level=level;$("hd-word").className="hd-word "+level;$("hd-word").innerHTML=`<i></i>${word}`;
+ document.title=`${level==="bad"?"✗ ":needs.length?`(${needs.length}) `:""}Mission Deck · ${WORKSPACE.project||""}`;
+ $("needs-wrap").hidden=!needs.length;$("needs-title").textContent=`Waiting on you · ${needs.length}`;
+ $("needs").innerHTML=needs.sort((a,b)=>(b.kind==="blocked")-(a.kind==="blocked")).map(a=>`<button class="need k-${a.kind}" data-id="${a.id}"><span class="r1"><b>${esc(a.title)}</b><span class="meta">${esc(a.id||a.kind)}</span></span><span class="nt">${esc(a.text).replace(/`([^`]+)`/g,"<code>$1</code>")}</span></button>`).join("");
  document.querySelectorAll(".need").forEach(b=>b.onclick=()=>{const i=SUMMARIES.findIndex(x=>x.id===b.dataset.id);if(i>=0)openMission(i)})}
 function renderKnowledge(){const K=WORKSPACE.knowledge||{};if(K.error){$("knowledge").innerHTML=`<dt>Status</dt><dd>${esc(K.error)}</dd>`;return}
  const p=K.project||{},l=K.ledger||{count:0,problems:[]},r=K.recipes||[];
@@ -392,7 +441,7 @@ async function runGate(){const s=SUMMARIES[cur];if(!s)return;const b=$("run-gate
  MISSIONS[cur]=adapt(s);render()}
 function setConn(text,kind){const c=$("conn");c.textContent=text;c.className="sample conn-"+kind}
 function stream(){if(!window.EventSource)return;const es=new EventSource("/api/stream?token="+encodeURIComponent(TOKEN));
- let first=true;es.addEventListener("changed",()=>{if(first){first=false;return}refresh()});es.onerror=()=>setConn("Reconnecting…","warn")}
+ let first=true;es.addEventListener("changed",()=>{if(first){first=false;return}refresh();if(view==="live")pollActivity()});es.onerror=()=>setConn("Reconnecting…","warn")}
 const galaxyPos=i=>{if(i===0)return[0,0,0];const a=i*2.39996,r=34+13*Math.sqrt(i);return[Math.cos(a)*r,(i%2?7:-7),Math.sin(a)*r-10]};
 
 
@@ -402,10 +451,10 @@ function spark(v,color){const w=120,h=26,max=Math.max(...v),pts=v.map((y,i)=>[i*
  return `<svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><path d="${d} L${w} ${h} L0 ${h}Z" fill="${color}" opacity=".14"/><path d="${d}" fill="none" stroke="${color}" stroke-width="1.6"/><circle cx="${pts.at(-1)[0]}" cy="${pts.at(-1)[1]}" r="2.6" fill="${color}"/></svg>`}
 function renderRail(){
  $("mcount").textContent=MISSIONS.length+" open";
- $("mlist").innerHTML=MISSIONS.map((m,i)=>`<button class="mcard" aria-current="${i===cur}" data-i="${i}">
-  <div class="mhead"><span class="mtitle">${esc(m.title)}</span><span class="mono muted">${m.id}</span></div>
-  <div class="prog">${STAGES.map((_,k)=>`<span class="${k<m.at?"d":k===m.at?(m.blocked?"b":"n"):""}"></span>`).join("")}</div>
-  <div style="display:flex;justify-content:space-between;gap:6px"><span class="chip ${m.chip}">${m.state.replace("_"," ")}</span><span class="muted" style="font-size:11.5px">${m.lane} · ${m.tasks.length} task${m.tasks.length===1?"":"s"}</span></div>${m.attention[0]?`<span class="mnote k-${m.attention[0].kind}">${esc(m.attention[0].text.replace(/`/g,""))}</span>`:""}</button>`).join("");
+ $("mlist").innerHTML=MISSIONS.map((m,i)=>`<button class="mcard ${m.blocked?"k-blocked":""}" aria-current="${i===cur}" data-i="${i}">
+  <span class="mhead"><span class="mtitle">${esc(m.title)}</span><span class="mono">${m.id}</span></span>
+  <span class="prog">${STAGES.map((_,k)=>`<span class="${k<m.at?"d":k===m.at?(m.blocked?"b":"n"):""}"></span>`).join("")}</span>
+  <span class="mrow"><span class="chip ${m.chip}">${m.state.replace("_"," ")}</span><span class="muted">${esc(m.lane)} · ${m.tasks.length} task${m.tasks.length===1?"":"s"} · ${m.idle}</span></span>${m.attention[0]?`<span class="mnote k-${m.attention[0].kind}">${esc(m.attention[0].text.replace(/`/g,""))}</span>`:""}</button>`).join("");
  document.querySelectorAll(".mcard").forEach(b=>b.onclick=()=>openMission(+b.dataset.i));
 }
 function renderHead(m){
@@ -422,18 +471,19 @@ function renderHead(m){
   ["Readiness gate",k.gate,g?`<span class="chip ${g.pass?"c-ok":"c-crit"}">${m.status.gate}${risk?" · risk "+risk:""}</span>`:`<span class="sub">open the Gate tab to run it</span>`,g?(g.pass?CSSC.ok:CSSC.crit):CSSC.idle],
   ["Age",m.age,`<span class="sub">last change ${m.idle}</span>`,CSSC.ice]
  ].map(([a,b,c,col])=>`<div class="kpi" style="--accent:${col}"><span class="lbl">${a}</span><span class="v">${b}</span>${c}</div>`).join("");
- $("feed").innerHTML=m.events.slice(-14).reverse().map(e=>{const h=human(e);return `<div class="ev"><span class="mono muted">${clock(e.at)}</span><span style="display:flex;flex-direction:column;gap:1px"><span style="font-weight:500"><span style="color:${CSSC[h.tone]}">●</span> ${esc(h.text)}</span><span class="muted" style="font-size:11.5px">${esc((e.actor&&e.actor.user)||"cli")} · ${esc((e.state||"").replace("_"," ").toLowerCase())}</span></span></div>`}).join("")||'<p class="muted" style="margin:0">No events yet.</p>';
+ $("feed").innerHTML=m.events.slice(-14).reverse().map(e=>{const h=liveWords(e);return `<div class="ev"><span class="t">${clock(e.at)}</span><span class="n"><i style="background:${CSSC[h.tone]}"></i>${esc(h.text)}</span><span class="sum">${esc((e.actor&&e.actor.user)||"cli")} · ${esc((e.state||"").replace("_"," ").toLowerCase())}</span></div>`}).join("")||'<p class="hd-calm">No events yet.</p>';
+ $("caption").innerHTML=`<span class="lbl">Selected mission · ${esc(m.id)}</span><b>${esc(m.title)}</b><span class="m">${m.state.replace("_"," ")} · ${esc(m.lane)} · ${m.done}/${m.tasks.length} tasks done · last change ${m.idle}</span>`;
  $("st-rec").textContent=m.status.rec;$("st-last").textContent=m.status.last;$("st-gate").textContent=m.status.gate;
 }
 
 /* ------------------------------ tabs ------------------------------ */
-const TABS=[["floor","3D views"],["timeline","Lanes timeline"],["trace","Request → evidence"],["assess","Assessment"],["gate","Gate"],["docs","Documents"]];
-let tab="floor";
+const TABS=[["timeline","Lanes timeline"],["trace","Request → evidence"],["assess","Assessment"],["gate","Gate"],["docs","Documents"]];
+let tab="timeline";
 function renderTabs(){
  $("tabs").innerHTML=TABS.map(([k,l])=>`<button class="tab" role="tab" aria-selected="${k===tab}" data-k="${k}">${l}</button>`).join("");
  document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{tab=b.dataset.k;renderTabs();showTab()});
 }
-function showTab(){TABS.forEach(([k])=>$("view-"+k).hidden=k!==tab);if(tab==="floor")resize();}
+function showTab(){TABS.forEach(([k])=>$("view-"+k).hidden=k!==tab)}
 function renderViews(m){
  // timeline: 24 slots of 5 minutes
  const rows=[["Intake + interview","gb-ok",0,3],["Assessment","gb-ok",3,3],["Spec + plan","gb-ok",6,3],["Your scope approval","gb-brass",9,2,"You ✓"]];
@@ -461,7 +511,7 @@ function gateView(m){
  const passedR=reviews.filter(x=>x[1]==="pass").length,passedC=trace.filter(t=>t.verdict==="pass").length;
  const total=reviews.length+trace.length+1,okN=passedR+passedC+(g&&g.pass?1:0),frac=total?okN/total:0,C=2*Math.PI*26;
  const col=g?(g.pass?"var(--ok)":"var(--crit)"):"var(--idle)";
- const donut=`<svg class="ring" width="64" height="64" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="26" fill="none" stroke="var(--line)" stroke-width="6"/><circle cx="32" cy="32" r="26" fill="none" stroke="${col}" stroke-width="6" stroke-linecap="round" stroke-dasharray="${(C*frac).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 32 32)"/><text x="32" y="37" text-anchor="middle" font-size="14" font-weight="700" fill="${col}" font-family="Geist,system-ui">${okN}/${total}</text></svg>`;
+ const donut=`<svg class="ring" width="64" height="64" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="26" fill="none" stroke="var(--line)" stroke-width="6"/><circle cx="32" cy="32" r="26" fill="none" stroke="${col}" stroke-width="6" stroke-linecap="round" stroke-dasharray="${(C*frac).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 32 32)"/><text x="32" y="37" text-anchor="middle" font-size="14" font-weight="700" fill="${col}" font-family="JetBrains Mono,monospace">${okN}/${total}</text></svg>`;
  const banner=`<div class="verdict ${g?(g.pass?"pass":"fail"):"none"}">${donut}<div style="display:flex;flex-direction:column;gap:3px;min-width:0;flex:1"><span class="big">${g?(g.pass?"Ready to merge":`Not ready · ${reasons.length} blocking`):"Gate not run in this view"}</span><span class="muted">${g?`${esc(g.lane||m.lane)} lane · risk ${esc((g.risk&&g.risk.tier)||"—")}${g.risk&&g.risk.reasons&&g.risk.reasons.length?" · "+esc(g.risk.reasons[0]):""}`:"The gate re-derives everything from the files: candidate fingerprint, task results, reviews, approvals and criteria."}</span></div><button class="ctl" id="run-gate">${g?"Run again":"Run the gate"}</button></div>`;
  const row=(cls,mark,html)=>`<div class="${cls}"><b>${mark}</b><span>${html}</span></div>`;
  const left=`<div class="card"><h3>${g?(g.pass?"Every readiness check passes":"What blocks readiness"):"Readiness checks"}</h3><div class="gl">${
@@ -474,6 +524,8 @@ function gateView(m){
  return `<div style="display:flex;flex-direction:column;gap:12px">${banner}<div class="gcols">${left}${right}</div></div>`}
 
 /* ------------------------------ inspector ------------------------------ */
+function openInsp(){$("insp-card").hidden=false}
+function closeInsp(){$("insp-card").hidden=true}
 function inspect(info){
  const m=MISSIONS[cur];
  if(!info){info={kind:"mission"}}
@@ -481,12 +533,18 @@ function inspect(info){
  if(info.kind==="task"){const t=info.t;
   h=`<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline"><h3>${t.id} · ${esc(t.name)}</h3><span class="chip ${CHIP[t.state]}">${WORD[t.state]}</span></div>
   <dl class="kv"><dt>Agent</dt><dd>${esc(t.who)}</dd><dt>Worktree</dt><dd class="mono">${esc(t.tree)}</dd><dt>Branch</dt><dd class="mono">${esc(t.branch)}</dd><dt>Owned paths</dt><dd class="mono">${t.paths.map(esc).join("<br>")}</dd><dt>Depends on</dt><dd>${t.deps.join(", ")||"none"}</dd><dt>Attempts</dt><dd>${t.attempt}</dd><dt>Checks</dt><dd class="mono">${esc(t.checks)}</dd><dt>Verify</dt><dd>${esc(t.verify)}</dd></dl>
-  <div style="height:6px;border-radius:3px;background:var(--line);overflow:hidden"><div style="height:100%;width:${Math.round(t.progress*100)}%;background:var(--${t.state==="crit"?"crit":t.state==="ok"?"ok":"run"})"></div></div>`}
+  <div style="height:6px;border-radius:3px;background:var(--line);overflow:hidden"><div style="height:100%;width:${Math.round(t.progress*100)}%;background:var(--${t.state==="crit"?"crit":t.state==="ok"?"ok":"run"})"></div></div>
+  ${info.files&&info.files.length?`<span class="lbl">Changed in its lane</span><ul class="files mono">${info.files.slice(0,12).map(f=>`<li><span>${esc(f.path)}</span><span class="muted">${f.age==null?"deleted":ago(f.age)}</span></li>`).join("")}</ul>`:""}`}
+ else if(info.kind==="core"){const D=LIVE.data||{missions:[]},M=D.missions,ev=M.reduce((a,x)=>a+x.pace.hour,0),day=M.reduce((a,x)=>a+x.pace.day,0);
+  h=`<div style="display:flex;justify-content:space-between;gap:8px"><h3>${esc((WORKSPACE&&WORKSPACE.project)||"The factory")}</h3><span class="chip ${D.halted?"c-crit":"c-ok"}">${D.halted?"halted":"running"}</span></div>
+  <p class="muted" style="margin:0">Its pulse, from the mission event logs. Nothing here is estimated.</p>
+  <dl class="kv"><dt>Missions</dt><dd>${M.length} across ${new Set(M.map(x=>x.worktree)).size} worktree(s)</dd><dt>Events</dt><dd>${ev} in the last hour · ${day} today</dd>
+  <dt>Lanes open</dt><dd>${M.reduce((a,x)=>a+x.lanes.length,0)}</dd><dt>Tasks active</dt><dd>${M.reduce((a,x)=>a+x.tasks.filter(t=>t.status==="RUNNING"||t.status==="VERIFYING").length,0)}</dd>${D.halted?`<dt>Halted</dt><dd>${esc(D.halted.reason||"")}</dd>`:""}</dl>`}
  else if(info.kind==="gate"){h=`<div style="display:flex;justify-content:space-between;gap:8px"><h3>${esc(info.name)}</h3><span class="chip c-brass">human only</span></div><p style="margin:0;color:var(--ink2)">${esc(info.text)}</p><p class="muted" style="margin:0">Recorded by the chat hook from your own message, or by <span class="mono">mission approve</span> in your terminal. Agents cannot record it.</p>`}
  else if(info.kind==="station"){h=`<div style="display:flex;justify-content:space-between;gap:8px"><h3>${esc(info.name)}</h3><span class="chip ${info.cls}">${info.word}</span></div><p style="margin:0;color:var(--ink2)">${esc(info.text)}</p>`}
  else {h=`<h3>${esc(m.title)}</h3><p class="muted" style="margin:0">Click any star, planet, station, packet or gate in the 3D views to inspect it.</p>${renderer&&view!=="orbit"?'<button class="ctl" id="open-orbit" style="align-self:flex-start">Open this mission in Orbit view</button>':""}<dl class="kv"><dt>Mission</dt><dd class="mono">${m.id}</dd><dt>State</dt><dd>${m.state}</dd><dt>Lane</dt><dd>${m.lane}</dd><dt>Tasks</dt><dd>${m.tasks.map(t=>t.id+" "+WORD[t.state].toLowerCase()).join(" · ")}</dd></dl>`}
  $("insp").innerHTML=h;
- const oo=document.getElementById("open-orbit");if(oo)oo.onclick=()=>{tab="floor";renderTabs();showTab();setView("orbit")};
+ const oo=document.getElementById("open-orbit");if(oo)oo.onclick=()=>setView("orbit");
 }
 
 /* ------------------------------ 3D engine: galaxy, orbit, floor ------------------------------ */
@@ -495,15 +553,17 @@ let renderer,scene,camera,raycaster,pointer,glowTex=null;
 let picks=[],anim=[],view="galaxy";
 let playing=!window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const cam={theta:1.25,phi:1.1,r:78,target:null}, goal={theta:1.25,phi:1.1,r:78,target:null};
-const HEX={ok:0x5ED39A,run:0x7EA6FF,idle:0x6F8193,crit:0xFF7A6B,brass:0xE1AE52,ice:0x8CC4FF,violet:0x9C7CFF,steel:0x2B3D51,belt:0x223244,floor:0x0F1A25};
-const CSSC={ok:"#5ED39A",run:"#7EA6FF",idle:"#6F8193",crit:"#FF7A6B",brass:"#E1AE52",ice:"#8CC4FF"};
+const HEX={ok:0x3FB950,run:0xFF7A3D,idle:0x5C6370,crit:0xF85149,brass:0xFFB347,ice:0x39C5CF,core:0xFFD2BD,violet:0x9C7CFF,steel:0x2B3038,belt:0x1D2127,floor:0x0E1014};
+const CSSC={ok:"#3FB950",run:"#FF7A3D",idle:"#8B93A1",crit:"#FF918A",brass:"#FFB347",ice:"#39C5CF",core:"#FFD2BD"};
 
 const tone=m=>m.blocked?"crit":m.state==="READY_PR"||m.state==="MERGED"?"ok":"run";
 const HOW={
+ live:"The whole factory, moved only by its records. Each ring is a stage, PROPOSED in the middle to MERGED at the edge, so a mission travels outward as it advances. A mission turns only as fast as its events arrive and cools when they stop; task moons orbit only while an agent holds them; sparks are files an open lane is writing, fading over minutes. Each new event lands as a comet and a pulse, and the changes since your last visit replay when you open it. Click a mission to inspect it; double-click it for its Orbit.",
  galaxy:"Each glowing star is a mission: blue is being worked on, green is ready, red is blocked. The moons around it are its tasks, and moving moons are agents working right now. Click a star to fly to it; double-click it to open its orbit.",
  orbit:"The selected mission sits at the center. Each ring is a stage, from PROPOSED on the inside to MERGED on the outside: green rings are done, the bright ring is where it is now. Planets are tasks on the stage they have reached. Brass rings are approvals only you can give.",
  floor:"Work flows left to right, station by station. Every parallel task has its own belt and worktree; its packet moves while an agent works. Brass arches are your approvals, and nothing passes them without you."};
 const LEGEND={
+ live:[["run","Being worked on"],["ok","Ready or done"],["crit","Blocked"],["brass","Waiting on you"],["ice","Files a lane is writing"],["idle","At rest or stale"]],
  galaxy:[["run","Being worked on"],["ok","Ready"],["crit","Blocked"],["ice","Task moon"]],
  orbit:[["ok","Stage done"],["run","Current stage"],["idle","Upcoming"],["brass","Your approval"],["ice","Task planet"]],
  floor:[["ok","Done"],["run","Working"],["idle","Queued"],["crit","Blocked"],["brass","Your approval"]]};
@@ -515,11 +575,11 @@ function glowTexture(){if(glowTex)return glowTex;const c=document.createElement(
 function glow(color,size,opacity=1){const s=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTexture(),color,transparent:true,opacity,depthWrite:false,blending:THREE.AdditiveBlending}));s.scale.set(size,size,1);return s}
 function label(text,sub,color,scale=9.5){
  const c=document.createElement("canvas"),s=2,w=520,h=sub?120:78;c.width=w*s;c.height=h*s;const x=c.getContext("2d");x.scale(s,s);
- x.fillStyle="rgba(12,19,28,.88)";x.strokeStyle="rgba(140,196,255,.3)";x.lineWidth=2;const r=16;
+ x.fillStyle="rgba(10,11,13,.9)";x.strokeStyle="rgba(255,255,255,.1)";x.lineWidth=2;const r=16;
  x.beginPath();x.moveTo(r,1);x.arcTo(w-1,1,w-1,h-1,r);x.arcTo(w-1,h-1,1,h-1,r);x.arcTo(1,h-1,1,1,r);x.arcTo(1,1,w-1,1,r);x.fill();x.stroke();
  x.fillStyle=color;x.beginPath();x.arc(30,39,9,0,Math.PI*2);x.fill();
- x.font="600 34px Geist, system-ui, sans-serif";x.fillStyle="#EEF3F8";x.fillText(text.length>26?text.slice(0,25)+"…":text,50,51);
- if(sub){x.font="400 25px 'JetBrains Mono', monospace";x.fillStyle="#A6B7C8";x.fillText(sub,50,95)}
+ x.font="600 34px Inter, system-ui, sans-serif";x.fillStyle="#ECECEF";x.fillText(text.length>26?text.slice(0,25)+"…":text,50,51);
+ if(sub){x.font="400 25px 'JetBrains Mono', monospace";x.fillStyle="#A4A9B4";x.fillText(sub,50,95)}
  const t=new THREE.CanvasTexture(c);t.anisotropy=4;const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:t,depthWrite:false,depthTest:false,transparent:true}));
  sp.scale.set(scale,scale*h/w,1);sp.renderOrder=10;return sp}
 function ring(radius,color,opacity,segments=160){const pts=[];for(let i=0;i<=segments;i++){const a=i/segments*Math.PI*2;pts.push(new THREE.Vector3(Math.cos(a)*radius,0,Math.sin(a)*radius))}
@@ -527,18 +587,18 @@ function ring(radius,color,opacity,segments=160){const pts=[];for(let i=0;i<=seg
 function stars(n,rMin,rMax,size){const pos=new Float32Array(n*3),col=new Float32Array(n*3),c=new THREE.Color();
  for(let i=0;i<n;i++){const r=rMin+Math.random()*(rMax-rMin),th=Math.random()*Math.PI*2,ph=Math.acos(2*Math.random()-1);
   pos.set([r*Math.sin(ph)*Math.cos(th),r*Math.cos(ph)*.6,r*Math.sin(ph)*Math.sin(th)],i*3);
-  const t=Math.random();c.set(t<.7?0xDDE8FF:t<.88?0x9CC8FF:0xFFD9A0);c.multiplyScalar(.55+Math.random()*.45);col.set([c.r,c.g,c.b],i*3)}
+  const t=Math.random();c.set(t<.75?0xE8E6E3:t<.9?0xFFD2BD:0x9FB3C8);c.multiplyScalar(.55+Math.random()*.45);col.set([c.r,c.g,c.b],i*3)}
  const g=new THREE.BufferGeometry();g.setAttribute("position",new THREE.BufferAttribute(pos,3));g.setAttribute("color",new THREE.BufferAttribute(col,3));
  const p=new THREE.Points(g,new THREE.PointsMaterial({size,vertexColors:true,transparent:true,opacity:.95,depthWrite:false,map:glowTexture(),blending:THREE.AdditiveBlending}));
  scene.add(p);anim.push((ts,dt)=>{if(playing)p.rotation.y+=dt*.006});return p}
 function spiral(){const n=2400,pos=new Float32Array(n*3),col=new Float32Array(n*3),c=new THREE.Color();
  for(let i=0;i<n;i++){const arm=i%3,t=Math.pow(Math.random(),.7),r=6+t*95,a=arm*2.094+t*5.2+(Math.random()-.5)*.55;
   pos.set([Math.cos(a)*r,(Math.random()-.5)*(4-2.5*t)-14,Math.sin(a)*r-10],i*3);
-  c.set(arm===0?0x7EA6FF:arm===1?0x9C7CFF:0x8CC4FF).lerp(new THREE.Color(0xFFFFFF),Math.random()*.4).multiplyScalar(.35+(1-t)*.5);col.set([c.r,c.g,c.b],i*3)}
+  c.set(arm===0?0xFF7A3D:arm===1?0xFFB347:0x8B93A1).lerp(new THREE.Color(0xFFFFFF),Math.random()*.4).multiplyScalar(.35+(1-t)*.5);col.set([c.r,c.g,c.b],i*3)}
  const g=new THREE.BufferGeometry();g.setAttribute("position",new THREE.BufferAttribute(pos,3));g.setAttribute("color",new THREE.BufferAttribute(col,3));
  const p=new THREE.Points(g,new THREE.PointsMaterial({size:1.5,vertexColors:true,transparent:true,depthWrite:false,map:glowTexture(),blending:THREE.AdditiveBlending}));
  scene.add(p);anim.push((ts,dt)=>{if(playing)p.rotation.y+=dt*.01})}
-function nebula(){[[0x7EA6FF,-60,-18,-90,150,.10],[0x9C7CFF,50,-24,-110,170,.09],[0xE1AE52,70,10,-60,90,.05],[0x5ED39A,-80,8,-40,80,.04]]
+function nebula(){[[0xFF7A3D,-60,-18,-90,150,.06],[0x39C5CF,50,-24,-110,170,.045],[0xFFB347,70,10,-60,90,.04],[0x8B93A1,-80,8,-40,80,.03]]
  .forEach(([c,x,y,z,s,o])=>{const n=glow(c,s,o);n.position.set(x,y,z);scene.add(n)})}
 
 function initGL(){
@@ -547,21 +607,21 @@ function initGL(){
  try{renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true})}catch(e){return fail("WebGL is unavailable here. The timeline, trace and gate tabs show the same mission.")}
  renderer.setPixelRatio(Math.min(2,window.devicePixelRatio||1));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
  scene=new THREE.Scene();camera=new THREE.PerspectiveCamera(40,1,.1,900);
- scene.add(new THREE.HemisphereLight(0xBFD8FF,0x0A1016,.6));
+ scene.add(new THREE.HemisphereLight(0xFFE9DD,0x0A0B0D,.6));
  const key=new THREE.DirectionalLight(0xFFFFFF,.85);key.position.set(-18,34,22);key.castShadow=true;key.shadow.mapSize.set(2048,2048);
  Object.assign(key.shadow.camera,{left:-40,right:40,top:26,bottom:-26});scene.add(key);
  const rim=new THREE.PointLight(0x8CC4FF,.9,140);rim.position.set(24,14,-18);scene.add(rim);
  raycaster=new THREE.Raycaster();pointer=new THREE.Vector2();cam.target=new THREE.Vector3();goal.target=new THREE.Vector3();
  bindControls();return true}
-function clearScene(){for(let i=scene.children.length-1;i>=0;i--){const o=scene.children[i];if(!o.isLight)scene.remove(o)}picks=[];anim=[]}
+function clearScene(){LIVE.built=false;LIVE.fx=[];LIVE.queue=[];for(let i=scene.children.length-1;i>=0;i--){const o=scene.children[i];if(!o.isLight)scene.remove(o)}picks=[];anim=[]}
 function setGoal(o,instant){Object.assign(goal,{theta:o.theta??goal.theta,phi:o.phi??goal.phi,r:o.r??goal.r});if(o.target)goal.target.copy(o.target);
  if(instant){Object.assign(cam,{theta:goal.theta,phi:goal.phi,r:goal.r});cam.target.copy(goal.target)}}
-const HOME={galaxy:{theta:1.3,phi:.84,r:80,target:[0,-1,-8]},orbit:{theta:1.35,phi:.92,r:62,target:[0,0,0]},floor:{theta:1.22,phi:.92,r:50,target:[2,-1,1]}};
+const HOME={live:{theta:1.3,phi:.92,r:112,target:[0,0,0]},galaxy:{theta:1.3,phi:.84,r:80,target:[0,-1,-8]},orbit:{theta:1.35,phi:.92,r:62,target:[0,0,0]},floor:{theta:1.22,phi:.92,r:50,target:[2,-1,1]}};
 function home(instant){const h={...HOME[view]};if(view==="galaxy"&&MISSIONS.length){const ps=MISSIONS.map((_,i)=>galaxyPos(i));h.target=[0,1,2].map(k=>ps.reduce((a,p)=>a+p[k],0)/ps.length);h.r=h.r+17*Math.sqrt(MISSIONS.length-1)}setGoal({theta:h.theta,phi:h.phi,r:(stageEl.clientWidth<640?1.35:1)*h.r,target:new THREE.Vector3(...h.target)},instant)}
 
 /* Galaxy: every mission is a star system; tasks are moons. */
 function buildGalaxy(){
- scene.fog=new THREE.FogExp2(0x070B12,.0028);renderer.shadowMap.enabled=false;
+ scene.fog=new THREE.FogExp2(0x0A0B0D,.0028);renderer.shadowMap.enabled=false;
  stars(2600,160,420,2.2);spiral();nebula();
  MISSIONS.forEach((m,i)=>{
   const tn=tone(m),g=new THREE.Group();g.position.set(...galaxyPos(i));scene.add(g);
@@ -589,7 +649,7 @@ function buildGalaxy(){
 
 /* Orbit: one mission; rings are stages, planets are tasks, brass rings are your approvals. */
 function buildOrbit(){
- const m=MISSIONS[cur],tn=tone(m);scene.fog=new THREE.FogExp2(0x070B12,.005);renderer.shadowMap.enabled=false;
+ const m=MISSIONS[cur],tn=tone(m);scene.fog=new THREE.FogExp2(0x0A0B0D,.005);renderer.shadowMap.enabled=false;
  stars(1600,140,380,2);nebula();
  const sun=new THREE.Mesh(new THREE.SphereGeometry(2.6,48,32),new THREE.MeshStandardMaterial({color:HEX[tn],emissive:HEX[tn],emissiveIntensity:.55,roughness:.4}));scene.add(sun);
  const corona=glow(HEX[tn],26,.55);scene.add(corona);scene.add(glow(HEX[tn],9,.3));
@@ -638,10 +698,10 @@ function gateArch(key,name,text,approved){const c=approved?HEX.brass:HEX.idle,em
  const info={kind:"gate",name,text};[p1,p2,beam].forEach(o=>{o.userData.info=info;picks.push(o)});
  const l=label(name,approved?"approved":"waiting for you",CSSC.brass);l.position.set(X[key],6.1,0);scene.add(l)}
 function buildFloor(){
- const m=MISSIONS[cur];scene.fog=new THREE.Fog(0x0A1016,70,140);renderer.shadowMap.enabled=true;
+ const m=MISSIONS[cur];scene.fog=new THREE.Fog(0x0A0B0D,70,140);renderer.shadowMap.enabled=true;
  stars(900,180,380,2);
  const floor=new THREE.Mesh(new THREE.PlaneGeometry(90,44),new THREE.MeshStandardMaterial({color:HEX.floor,roughness:.95,metalness:0}));floor.rotation.x=-Math.PI/2;floor.receiveShadow=true;scene.add(floor);
- const grid=new THREE.GridHelper(90,45,0x1E3044,0x152332);grid.position.y=.01;scene.add(grid);
+ const grid=new THREE.GridHelper(90,45,0x23272E,0x16191E);grid.position.y=.01;scene.add(grid);
  const done=new Set(m.floor.done),st=k=>done.has(k)?"done":m.floor.now===k?"now":"todo";
  beltSeg(X.intake,0,X.laneA,0);beltSeg(X.integrate,0,X.ready,0);
  station("intake","Intake","request.md verbatim",st("intake"),"Your request stored byte for byte and scanned for secrets.");
@@ -669,12 +729,14 @@ function buildFloor(){
  station("ready","READY_PR","packet + CI",st("ready"),"Local evidence consistent; you record CI and the merge.");
 }
 
-function buildView(instant){if(!renderer)return;clearScene();if(!MISSIONS.length){stars(2000,160,420,2.2);resize();return}({galaxy:buildGalaxy,orbit:buildOrbit,floor:buildFloor})[view]();
+function buildView(instant){if(!renderer)return;if(view==="live"&&LIVE.built){liveSync();liveHud();return}
+ clearScene();if(!MISSIONS.length&&view!=="live"){stars(2000,160,420,2.2);resize();return}({live:buildLive,galaxy:buildGalaxy,orbit:buildOrbit,floor:buildFloor})[view]();
  if(instant)home(true);resize()}
 function setView(v,{fly=true}={}){view=v;document.querySelectorAll("#vswitch button").forEach(b=>b.setAttribute("aria-selected",b.dataset.v===v));
  $("howto").textContent=HOW[v];$("legend").innerHTML=LEGEND[v].map(([c,t])=>`<span><i style="background:${CSSC[c]}"></i>${t}</span>`).join("");
- buildView(false);home(!fly)}
-function flyToMission(i){if(view!=="galaxy")return;const p=new THREE.Vector3(...galaxyPos(i));setGoal({target:p,r:stageEl.clientWidth<640?46:34,phi:1.05})}
+ buildView(false);home(!fly);liveHud()}
+function flyToMission(i){if(view==="live"){const o=SUMMARIES[i]&&LIVE.objs.get(SUMMARIES[i].id);if(o)setGoal({target:o.g.getWorldPosition(new THREE.Vector3()),r:stageEl.clientWidth<640?44:32,phi:1.02});return}
+ if(view!=="galaxy")return;const p=new THREE.Vector3(...galaxyPos(i));setGoal({target:p,r:stageEl.clientWidth<640?46:34,phi:1.05})}
 
 /* controls: drag rotate, shift/right-drag pan, wheel or pinch zoom, click inspect */
 function setCam(){const t=cam.target;camera.position.set(t.x+cam.r*Math.sin(cam.phi)*Math.cos(cam.theta),t.y+cam.r*Math.cos(cam.phi),t.z+cam.r*Math.sin(cam.phi)*Math.sin(cam.theta));camera.lookAt(t)}
@@ -691,8 +753,10 @@ function bindControls(){
   if(e.pointerType==="mouse")hover(e)});
  const up=e=>{ptrs.delete(e.pointerId);if(ptrs.size<2)pinch=null;
   if(drag&&moved<6){const info=hit(e),now=performance.now();
-   if(info&&info.kind==="mission"){openMission(info.mi);if(now-lastClick<380&&view==="galaxy"){setView("orbit")}else flyToMission(info.mi);lastClick=now;inspect(info)}
-   else inspect(info||null)}
+   if(info&&info.kind==="mission"&&info.mi>=0){openMission(info.mi);if(now-lastClick<380&&(view==="galaxy"||view==="live")){setView("orbit")}else flyToMission(info.mi);lastClick=now;inspect(info)}
+   else if(info&&info.live)liveInspect(info)
+   else if(info)inspect(info)
+   if(info)openInsp();else closeInsp()}
   drag=null};
  canvas.addEventListener("pointerup",up);canvas.addEventListener("pointercancel",up);
  canvas.addEventListener("pointerleave",()=>{tip.hidden=true});
@@ -707,26 +771,194 @@ function hit(e){const r=canvas.getBoundingClientRect();pointer.x=((e.clientX-r.l
  raycaster.setFromCamera(pointer,camera);const h=raycaster.intersectObjects(picks,false)[0];return h&&h.object.userData.info}
 function hover(e){const info=hit(e),r=stageEl.getBoundingClientRect();
  if(info){tip.hidden=false;tip.style.left=Math.min(e.clientX-r.left,r.width-220)+"px";tip.style.top=(e.clientY-r.top)+"px";
-  tip.textContent=info.kind==="task"?`${info.t.id} · ${info.t.name} · ${WORD[info.t.state]}`:info.kind==="mission"?`${MISSIONS[info.mi].title} · ${MISSIONS[info.mi].state.replace("_"," ")} · click to fly, double-click for orbit`:info.name;
+  tip.textContent=info.tip||(info.kind==="task"?`${info.t.id} · ${info.t.name} · ${WORD[info.t.state]}`:info.kind==="mission"?`${MISSIONS[info.mi].title} · ${MISSIONS[info.mi].state.replace("_"," ")} · click to fly, double-click for orbit`:info.name);
   canvas.style.cursor="pointer"}else{tip.hidden=true;canvas.style.cursor=""}}
 let last=0;
 function loop(ts){requestAnimationFrame(loop);if(!renderer||$("view-floor").hidden)return;const dt=Math.min(.05,(ts-last)/1000||0);last=ts;
  const k=1-Math.pow(.0015,dt);cam.theta+=(goal.theta-cam.theta)*k;cam.phi+=(goal.phi-cam.phi)*k;cam.r+=(goal.r-cam.r)*k;cam.target.lerp(goal.target,k);
  anim.forEach(f=>f(ts,dt));setCam();renderer.render(scene,camera)}
 
+
+/* Live orbit: the whole factory on one turning plane, moved only by its records (after the MAPS orbit).
+   A mission's ring is its stage, so it travels outward as it advances; it turns only as fast as its events
+   arrive and cools when they stop; task moons orbit only while an agent holds them; sparks around a moon are
+   files its open lane changed, fading over minutes; every new event pulses where it lands; on opening, the
+   changes since your last visit replay. Nothing moves for decoration, and HALT stops everything. */
+const LIVE={data:null,seq:{},objs:new Map(),built:false,first:true,queue:[],replaying:0,ticker:[],fx:[],plane:null,core:null,coreGlow:null,coreLabel:null,coreKey:""};
+const LR=k=>13+k*6.2;
+const hashf=s=>{let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return((h>>>0)%10000)/10000};
+const LIVE_TONE={TODO:"idle",RUNNING:"run",VERIFYING:"run",DONE:"ok",BLOCKED:"crit"};
+const missionTone=m=>m.state==="BLOCKED"?"crit":["PAUSED","CANCELED"].includes(m.state)?"idle":["READY_PR","MERGED","DELIVERED"].includes(m.state)?"ok":"run";
+const heatOf=m=>m.pace.quiet_for==null?0:Math.exp(-m.pace.quiet_for/900);   // a quarter hour after its last event a mission has cooled by two thirds
+const paceSpeed=m=>LIVE.data&&LIVE.data.halted?0:Math.min(.07,.006*m.pace.hour)+.03*heatOf(m);   // rad/s: a busy mission turns once in about a minute, one at rest stands still
+const ago=s=>s<90?Math.round(s)+" s ago":s<5400?Math.round(s/60)+" min ago":s<129600?Math.round(s/3600)+" h ago":Math.round(s/86400)+" d ago";
+const liveKey=()=>"sf-orbit-seen:"+((LIVE.data&&LIVE.data.root)||location.host);
+let ringTex=null;
+function ringTexture(){if(ringTex)return ringTex;const c=document.createElement("canvas");c.width=c.height=128;const x=c.getContext("2d");
+ x.strokeStyle="#fff";x.lineWidth=5;x.beginPath();x.arc(64,64,58,0,Math.PI*2);x.stroke();ringTex=new THREE.CanvasTexture(c);return ringTex}
+function fxPulse(pos,color,size=6,dur=1.6){if(!playing)return;
+ const s=new THREE.Sprite(new THREE.SpriteMaterial({map:ringTexture(),color,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));s.position.copy(pos);scene.add(s);
+ LIVE.fx.push({s,t:0,dur,f:k=>{s.scale.setScalar(1+k*size);s.material.opacity=1-k}})}
+function fxComet(from,to,color,dur=1.3){if(!playing)return;const s=glow(color,3.4,1);scene.add(s);
+ LIVE.fx.push({s,t:0,dur,f:k=>{const b=to(),mid=from.clone().add(b).multiplyScalar(.5),a=1-k;mid.y+=6+from.distanceTo(b)*.18;
+  s.position.set(a*a*from.x+2*a*k*mid.x+k*k*b.x,a*a*from.y+2*a*k*mid.y+k*k*b.y,a*a*from.z+2*a*k*mid.z+k*k*b.z);s.material.opacity=k<.85?1:(1-k)/.15},
+  end:()=>fxPulse(to(),color,5,1.2)})}
+function fileCloud(moon,files,seed){const n=files.length,pos=new Float32Array(n*3),col=new Float32Array(n*3),c=new THREE.Color();
+ files.forEach((f,i)=>{const th=hashf(seed+f.path)*Math.PI*2,ph=Math.acos(2*hashf(f.path+seed)-1),r=1.1+.8*hashf(f.path);   // a file keeps its place between polls
+  pos.set([r*Math.sin(ph)*Math.cos(th),r*Math.cos(ph),r*Math.sin(ph)*Math.sin(th)],i*3);
+  c.setHex(HEX.ice).multiplyScalar(f.age==null?.15:.2+.8*Math.exp(-f.age/600));col.set([c.r,c.g,c.b],i*3)});
+ const g=new THREE.BufferGeometry();g.setAttribute("position",new THREE.BufferAttribute(pos,3));g.setAttribute("color",new THREE.BufferAttribute(col,3));
+ const p=new THREE.Points(g,new THREE.PointsMaterial({size:.9,vertexColors:true,transparent:true,depthWrite:false,map:glowTexture(),blending:THREE.AdditiveBlending}));
+ p.userData.fresh=files.some(f=>f.age!=null&&f.age<30);moon.add(p);return p}
+
+function buildLive(){
+ scene.fog=new THREE.FogExp2(0x0A0B0D,.0032);renderer.shadowMap.enabled=false;
+ stars(2200,170,420,2);nebula();
+ LIVE.objs=new Map();LIVE.fx=[];LIVE.queue=[];LIVE.coreKey="";LIVE.built=true;
+ const plane=new THREE.Group();plane.rotation.x=.14;scene.add(plane);LIVE.plane=plane;
+ STAGES.forEach((s,k)=>{plane.add(ring(LR(k),k===STAGES.length-1?HEX.ok:0x3A5270,k===STAGES.length-1?.4:.3));
+  const l=label(s.replace("_"," "),null,CSSC.idle,15),a=-Math.PI/2-.1;l.position.set(Math.cos(a)*LR(k),.6,Math.sin(a)*LR(k));plane.add(l)});
+ const core=new THREE.Mesh(new THREE.SphereGeometry(3.2,48,32),new THREE.MeshStandardMaterial({color:HEX.core,emissive:HEX.run,emissiveIntensity:.4,roughness:.4}));plane.add(core);
+ core.userData.info={kind:"core",tip:"The factory: click for its pulse"};LIVE.core=core;LIVE.coreGlow=glow(HEX.run,28,.4);plane.add(LIVE.coreGlow);
+ anim.push(liveTick);
+ if(LIVE.data)liveSync();else pollActivity()}
+
+function liveMission(m){
+ const g=new THREE.Group();LIVE.plane.add(g);
+ const o={g,m,angle:hashf(m.id)*Math.PI*2,r:LR(stageAt(m.state,m.previous_state)),shown:null,moons:new Map()};
+ o.body=new THREE.Mesh(new THREE.SphereGeometry(1,40,28),new THREE.MeshStandardMaterial({roughness:.45}));g.add(o.body);
+ o.halo=glow(HEX.run,10,.4);g.add(o.halo);
+ o.flag=new THREE.Mesh(new THREE.TorusGeometry(1,.06,10,120),new THREE.MeshBasicMaterial({color:HEX.brass,transparent:true,opacity:0}));o.flag.rotation.x=Math.PI/2;g.add(o.flag);
+ o.sel=new THREE.Mesh(new THREE.TorusGeometry(1,.04,8,120),new THREE.MeshBasicMaterial({color:HEX.ice,transparent:true,opacity:.9}));o.sel.rotation.x=Math.PI/2;g.add(o.sel);
+ o.tilt=new THREE.Group();o.tilt.rotation.x=.45;o.tilt.rotation.z=hashf(m.id+"z")-.5;g.add(o.tilt);
+ LIVE.objs.set(m.id,o);return o}
+
+function liveStyle(o){
+ const m=o.m,tn=m.stale?"idle":missionTone(m),heat=heatOf(m),size=1.15+.2*Math.min(m.tasks.length,8);
+ o.body.scale.setScalar(size);o.body.material.color.setHex(HEX[tn]);o.body.material.emissive.setHex(HEX[tn]);o.body.material.emissiveIntensity=.15+.55*heat;
+ o.halo.material.color.setHex(HEX[tn]);o.halo.scale.setScalar(size*(4+5*heat));o.baseHalo=.1+.55*heat;
+ o.att=m.attention.includes("blocked")?"crit":m.attention.some(k=>k==="approve"||k==="ci")?"brass":null;
+ if(o.att)o.flag.material.color.setHex(HEX[o.att]);o.flag.scale.setScalar(size*1.75);o.sel.scale.setScalar(size*2.2);
+ const pace=m.pace.quiet_for==null?"no events yet":`${m.pace.hour} event${m.pace.hour===1?"":"s"} this hour · last ${ago(m.pace.quiet_for)}`;
+ o.body.userData.info={kind:"mission",mi:SUMMARIES.findIndex(x=>x.id===m.id),tip:`${m.title||m.id} · ${m.state.replace("_"," ")} · ${pace}`};
+ const key=`${m.title}|${m.state}|${tn}`;
+ if(key!==o.labelKey){if(o.label){o.g.remove(o.label);o.label.material.map.dispose();o.label.material.dispose()}
+  o.label=label(m.title||m.id,`${m.id} · ${m.state.replace("_"," ")}`,CSSC[tn],17);o.g.add(o.label);o.labelKey=key}
+ o.label.position.set(0,size+3.6,0);
+ const moonKey=m.tasks.map(t=>t.id).join(",")+"|"+size;
+ if(moonKey!==o.moonKey){o.tilt.clear();o.moons=new Map();
+  m.tasks.forEach((t,k)=>{const rad=size*1.9+1.2+k*1.05;o.tilt.add(ring(rad,0x6F8FB0,.2,90));
+   const moon=new THREE.Mesh(new THREE.SphereGeometry(.42,20,14),mat(HEX.idle,.5,.35,.1));o.tilt.add(moon);const mg=glow(HEX.idle,2.4,.6);moon.add(mg);
+   o.moons.set(t.id,{moon,mg,rad,a:hashf(m.id+t.id)*Math.PI*2,files:null})});o.moonKey=moonKey}
+ const lanes=new Map(m.lanes.map(l=>[l.task,l]));
+ m.tasks.forEach(t=>{const q=o.moons.get(t.id),st=LIVE_TONE[t.status]||"idle",lane=lanes.get(t.id);q.st=t.status;
+  q.moon.material.color.setHex(HEX[st]);q.moon.material.emissive.setHex(HEX[st]);q.mg.material.color.setHex(HEX[st]);
+  if(q.files){q.moon.remove(q.files);q.files.geometry.dispose();q.files.material.dispose();q.files=null}
+  if(lane&&lane.files.length)q.files=fileCloud(q.moon,lane.files,m.id+t.id);
+  const written=lane?` · ${lane.files.length} file${lane.files.length===1?"":"s"} changed in its lane`:"";
+  q.moon.userData.info={kind:"task",live:true,mission:m.id,tid:t.id,files:lane?lane.files:null,t:{id:t.id,name:t.title||t.id,state:st},tip:`${t.id} · ${t.title||""} · ${WORD[st]}${written}`}})}
+
+function liveSync(){
+ if(!LIVE.built||!LIVE.data)return;const D=LIVE.data,ids=new Set(D.missions.map(m=>m.id));
+ for(const [id,o] of LIVE.objs)if(!ids.has(id)){LIVE.plane.remove(o.g);LIVE.objs.delete(id)}
+ for(const m of D.missions){const o=LIVE.objs.get(m.id)||liveMission(m);o.m=m;liveStyle(o)}
+ const lanes=D.missions.reduce((a,m)=>a+m.lanes.length,0),key=`${WORKSPACE&&WORKSPACE.project}|${D.missions.length}|${lanes}|${D.halted?D.halted.reason:""}`;
+ if(key!==LIVE.coreKey){if(LIVE.coreLabel){LIVE.plane.remove(LIVE.coreLabel);LIVE.coreLabel.material.map.dispose()}
+  LIVE.coreLabel=label((WORKSPACE&&WORKSPACE.project)||"factory",D.halted?"HALTED · "+(D.halted.reason||""):`${D.missions.length} mission${D.missions.length===1?"":"s"} · ${lanes} lane${lanes===1?"":"s"} open`,D.halted?CSSC.crit:CSSC.core,20);
+  LIVE.coreLabel.position.set(0,8.6,0);LIVE.plane.add(LIVE.coreLabel);LIVE.coreKey=key}
+ picks=[LIVE.core];for(const o of LIVE.objs.values()){picks.push(o.body);for(const q of o.moons.values())picks.push(q.moon)}}
+
+function liveTick(ts,dt){
+ const D=LIVE.data;if(!D||!LIVE.built)return;const halted=!!D.halted;
+ while(LIVE.queue.length&&LIVE.queue[0].at<=ts)liveFire(LIVE.queue.shift().e);
+ if(LIVE.replaying&&!LIVE.queue.length){LIVE.replaying=0;for(const o of LIVE.objs.values())o.shown=null;liveHud();liveSeen()}
+ let heat=0;
+ for(const o of LIVE.objs.values()){const m=o.m;heat+=heatOf(m);
+  const target=LR(stageAt(o.shown||m.state,m.previous_state));
+  if(playing){o.angle+=paceSpeed(m)*dt;o.r+=(target-o.r)*Math.min(1,dt*1.3)}else o.r=target;
+  o.g.position.set(Math.cos(o.angle)*o.r,0,Math.sin(o.angle)*o.r);
+  o.halo.material.opacity=o.baseHalo*(playing&&!halted?1+.15*Math.sin(ts/900+o.angle*7):1);
+  o.flag.material.opacity=o.att?(playing?.3+.55*(.5+.5*Math.sin(ts/(o.att==="crit"?300:650))):.8):0;
+  o.sel.visible=!!MISSIONS[cur]&&MISSIONS[cur].id===m.id;if(playing)o.sel.rotation.z+=dt*.5;
+  for(const q of o.moons.values()){if(playing&&!halted&&(q.st==="RUNNING"||q.st==="VERIFYING"))q.a+=dt*(q.st==="VERIFYING"?.35:.7);
+   q.moon.position.set(Math.cos(q.a)*q.rad,0,Math.sin(q.a)*q.rad);if(q.files&&q.files.userData.fresh&&playing)q.files.material.size=.9+.35*Math.sin(ts/180)}}
+ const tn=halted?"crit":"run",lit=Math.min(1,heat),c=LIVE.core.material;c.color.setHex(halted?HEX.crit:HEX.core);c.emissive.setHex(HEX[tn]);c.emissiveIntensity=.3+.45*lit;
+ LIVE.coreGlow.material.color.setHex(HEX[tn]);LIVE.coreGlow.material.opacity=(.25+.4*lit)*(playing&&!halted?1+.1*Math.sin(ts/700):1);
+ if(playing&&!halted)LIVE.core.rotation.y+=dt*(.04+.3*lit);
+ for(let i=LIVE.fx.length-1;i>=0;i--){const f=LIVE.fx[i];f.t+=dt/f.dur;f.f(Math.min(1,f.t));
+  if(f.t>=1){scene.remove(f.s);f.s.material.dispose();LIVE.fx.splice(i,1);if(f.end)f.end()}}}
+
+/* One event landing: a comet from the core (or from above, for your own approvals), a pulse on the moons it moved
+   and a wider one when the mission changed stage. */
+function liveWords(e){const h=human(e),ch=e.change||{};if(h.text!==e.command)return h;
+ if(ch.state)return{text:"Mission → "+String(e.state).replace("_"," "),tone:e.state==="BLOCKED"?"crit":"run"};
+ const moved=Object.entries(ch.tasks||{});if(moved.length)return{text:moved.slice(0,3).map(([t,[,b]])=>t+" → "+b).join(", "),tone:moved.some(([,[,b]])=>b==="BLOCKED")?"crit":moved.every(([,[,b]])=>b==="DONE")?"ok":"run"};
+ return{text:"Record updated",tone:"run"}}
+function liveFire(e){
+ const h=liveWords(e),col=HEX[h.tone]||HEX.run,o=LIVE.objs.get(e.mission);
+ LIVE.ticker.unshift({e,h});LIVE.ticker.length=Math.min(LIVE.ticker.length,6);liveHud();
+ if(!o)return;const ch=e.change||{};
+ if(ch.state&&LIVE.replaying)o.shown=e.state;
+ const to=()=>o.g.getWorldPosition(new THREE.Vector3());
+ fxComet(h.tone==="brass"?new THREE.Vector3(0,42,0):LIVE.core.getWorldPosition(new THREE.Vector3()),to,col);
+ for(const [tid,[,b]] of Object.entries(ch.tasks||{})){const q=o.moons.get(tid);if(q)fxPulse(q.moon.getWorldPosition(new THREE.Vector3()),HEX[LIVE_TONE[b]]||col,3,1.4)}
+ if(ch.state)setTimeout(()=>fxPulse(to(),HEX[missionTone({state:e.state})],14,2.2),1300)}
+/* A task moon opens its mission, then the task with the files its lane changed. */
+async function liveInspect(info){const i=SUMMARIES.findIndex(x=>x.id===info.mission);if(i>=0)await openMission(i);
+ const t=MISSIONS[cur]&&MISSIONS[cur].id===info.mission&&MISSIONS[cur].tasks.find(x=>x.id===info.tid);
+ inspect({...info,t:t||{...info.t,status:"",progress:0,who:"—",paths:[],tree:"—",branch:"—",attempt:"—",deps:[],checks:"",verify:"—"}})}
+function liveQueue(list,gap,delay=0){const t0=performance.now()+delay;list.forEach((e,i)=>LIVE.queue.push({at:t0+i*gap,e}));LIVE.queue.sort((a,b)=>a.at-b.at)}
+function liveReplay(evs){
+ let seen=0;try{seen=+localStorage.getItem(liveKey())||0}catch(err){}
+ const list=(seen?evs.filter(e=>Date.parse(e.at)/1000>seen):evs.slice(-10)).slice(-40);
+ const quiet=evs.slice(0,evs.length-(playing?list.length:0)).slice(-6).reverse().map(e=>({e,h:liveWords(e)}));
+ LIVE.ticker=quiet;if(!list.length||!playing){liveSeen();return}
+ for(const e of list){const o=LIVE.objs.get(e.mission),from=e.change&&e.change.state&&e.change.state[0];   // each mission starts where it stood before the first replayed change
+  if(o&&o.shown==null&&from){o.shown=from;o.r=LR(stageAt(from,o.m.previous_state))}}
+ LIVE.replaying=list.length;LIVE.since=seen;liveQueue(list,Math.min(450,7000/list.length),900)}
+function liveSeen(){if(LIVE.replaying||!LIVE.data)return;try{localStorage.setItem(liveKey(),String(LIVE.data.now))}catch(err){}}
+let livePolling=false;
+async function pollActivity(){
+ if(!TOKEN||livePolling)return;livePolling=true;
+ try{const since=Object.entries(LIVE.seq).map(([k,v])=>k+":"+v).join(",");
+  const D=await api("/api/activity"+(since&&!LIVE.first?"?since="+encodeURIComponent(since):""));
+  LIVE.data=D;D.missions.forEach(m=>{LIVE.seq[m.id]=m.seq});liveSync();
+  if(LIVE.built){if(LIVE.first){LIVE.first=false;liveReplay(D.events)}else liveQueue(D.events,350)}
+  liveHud();liveSeen()}
+ catch(err){setConn("Disconnected: "+err.message,"crit")}
+ finally{livePolling=false}}
+function liveHud(){
+ const el=$("livehud");el.hidden=view!=="live"||!LIVE.data;if(el.hidden)return;const D=LIVE.data,M=D.missions;
+ const waiting=M.filter(m=>m.attention.some(k=>["approve","ci","blocked"].includes(k))).length,lanes=M.reduce((a,m)=>a+m.lanes.length,0);
+ const files=M.reduce((a,m)=>a+m.lanes.reduce((b,l)=>b+l.files.filter(f=>f.age!=null&&f.age<600).length,0),0);
+ const running=M.reduce((a,m)=>a+m.tasks.filter(t=>t.status==="RUNNING"||t.status==="VERIFYING").length,0);
+ const last=Math.min(...M.map(m=>m.pace.quiet_for??Infinity)),n=(k,w)=>`${k} ${w}${k===1?"":"s"}`;
+ let word,cls;
+ if(D.halted){word="Halted · "+(D.halted.reason||"kill switch on");cls="crit"}
+ else if(LIVE.replaying){word=`Replaying ${n(LIVE.replaying,"change")} since ${LIVE.since?clock(new Date(LIVE.since*1000).toISOString()):"the start"}`;cls="ice"}
+ else if(waiting){word=`${waiting} waiting on you`;cls="brass"}
+ else if(running||files){word=["At work",n(running,"task")+" active",lanes&&n(lanes,"lane"),files&&n(files,"file")+" written in 10 min"].filter(Boolean).join(" · ");cls="run"}
+ else{word=isFinite(last)?"Quiet · last change "+ago(last):"Quiet";cls="idle"}
+ const w=$("lh-word");w.className="lh-word "+cls;w.textContent=word;
+ const moved=e=>/task-transition/.test(e.command||"")||liveWords(e).text!==human(e).text?"":Object.entries((e.change&&e.change.tasks)||{}).slice(0,3).map(([t,[,b]])=>` · ${esc(t)} → ${esc(b)}`).join("");
+ $("lh-tick").innerHTML=LIVE.ticker.map(({e,h})=>`<li class="t-${h.tone}"><span class="mono muted">${clock(e.at)}</span> <b class="mono">${esc(e.mission)}</b> ${esc(h.text)}${moved(e)}</li>`).join("")}
+setInterval(()=>{if(renderer&&view==="live"&&!document.hidden)pollActivity()},4000);
+
 /* ------------------------------ wiring ------------------------------ */
 function render(){
  renderRail();
- if(!MISSIONS.length){$("mname").textContent="No open missions";$("mmeta").textContent="";$("mreq").textContent="Create one with software-factory mission create, or run /factory-build in your coding client.";$("kpis").innerHTML="";$("feed").innerHTML="";$("insp").innerHTML='<p class="muted" style="margin:0">Nothing to inspect yet.</p>';if(renderer){clearScene();stars(2000,160,420,2.2)}return}
+ if(!MISSIONS.length){$("mname").textContent="No open missions";$("mmeta").textContent="";$("mreq").textContent="Create one with software-factory mission create, or run /factory-build in your coding client.";$("kpis").innerHTML="";$("feed").innerHTML="";$("caption").innerHTML="";$("insp").innerHTML='<p class="muted" style="margin:0">Nothing to inspect yet.</p>';if(renderer){clearScene();stars(2000,160,420,2.2)}return}
  const m=MISSIONS[cur];renderHead(m);renderViews(m);inspect(null);if(renderer)buildView(false);
  const rg=document.getElementById("run-gate");if(rg)rg.onclick=runGate}
 $("st-host").textContent=location.host;
+function tickClock(){const d=new Date();$("clock").innerHTML=`<b>${d.toTimeString().slice(0,5)}</b><span>${d.toLocaleDateString(undefined,{weekday:"short",day:"numeric",month:"short"})}</span>`}
+tickClock();setInterval(tickClock,15000);$("insp-x").onclick=closeInsp;
 const gl=initGL();renderTabs();
-if(gl){view="galaxy";setView("galaxy",{fly:false});requestAnimationFrame(loop)}else{$("howto").textContent=HOW.galaxy}
+if(gl){view="live";setView("live",{fly:false});requestAnimationFrame(loop)}else{$("howto").textContent=HOW.galaxy}
 showTab();
 if(!TOKEN){setConn("Open the URL printed by software-factory serve (it carries the session token)","crit")}else{refresh().then(stream)}
 document.addEventListener("keydown",e=>{if(e.target.closest("input,textarea"))return;const n=+e.key;
  if(n>=1&&n<=TABS.length){tab=TABS[n-1][0];renderTabs();showTab()}
- const v={g:"galaxy",o:"orbit",f:"floor"}[e.key];if(v&&gl&&tab==="floor")setView(v)});
+ const v={l:"live",g:"galaxy",o:"orbit",f:"floor"}[e.key];if(v&&gl)setView(v);if(e.key==="Escape")closeInsp()});
 </script>
 </body></html>

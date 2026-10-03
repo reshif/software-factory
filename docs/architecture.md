@@ -48,7 +48,7 @@ flowchart TB
 | `events.py`, `watch.py` | Hash-chained mission event log; HALT kill switch, stale missions, notify hook |
 | `lanes.py`, `workspaces.py` | A Git worktree per parallel task and per parallel mission, with overlap refusal |
 | `crew.py`, `options.py`, `retro.py` | Project knowledge with consent, graded options, retros and lessons (0.3.3) |
-| `serve.py` + `data/deck/index.html` | The read-only Mission Deck |
+| `serve.py` + `data/deck/index.html` | The read-only Mission Deck, including the Live orbit fed by `/api/activity` (event logs and open lanes' changed files) |
 | `models.py`, `routing.py`, `jev.py`, `semantic.py`, `triage.py`, `auth.py`, `redaction.py` | Model metadata and optional JEV assistance; advisory only |
 
 ## 2. A mission, end to end (FORGE)

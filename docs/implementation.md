@@ -44,6 +44,13 @@ Built in seven reviewed steps, each with the full suite, lint, build and an isol
 
 Removed as superseded: the 0.2.x release artifacts, the 0.2.5 architecture set (replaced by [architecture.md](architecture.md)) and the research drafts, at the user's request.
 
+## 0.3.10 a live factory orbit, in the MAPS Home theme
+
+The user asked for the Orbit from MAPS, more live and realistic, and then for the whole Mission Deck in the MAPS Home theme.
+
+- **Live orbit.** A new default 3D view places every mission (all worktrees) on the ring of its stage, so it travels outward as it advances. It turns only as fast as its events arrive and cools when they stop; task moons orbit only while RUNNING or VERIFYING; sparks are files an open lane has changed (`git diff` and untracked files in the lane worktree), fading by age; each new event lands as a comet and a pulse; on opening, the changes since the last visit replay. HALT freezes it. `GET /api/activity` (token required, read-only) supplies it: each mission's stage, tasks, attention and pace from its event log, each event with what it changed, and `since=M-1:4,...` for only newer events.
+- **The MAPS Home desk.** A mono HUD with the clock and one word (quiet, at work, waiting, blocked, halted) that also tints the Brain's edge and the tab title; the 3D views fill the first screen on a hex grid with a floating inspector; one alarm ladder (waiting on you, missions, landed) beside it; the mission's stepper, metrics and tabs below. Inter and JetBrains Mono load from Google Fonts, three.js from cdnjs, as before; offline the page falls back to system fonts.
+
 ## 0.3.9 the user chooses the model for each role, and the factory holds missions to it
 
 The user found that nothing at `/factory-build` asked which model does what, Codex and Copilot agents were never pinned, and no mission recorded its models.

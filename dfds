@@ -1,0 +1,279 @@
+flowchart TB
+  %% Shapes: rounded = agent role, rectangle = step (from a stage file), hexagon = CLI check, parallelogram = artifact,
+  %% stadium in yellow = human gate (you decide by replying in chat). Green border = new or changed since the v0.6.1 diagram (v0.7.0 adds B-31…B-40; v0.7.5 adds B-29 ids-not-documents, B-41 the inspector and the conformance fixes); the B-number is its
+  %% entry in docs/BACKLOG.md. The 12 Claude-side gaps of v0.6.1 (GAP1-GAP12) are closed. Copilot is left out.
+
+  REQ(["/factory &lt;what you want&gt;<br/>one entry point: it asks factory next and runs every stage below · B-25"]):::humanfix --> INTAKE
+  CHAT{{"UserPromptSubmit hook<br/>your own reply approve · deny · resume … is applied<br/>before the model sees it; subagent prompts never count · B-25<br/>also: accept lesson L4 · reject lesson L4 &lt;why&gt; ·<br/>resume reviewing one more round &lt;why&gt; · B-37<br/>an approve sent while a gate document is still drafted is held against its hash (chat-early);<br/>human-only commands from a terminal also need a real TTY · B-27 · 0.7.5"}}:::clifix
+  SETUP{{"setup: factory init · standards detect → you pick → standards adopt<br/>(python@1, typescript@1: checks scoped to each job's changes) ·<br/>doctor (no GitHub remote = warning, not a failure) · B-39 · B-40"}}:::clifix
+  SETUP -.->|READY| REQ
+
+  %% ---------------------------------------------------------------- 0. INTAKE
+  subgraph S0["0 · INTAKE · /factory · stage intake"]
+    direction TB
+    INTAKE["Main session reads the repo<br/>(files, CODEOWNERS, tests)"] --> CLS["Classify work type<br/>feature · bug · hotfix · refactor · migration<br/>dependency · docs · spike · greenfield"]
+    CLS --> RISK["Propose risk low/medium/high<br/>(policy rules can only raise it;<br/>hotfix + migration floor = high)"]
+    RISK --> SIZE{"Job or epic?<br/>&gt;1 PR, &gt;1 subsystem, migration + consumers,<br/>public API + callers, staged rollout, &gt;3 days"}
+    SIZE --> CONFIRM(["You confirm type, risk, job vs epic<br/>(one question)"]):::human
+    CONFIRM -->|job| JNEW{{"factory job new<br/>snapshot policy + model routing"}}:::cli
+    CONFIRM -->|epic| ENEW{{"factory epic new"}}:::cli
+    JNEW --> A0[/"state.json · policy.json"/]:::art
+  end
+
+  %% ---------------------------------------------------------------- 1. INTENT
+  subgraph S1["1 · INTENT · /factory · stage intent + workflow intent-review.js (returns questions · verdict only)"]
+    direction TB
+    QLOOP["Question loop with you:<br/>restate goal, ask only what the repo can't answer<br/>(a follow-up job starts from followup-from.md)"] --> DRAFT[/"intent.md draft<br/>goal · non-goals · AC-1..n"/]:::art
+    DRAFT --> BRIEF1{{"intent-review workflow, args {jobId, pluginRoot}:<br/>brief runs factory intent round start + factory wfargs intent<br/>(the CLI owns the round, its cap and the questions already asked) · B-29"}}:::clifix
+    BRIEF1 --> FAN1(("fan-out"))
+    BRIEF1 -->|"round &gt; max_intent_rounds + 2:<br/>the CLI refuses (not converging)"| PARKI["park: you decide"]
+    FAN1 --> IA1("intent-analyst<br/>focus: ambiguity")
+    FAN1 --> IA2("intent-analyst<br/>focus: constraints")
+    FAN1 --> IA3("intent-analyst<br/>focus: testability")
+    IA1 --> ARETRY
+    IA2 --> ARETRY
+    IA3 --> ARETRY
+    ARETRY{"all three returned?<br/>a failed analyst is retried once"}:::fixed
+    ARETRY -->|"still missing → degraded"| DEGR(["You choose: re-run, or go on without that angle<br/>(written under Assumptions in intent.md)<br/>B-04"]):::humanfix
+    DEGR -->|re-run| FAN1
+    DEGR -->|go on| JUDGE
+    ARETRY -->|yes| JUDGE
+    JUDGE("judge (a workflow agent; the main session only without workflows)<br/>merge, dismiss with reason, never re-ask (reads the asked list);<br/>≤7 questions early, ≤3 later, none from round<br/>max_intent_rounds (then God Eye) · B-35 · B-37"):::fixed
+    JUDGE -.->|"recorder: factory intent round asked"| BRIEF1
+    JUDGE -->|open questions| QLOOP
+    JUDGE -->|none| GODEYE("god-eye · focus intent<br/>reads the whole intent cold")
+    GODEYE -->|revise| QLOOP
+    GODEYE -->|"recorder: factory critique record --kind intent"| GREC[/"critiques/intent.json<br/>bound to the intent's hash"/]:::artfix
+    GODEYE -->|approve| CK1{{"advance awaiting_intent_approval<br/>checks: intent_has_criteria · type_intent_rules ·<br/>epic_trace · intent_critiqued (God Eye approved this intent) · 0.7.5"}}:::clifix
+    CK1 --> H1(["H1 · you approve intent<br/>you reply approve · deny &lt;what must change&gt;<br/>approval bound to file hash"]):::human
+    H1 -.->|"approved intent.md is frozen; a stale approval is refused<br/>at approvals_fresh (H3, integrating) → amend and re-approve"| QLOOP
+  end
+  A0 --> QLOOP
+  CHAT -.->|applies your reply at every gate| H1
+
+  %% ---------------------------------------------------------------- 2. DESIGN
+  subgraph S2["2 · DESIGN · factory:design-runner runs the whole stage in its own context; returns gate · planning · needs_user · parked · error · B-29"]
+    direction TB
+    RES("researcher<br/>findings.md, every claim cited<br/>or UNVERIFIED; spikes end with a recommendation") --> UNK{"Unknown blocks<br/>the design?"}
+    RES -.-> DOCS{{"SubagentStop gate checks the file block<br/>and saves it in its draft window (doc_saved):<br/>findings · threat model · ADR · plan · slices · epic contracts · B-29"}}:::clifix
+    UNK -->|"yes (runner returns needs_user)"| ASKD(["You answer"]):::human --> RES
+    UNK -->|no| TMQ{"threat-model.md required?<br/>(policy: high risk + security pack)"}
+    TMQ -->|yes| TM("threat-modeler<br/>threat-model.md")
+    TMQ -->|no| ARCH
+    TM --> ARCH("architect<br/>options → decision")
+    ARCH -->|real decision| ADR[/"adr-NNN-*.md"/]:::art
+    ARCH -->|no real decision| NOADR[/"no-adr.md (why not)"/]:::art
+    ADR --> DCRIT
+    NOADR --> LOWQ{"low risk<br/>and no ADR?"}:::fixed
+    LOWQ -->|yes| SKIPH2["straight to planning<br/>(agent transition)"]
+    LOWQ -->|no| DCRIT
+    DCRIT("god-eye · focus design<br/>cold critique of the ADR or no-adr.md<br/>factory critique record --kind design<br/>bound to the file hash, rounds counted<br/>B-13"):::fixed
+    DCRIT -->|revise| ARCH
+    DCRIT --> CK2{{"checks: findings_exist · design_record ·<br/>required_artifacts · design critique<br/>(no-adr at high risk → H2: no_adr_risk_ok)"}}:::cli
+    CK2 -->|"ADR, or no-adr at high risk<br/>(2nd 'revise' may go on: you see it)"| H2(["H2 · you approve design<br/>ADR or high-risk no-adr.md + the critique<br/>you reply approve · deny · B-05"]):::humanfix
+    CK2 -->|"no-adr, medium risk<br/>(critique must approve)"| SKIPH2
+    RES -->|"spike (no architect, no critique)"| SPIKE["findings + recommendation"]
+    SPIKE --> HF(["HF · you accept the findings<br/>you reply approve · deny (more research) · B-14"]):::humanfix
+    HF -.->|more research| RES
+  end
+  H1 -->|"feature, bug, refactor, migration,<br/>dependency, docs, spike, greenfield"| RES
+
+  %% ---------------------------------------------------------------- 3. PLAN
+  subgraph S3["3 · PLAN · factory:plan-runner runs planner → validate → waves in its own context; returns the waves and a task table · B-29"]
+    direction TB
+    PLANNER("planner<br/>task contracts: objective, allowed_paths,<br/>depends_on, criteria_ids, verify_commands,<br/>retry_limit, ac_evidence, rollback") --> PJ[/"plan.json"/]:::art
+    PJ --> PV{{"factory plan validate<br/>coverage · cycles · protected paths ·<br/>work-type rules · risk vs scope ·<br/>locks held by other jobs ·<br/>plan.waves = layers of depends_on, no shared files in a wave (B-33) ·<br/>every accepted lesson in scope carried by a task (B-37)"}}:::clifix
+    PV -->|"fails, ≤3 rounds (factory plan waves --write fixes waves)"| PLANNER
+    PV -->|still failing| PARKQ1["park"]
+    PV -->|valid| H3(["H3 · you approve plan<br/>you reply approve · deny<br/>takes path locks"]):::human
+    PV -->|low risk + policy| PCRIT("god-eye · focus plan<br/>factory critique record --kind plan<br/>must approve this exact plan.json<br/>B-15"):::fixed
+    PCRIT -->|revise| PLANNER
+    PCRIT -->|approve| AUTO3{{"policy auto-approves H3"}}:::cli
+    H3 --> PILOT{"profile = pilot?"}
+    AUTO3 --> PILOT
+    PILOT -->|yes| STOPP["stops before building<br/>(no path lock; next says pilot_stopped)"]
+    H3 -.->|"risk rose to high after design and<br/>no-adr.md was never approved → refused · B-18"| PARKQ1
+  end
+  H2 --> PLANNER
+  SKIPH2 --> PLANNER
+  H1 -->|"hotfix: design skipped"| PLANNER
+
+  %% ---------------------------------------------------------------- 4. BUILD
+  subgraph S4["4 · BUILD · /factory · stage build + workflow build-tasks.js"]
+    direction TB
+    LAYERS["build-tasks workflow, args {jobId, pluginRoot, fix | verifyFix | only}:<br/>brief runs factory wfargs build (task graph, waves, limits, models);<br/>a wave's tasks build at the same time, up to max_parallel_tasks (B-33);<br/>fix rounds: only tasks owning confirmed findings (factory review findings);<br/>verify fix: only tasks owning failing verify commands;<br/>after an amendment: only its affected tasks; on resume: only the unfinished · B-29 · 0.7.5"]:::fixed --> FAN4(("fan-out<br/>per task in wave"))
+    FAN4 --> TA["task T1"]
+    FAN4 --> TB2["task T2"]
+    FAN4 --> TN["task Tn"]
+    subgraph TASKLOOP["per task, own worktree .factory/worktrees/Tn"]
+      direction LR
+      BLD("builder<br/>gets its contract, lessons, fix findings and verify failures<br/>from factory task show (B-29);<br/>merges its dependencies' task branches first (B-35);<br/>gets the lessons + pack rules for its paths (B-37 · B-39);<br/>fix round: fixes the class of bug and lists swept places (B-37);<br/>only allowed_paths; commits on its task branch only (B-38)"):::fixed --> TST("tester (independent)<br/>runs verify_commands, checks the swept places")
+      TST -->|"fail, attempt ≤ retry_limit<br/>model escalates"| BLD
+      TST -->|pass| EV[/"evidence/*.json<br/>bound to code fingerprint"/]:::art
+      BLD -->|needs out-of-scope paths| BLK["blocked"]
+      TST -->|retries exhausted| EXH["exhausted"]
+    end
+    TA --> BLD
+    TB2 --> BLD
+    TN --> BLD
+    BLK --> SKIPDEP["its dependents (transitively) →<br/>skipped_dependency; every other task<br/>keeps building · B-08"]:::fixed
+    EXH --> SKIPDEP
+    EV --> FANIN4(("fan-in<br/>layer done"))
+    SKIPDEP --> FANIN4
+    FANIN4 -->|next layer| FAN4
+    FANIN4 -->|"all layers done,<br/>every task done"| CK4{{"advance integrating: approvals_fresh<br/>(intent + plan + design unchanged since approval) ·<br/>tasks_built (every task has passing evidence<br/>from its own worktree) · 0.7.5"}}:::clifix
+    CK4 --> INTEG("integrator<br/>git merge --no-ff in dependency order;<br/>conflicts only inside the tasks' scopes")
+    FANIN4 -->|"all layers done,<br/>any task not done"| PARKQ2["park with reason<br/>(nothing partial ships)"]
+  end
+  PILOT -->|no| LAYERS
+  INTEG -->|behavioural conflict| PARKQ2
+
+  %% ---------------------------------------------------------------- 5. VERIFY
+  subgraph S5["5 · VERIFY · factory verify run (no agent)"]
+    direction TB
+    VR{{"start services · re-run every task command<br/>with flaky re-runs · every policy check ·<br/>security scans on new code · migration rehearsal ·<br/>refactor baseline ·<br/>standards checks on the job's changes only: changed files · ratchet (no new errors) ·<br/>coverage of new lines · no new suppressions (B-39)"}}:::clifix --> VG{{"gate:verify<br/>every AC: fresh, non-flaky proof<br/>of an allowed type"}}:::cli
+  end
+  INTEG --> VR
+
+  %% ---------------------------------------------------------------- 6. REVIEW
+  subgraph S6["6 · REVIEW · workflow review-lanes.js, args {jobId, pluginRoot}; brief reads factory wfargs review; returns a scoreboard (one pinned fingerprint)"]
+    direction TB
+    LANESEL["Lanes from policy required_lanes[risk]:<br/>code + tests always · security on high risk/pack ·<br/>ux when configured, or when UI files changed and its tools exist ·<br/>factory review context: round N of max_review_rounds, previous findings,<br/>files changed since; the diff excludes .factory/ (B-36);<br/>lessons + pack rules in scope as a checklist (B-37 · B-39)"]:::fixed --> FAN6(("fan-out"))
+    FAN6 --> RC("code-reviewer")
+    FAN6 --> RT("test-reviewer")
+    FAN6 --> RS("security-reviewer")
+    FAN6 --> RU("ux-reviewer")
+    RC --> CONV
+    RT --> CONV
+    RS --> CONV
+    RU --> CONV
+    CONV{{"from round 2: a new major in code unchanged since the last round → minor follow-up;<br/>a broken pack rule → minor; a broken lesson → a finding;<br/>the same rules again in factory review record (manual path) · B-36 · B-39 · 0.7.5"}}:::clifix --> SER
+    SER{"blocker or major<br/>findings?"} -->|each one| FV("finding-verifier<br/>(fan-out per finding)<br/>confirm or refute")
+    FV -->|refuted| DISM[/"dismissed with reason"/]:::art
+    FV -->|confirmed| FANIN6
+    SER -->|none| FANIN6(("fan-in"))
+    DISM --> FANIN6
+    SER -.->|minor ones| MINOR[/"Non-blocking findings in the report and PR;<br/>the same one in another job → a lesson · B-06"/]:::artfix
+    FANIN6 --> REC{{"recorder: factory review record --file - per lane, counts checked<br/>(only in reviewing / post_merge_review); reviews/&lt;lane&gt;.json + history per round;<br/>the workflow returns verdicts, counts, one line per serious finding · B-29"}}:::clifix
+    REC -.->|confirmed problems| LW("lesson-writer<br/>≤3 general, scoped lessons<br/>in this project's own terms · B-37 · B-38"):::fixed
+    LW --> LACC(["you reply: accept lesson L4 · reject lesson L4<br/>(used from the next plan, build and review)"]):::humanfix
+    REC --> RG{{"gate:review<br/>all lanes pass · base not stale"}}:::cli
+    RG -.- UXR{{"UI files (policy ui_paths) changed, no passing ux review:<br/>warning below high risk · fails at high risk<br/>until ux passes or you waive review.ux · B-07"}}:::fixed
+  end
+  VG --> LANESEL
+
+  %% ---------------------------------------------------------------- 7. SHIP
+  subgraph S7["7 · SHIP · /factory · stage ship"]
+    direction TB
+    REP{{"factory report<br/>completion-report.md: AC → proof → evidence,<br/>approvals + hashes, reviews, waivers, models"}}:::cli --> SG{{"gate:ship<br/>fresh evidence · commit trailers · size limit"}}:::cli
+    SG --> PR["commit job dir, push branch,<br/>gh pr create"]
+    PR --> CI{{"CI factory-gate on GitHub<br/>re-verifies on the exact merge result"}}:::cli
+    CI --> H4(["H4 · you review and merge on GitHub"]):::human
+    H4 --> SYNC{{"factory pr sync<br/>checks + review decision → event log;<br/>advances pr_open → merged itself<br/>once GitHub shows the merge commit · B-09;<br/>merged is refused without that recorded merge · 0.7.5"}}:::clifix
+    CI -.->|"results logged by"| SYNC
+    SYNC --> MERGED["merged"]
+    MERGED -->|hotfix| PMR("post-merge review<br/>code + security lanes, a fresh round 1,<br/>diff from the merge commit's first parent · 0.7.5")
+    SG -->|over size limit| WAIVE(["you waive or split<br/>factory waive …"]):::human
+  end
+  RG --> REP
+
+  %% ---------------------------------------------------------------- 8. DONE
+  subgraph S8["8 · DONE"]
+    direction TB
+    CLOSED["closed · worktrees + task branches removed"] --> LESS{{"factory lessons propose → lesson-writer → factory lessons add"}}:::clifix
+    LESS --> LDEC(["you reply accept lesson L4 · reject lesson L4;<br/>a lesson that keeps recurring can become a check (factory lessons promote)"]):::humanfix
+    FIND["findings_delivered (spike)"]
+  end
+  MERGED -->|not hotfix| CLOSED
+  PMR -->|pass| CLOSED
+  PMR -->|"confirmed blocker/major"| FUP{{"factory followup<br/>opens a linked bug or hotfix job<br/>seeded with followup-from.md;<br/>the merged job is never reopened · B-10"}}:::clifix
+  FUP -->|parent closes| CLOSED
+  FUP -->|new linked job| REQ
+  HF --> FIND
+  LDEC -.->|accepted: acts from the next plan, build and review| PV
+
+  %% ---------------------------------------------------------------- LOOP-BACKS TO BUILD
+  INTEG -->|integration fails| LAYERS
+  VG -->|"failure → owning task's builder<br/>(task show: verify_failures; wfargs build --verify-fix;<br/>past retry_limit → park)"| LAYERS
+  RG -->|"changes / insufficient_evidence<br/>(all lanes re-run on new fingerprint)"| LAYERS
+  RG -->|"rounds used up: park with the trend of serious findings<br/>and a verdict (converging or not); you may allow one more round · B-36 · B-37"| PARKQ2
+  SG -->|stale evidence after late change| LAYERS
+  CI -->|change requests| LAYERS
+
+  %% ---------------------------------------------------------------- SIDE TRACKS
+  subgraph SA["AMENDMENT · /factory · stage amend (from building … pr_open)"]
+    direction TB
+    AM1(["You say what changed and who asked"]):::human --> AM2{{"factory amend<br/>intent.md + plan.json writable"}}:::cli
+    AM2 --> AM3["edit only affected AC-n"] --> AM4("planner updates affected tasks")
+    AM4 --> AM5{{"validate intent + plan<br/>compute impact"}}:::cli
+    AM5 --> HA(["A · you approve amendment<br/>you reply approve · deny; approvals re-bound<br/>(checks also type_intent_rules · epic_trace) · 0.7.5"]):::humanfix
+  end
+  LAYERS -.->|requirements changed| AM1
+  CI -.->|requirements changed| AM1
+  HA -->|"rebuild affected tasks only<br/>(wfargs build defaults to the amendment's affected tasks)"| LAYERS
+
+  subgraph SP["PARKED (from any non-terminal state)"]
+    direction TB
+    PK["parked with a reason"] --> HP(["P · you decide<br/>you reply resume &lt;state&gt; · cancel job … · abandon job …"]):::human
+    HP -->|cancel / abandon| STOPPED["cancelled / abandoned<br/>artifacts kept"]
+  end
+  PARKQ1 --> PK
+  PARKQ2 --> PK
+  HP -.->|resume at the state you choose| LAYERS
+
+  %% ---------------------------------------------------------------- EPIC LINE
+  subgraph SE["EPIC LINE · /factory · stage epic"]
+    direction TB
+    E1["epic intent loop + intent-review workflow in epic mode<br/>(FACTORY_EPIC: CLI-owned rounds, critique of epic-intent.md)<br/>epic-intent.md: outcome, E-AC-n, non-goals, rollout, flag"] --> EH1(["EH1 · you approve epic intent<br/>(needs God Eye's approval of this epic-intent.md) · 0.7.5"]):::humanfix
+    EH1 --> E2("researcher → architect<br/>ADRs · contracts.md · contracts.json") --> EH2(["EH2 · you approve architecture<br/>contracts freeze"]):::human
+    EH2 --> E3("slicer<br/>slices.json: S00 contracts + flag first,<br/>then vertical slices safe to stop after") --> E3V{{"factory epic slices"}}:::cli --> EH3(["EH3 · you approve slices"]):::human
+    EH3 --> DEL(("fan-out<br/>slice jobs in<br/>dependency order"))
+    DEL --> SL0["S00 job"]
+    DEL --> SL1["S01 job"]
+    DEL --> SLn["Sn job"]
+    SL0 --> DIN(("fan-in<br/>all slices merged"))
+    SL1 --> DIN
+    SLn --> DIN
+    DIN --> EG{{"epic gate: E-AC end-to-end<br/>on the base branch (CLI-checked), flag on in test env"}}:::clifix
+    EG --> ER("epic-reviewer<br/>ADR + contract conformance,<br/>flag hygiene, leftovers")
+    ER --> COMPLETE["complete · flag stays off<br/>until you decide"]
+    EG -->|"fails: a slice's work is wrong<br/>(a merged slice gets a new job)"| DEL
+    EG -->|"fails: an E-AC no slice owns"| ADDSL("epic amendment from the gate:<br/>slicer appends a slice (depends on S00,<br/>cites the E-AC) · factory epic slices<br/>B-11"):::fixed
+    ADDSL --> EAM
+    DEL -.->|contract must change| EAM(["EA · you approve epic amendment"]):::human
+    EAM -->|"affected slices → needs_replan<br/>→ intent or planning; new slice → its job"| DEL
+  end
+  ENEW --> E1
+  SL0 -. each slice runs the whole job line .-> REQ
+
+  %% ---------------------------------------------------------------- ENFORCEMENT ALWAYS ON
+  subgraph ENF["ENFORCEMENT (always on): agents propose, CLI + hooks + CI decide"]
+    direction LR
+    HK1{{"PreToolUse guard hook (Write · Edit · Bash · Read · Grep)<br/>denies approvals, state edits, force-push,<br/>protected + contract paths;<br/>every --no-verify spelling, commit -n, hook-path redirects (B-20);<br/>org policy redirect or edits (B-21);<br/>secret reads, real path checked (B-22);<br/>builders/testers never move the job branch (B-38);<br/>--reason prose ignored only in a plain factory/git command (B-35 · B-36);<br/>commands read as the shell reads them (quoted or escaped verbs) · force-push +refspec / -uf ·<br/>.git/hooks and .git/config · secret reads via git objects · a quoted heredoc is data · 0.7.5"}}:::clifix
+    HK4{{"SubagentStop output gate<br/>researcher · threat-modeler · architect ·<br/>planner · slicer can't finish without their output<br/>(at most 2 blocks per agent) · B-24"}}:::clifix
+    HK5{{"Stop gate<br/>no 'done' while verify/review gate fails"}}:::cli
+    HK2{{"activity hook<br/>agent start/stop/tool → events.jsonl<br/>each record says how its job was found:<br/>explicit · agent · worktree · pointer · inferred · B-12"}}:::clifix
+    HK3{{"commit-msg hook<br/>Factory-Job trailers"}}:::cli
+    SET[/"factory init settings: Read(...) secret denies ·<br/>Bash timeout 10 min (B-22, B-23)"/]:::artfix
+    LOG[/".factory/log/events.jsonl<br/>→ read-only console: classic views or a display<br/>(Signal Box · Factory Floor · Mission Control · Blueprint) from /display.json"/]:::artfix
+    HK2 --> LOG
+    HK4 --> LOG
+  end
+
+  %% ---------------------------------------------------------------- INSPECTOR (observes only)
+  subgraph INS["INSPECTOR · the factory watches itself · documents only, never blocks, approves or changes a job · B-41"]
+    direction LR
+    SIG[/"signals: doctor runs + READY · Stop-hook blocks · stale copy ·<br/>CLI errors · git subcommands · review history · factory_version"/]:::artfix --> INSP{{"factory inspect: rules R1–R5, R8–R10, R12 over the log + git<br/>(incremental; one line in factory next at most)"}}:::clifix
+    INSP --> REG[/".factory/inspect/register.jsonl<br/>deviation · leak · gap · workaround · permanent-fix · maintenance<br/>open · temporary-fix · permanently-fixed · wont-fix; regressions reopen"/]:::artfix
+    REG --> MARK(["you mark items: factory inspect mark (human-only)"]):::humanfix
+    REG --> EXP{{"factory inspect export → redacted bundle → plugin backlog"}}:::clifix
+  end
+  LOG -.-> SIG
+
+  classDef human fill:#fbefc6,stroke:#b8860b,stroke-width:2px,color:#2a2200
+  classDef cli fill:#dbe9f5,stroke:#1c6cab,color:#0d2a44
+  classDef art fill:#eef1f0,stroke:#6c7a85,color:#18232c
+  classDef fixed fill:#e6f4ea,stroke:#1e7a3c,stroke-width:3px,color:#0b3d1c
+  classDef humanfix fill:#fbefc6,stroke:#1e7a3c,stroke-width:3px,color:#2a2200
+  classDef clifix fill:#dbe9f5,stroke:#1e7a3c,stroke-width:3px,color:#0d2a44
+  classDef artfix fill:#eef1f0,stroke:#1e7a3c,stroke-width:3px,color:#18232c
